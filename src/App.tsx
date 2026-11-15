@@ -10,6 +10,7 @@ import {
   Settings,
   Sun,
   Swords,
+  Users,
   X,
 } from 'lucide-react';
 import { BuildOptimizerView } from './components/BuildOptimizerView.tsx';
@@ -20,16 +21,23 @@ import { PostGameView } from './components/PostGameView.tsx';
 import { SettingsView } from './components/SettingsView.tsx';
 import { computePlayerTendencies } from './engines/postGameEngine.ts';
 import type {
+  CareerAiSynthesis,
   DDragonBootstrap,
   MatchRecord,
   PlayerProfileResponse,
   RiotPlatform,
   Role,
+  SavedPlayerProfile,
 } from './engines/types.ts';
 
 type NavTab = 'dashboard' | 'builds' | 'postgame' | 'live' | 'champions' | 'settings';
 
 const STORAGE_KEY = 'lol_ai_coach_prefs_v1';
+const PROFILES_STORAGE_KEY = 'lol_ai_coach_profiles_v1';
+const ARCHIVE_STORAGE_KEY = 'lol_ai_coach_archive_v1';
+const PROFILE_META_STORAGE_KEY = 'lol_ai_coach_profile_meta_v1';
+const CAREER_AI_STORAGE_KEY = 'lol_ai_coach_career_ai_v1';
+const MAX_ARCHIVED_MATCHES_PER_ACCOUNT = 45;
 
 const REGIONS: RiotPlatform[] = [
   'EUW1',
@@ -57,11 +65,16 @@ const NAV_ITEMS: Array<{ id: NavTab; label: string; icon: typeof LayoutDashboard
   { id: 'settings', label: 'Paramètres', icon: Settings },
 ];
 
+function getAccountArchiveKey(riotId: string, targetRegion: RiotPlatform): string {
+  return `${targetRegion}:${(riotId || 'Boulvae#EUW').trim().toLowerCase()}`;
+}
+
 function loadSavedPrefs(): {
   riotId: string;
   region: RiotPlatform;
   role: Role;
   darkMode: boolean;
+  autoSyncEnabled: boolean;
 } {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -72,12 +85,179 @@ function loadSavedPrefs(): {
         region: parsed.region || 'EUW1',
         role: parsed.role || 'SUPPORT',
         darkMode: typeof parsed.darkMode === 'boolean' ? parsed.darkMode : true,
+        autoSyncEnabled: typeof parsed.autoSyncEnabled === 'boolean' ? parsed.autoSyncEnabled : true,
       };
     }
   } catch {
     // ignore storage read error
   }
-  return { riotId: 'Boulvae#EUW', region: 'EUW1', role: 'SUPPORT', darkMode: true };
+  return {
+    riotId: 'Boulvae#EUW',
+    region: 'EUW1',
+    role: 'SUPPORT',
+    darkMode: true,
+    autoSyncEnabled: true,
+  };
+}
+
+function loadSavedProfiles(fallback: {
+  riotId: string;
+  region: RiotPlatform;
+  role: Role;
+}): SavedPlayerProfile[] {
+  try {
+    const raw = localStorage.getItem(PROFILES_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed;
+      }
+    }
+  } catch {
+    // ignore storage read error
+  }
+  const initialName = fallback.riotId.split('#')[0] || 'Principal';
+  return [
+    {
+      id: 'default-main',
+      label: initialName,
+      riotId: fallback.riotId,
+      region: fallback.region,
+      role: fallback.role,
+    },
+  ];
+}
+
+function loadArchiveMap(): Record<string, MatchRecord[]> {
+  try {
+    const raw = localStorage.getItem(ARCHIVE_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') return parsed;
+    }
+  } catch {
+    // ignore
+  }
+  return {};
+}
+
+interface CachedProfileMeta {
+  riotId: string;
+  region: string;
+  level: number;
+  profileIconId: number;
+  rankedSolo: PlayerProfileResponse['rankedSolo'];
+}
+
+function loadProfileMetaMap(): Record<string, CachedProfileMeta> {
+  try {
+    const raw = localStorage.getItem(PROFILE_META_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') return parsed;
+    }
+  } catch {
+    // ignore
+  }
+  return {};
+}
+
+function saveProfileMetaForAccount(accountKey: string, data: PlayerProfileResponse) {
+  try {
+    const map = loadProfileMetaMap();
+    map[accountKey] = {
+      riotId: data.riotId,
+      region: data.region,
+      level: data.level,
+      profileIconId: data.profileIconId,
+      rankedSolo: data.rankedSolo,
+    };
+    localStorage.setItem(PROFILE_META_STORAGE_KEY, JSON.stringify(map));
+  } catch {
+    // ignore
+  }
+}
+
+function loadCareerAiMap(): Record<string, CareerAiSynthesis> {
+  try {
+    const raw = localStorage.getItem(CAREER_AI_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') return parsed;
+    }
+  } catch {
+    // ignore
+  }
+  return {};
+}
+
+function saveCareerAiForAccount(accountKey: string, synthesis: CareerAiSynthesis) {
+  try {
+    const map = loadCareerAiMap();
+    map[accountKey] = synthesis;
+    localStorage.setItem(CAREER_AI_STORAGE_KEY, JSON.stringify(map));
+  } catch {
+    // ignore storage quota errors
+  }
+}
+
+function saveArchiveForAccount(accountKey: string, matches: MatchRecord[]) {
+  try {
+    const map = loadArchiveMap();
+    const realMatches = matches.filter((m) => m.source !== 'Match de référence');
+    map[accountKey] = realMatches.slice(0, MAX_ARCHIVED_MATCHES_PER_ACCOUNT);
+    localStorage.setItem(ARCHIVE_STORAGE_KEY, JSON.stringify(map));
+  } catch {
+    // Quota exceeded fallback : compact matches (keep player & laneOpponent, drop full 10-player arrays)
+    try {
+      const map = loadArchiveMap();
+      const compacted = matches
+        .filter((m) => m.source !== 'Match de référence')
+        .slice(0, 25)
+        .map((m) => ({
+          ...m,
+          participants: [],
+        }));
+      map[accountKey] = compacted;
+      localStorage.setItem(ARCHIVE_STORAGE_KEY, JSON.stringify(map));
+    } catch {
+      // ignore if storage completely unavailable
+    }
+  }
+}
+
+function mergeAccountMatches(existing: MatchRecord[], incoming: MatchRecord[]): MatchRecord[] {
+  const byId = new Map<string, MatchRecord>();
+  for (const m of existing) {
+    byId.set(m.matchId, m);
+  }
+  for (const m of incoming) {
+    const prev = byId.get(m.matchId);
+    if (!prev) {
+      const nearDup = Array.from(byId.values()).some(
+        (em) =>
+          em.source !== 'Match de référence' &&
+          m.source !== 'Match de référence' &&
+          Math.abs(em.gameCreation - m.gameCreation) < 90_000 &&
+          em.player.championName === m.player.championName,
+      );
+      if (!nearDup) {
+        byId.set(m.matchId, m);
+      }
+    } else if (
+      (m.timelineSplits.length > prev.timelineSplits.length || m.participants.length > prev.participants.length) &&
+      m.source !== 'Match de référence'
+    ) {
+      byId.set(m.matchId, m);
+    }
+  }
+
+  const all = Array.from(byId.values());
+  const hasReal = all.some((m) => m.source !== 'Match de référence');
+  const filtered = hasReal ? all.filter((m) => m.source !== 'Match de référence') : all;
+  return filtered
+    .sort((a, b) => b.gameCreation - a.gameCreation)
+    .slice(0, MAX_ARCHIVED_MATCHES_PER_ACCOUNT);
 }
 
 export default function App() {
@@ -85,6 +265,7 @@ export default function App() {
 
   const [activeTab, setActiveTab] = useState<NavTab>('dashboard');
   const [darkMode, setDarkMode] = useState(initialPrefs.darkMode);
+  const [autoSyncEnabled, setAutoSyncEnabled] = useState(initialPrefs.autoSyncEnabled);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   const [ddragon, setDdragon] = useState<DDragonBootstrap | null>(null);
@@ -99,13 +280,26 @@ export default function App() {
   const [riotIdInput, setRiotIdInput] = useState(initialPrefs.riotId);
   const [region, setRegion] = useState<RiotPlatform>(initialPrefs.region);
   const [defaultRole, setDefaultRole] = useState<Role>(initialPrefs.role);
+  const [savedProfiles, setSavedProfiles] = useState<SavedPlayerProfile[]>(() =>
+    loadSavedProfiles(initialPrefs),
+  );
 
   const [profile, setProfile] = useState<PlayerProfileResponse | null>(null);
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileError, setProfileError] = useState<string | null>(null);
+  const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
 
   const [selectedMatchId, setSelectedMatchId] = useState<string | null>(null);
   const [builderInitialChamp, setBuilderInitialChamp] = useState<string | undefined>(undefined);
+
+  const activeAccountKey = getAccountArchiveKey(riotIdInput, region);
+  const [careerSynthesis, setCareerSynthesis] = useState<CareerAiSynthesis | null>(
+    () => loadCareerAiMap()[getAccountArchiveKey(initialPrefs.riotId, initialPrefs.region)] || null,
+  );
+
+  useEffect(() => {
+    setCareerSynthesis(loadCareerAiMap()[activeAccountKey] || null);
+  }, [activeAccountKey]);
 
   // Synchroniser la classe .dark sur <html>
   useEffect(() => {
@@ -143,49 +337,130 @@ export default function App() {
     });
   }, []);
 
-  const syncPlayer = async (riotId: string, targetRegion: RiotPlatform, force = false) => {
-    const trimmed = riotId.trim();
+  const syncPlayer = async (
+    riotId: string,
+    targetRegion: RiotPlatform,
+    force = false,
+    matchCount = 15,
+    silent = false,
+  ) => {
+    const trimmed = riotId.trim() || 'Boulvae#EUW';
     const [gameName, tagLine] = trimmed.includes('#')
       ? trimmed.split('#')
-      : [trimmed || 'Boulvae', 'EUW'];
+      : [trimmed, 'EUW'];
 
-    setProfileLoading(true);
-    setProfileError(null);
+    if (!silent) {
+      setProfileLoading(true);
+      setProfileError(null);
+    }
+
+    const accountKey = getAccountArchiveKey(trimmed, targetRegion);
     try {
       const res = await fetch(
         `/api/riot/player?gameName=${encodeURIComponent(gameName)}&tagLine=${encodeURIComponent(
           tagLine || 'EUW',
-        )}&region=${encodeURIComponent(targetRegion)}${force ? '&force=1' : ''}`,
+        )}&region=${encodeURIComponent(targetRegion)}&count=${matchCount}${force ? '&force=1' : ''}`,
       );
-      const data = await res.json();
+      const data = (await res.json()) as PlayerProfileResponse & { error?: string };
       if (!res.ok) throw new Error(data.error || 'Échec de la synchronisation.');
-      setProfile(data);
-      if (data.matches?.length > 0) {
-        setSelectedMatchId(data.matches[0].matchId);
+
+      const archiveMap = loadArchiveMap();
+      const existingArchive = archiveMap[accountKey] || [];
+      const mergedMatches = mergeAccountMatches(existingArchive, data.matches || []);
+      saveArchiveForAccount(accountKey, mergedMatches);
+      saveProfileMetaForAccount(accountKey, data);
+
+      const enrichedProfile: PlayerProfileResponse = {
+        ...data,
+        matches: mergedMatches,
+        tendencies: computePlayerTendencies(mergedMatches),
+      };
+
+      setProfile(enrichedProfile);
+      setLastSyncedAt(
+        new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
+      );
+      if (mergedMatches.length > 0 && !silent) {
+        setSelectedMatchId(mergedMatches[0].matchId);
       }
       localStorage.setItem(
         STORAGE_KEY,
         JSON.stringify({
-          riotId: trimmed || 'Boulvae#EUW',
+          riotId: trimmed,
           region: targetRegion,
           role: defaultRole,
           darkMode,
+          autoSyncEnabled,
         }),
       );
     } catch (err) {
-      setProfileError(err instanceof Error ? err.message : 'Erreur réseau.');
+      if (!silent) {
+        setProfileError(err instanceof Error ? err.message : 'Erreur réseau.');
+        // Fallback hors-ligne / clé expirée : conserver l'archive locale du compte si disponible
+        const archivedMatches = loadArchiveMap()[accountKey] || [];
+        const cachedMeta = loadProfileMetaMap()[accountKey];
+        if (archivedMatches.length > 0 || cachedMeta) {
+          setProfile((prev) => {
+            if (prev && prev.riotId.toLowerCase() === trimmed.toLowerCase()) return prev;
+            return {
+              source: 'Riot API Live',
+              riotId: cachedMeta?.riotId || trimmed,
+              region: cachedMeta?.region || targetRegion,
+              level: cachedMeta?.level || 30,
+              profileIconId: cachedMeta?.profileIconId || 29,
+              rankedSolo: cachedMeta?.rankedSolo || null,
+              activeGame: { inGame: false },
+              matches: archivedMatches,
+              tendencies: computePlayerTendencies(archivedMatches),
+            };
+          });
+          if (archivedMatches.length > 0) {
+            setSelectedMatchId(archivedMatches[0].matchId);
+          }
+        }
+      }
     } finally {
-      setProfileLoading(false);
+      if (!silent) {
+        setProfileLoading(false);
+      }
     }
   };
 
   useEffect(() => {
-    syncPlayer(initialPrefs.riotId, initialPrefs.region, false);
+    syncPlayer(initialPrefs.riotId, initialPrefs.region, false, 15, false);
   }, []);
+
+  // Auto-synchronisation proactive silencieuse toutes les 5 minutes si activée et Riot API configurée
+  useEffect(() => {
+    if (!statusMeta.riotConfigured || !autoSyncEnabled) return;
+    const intervalId = window.setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      if (profileLoading) return;
+      syncPlayer(riotIdInput, region, false, 10, true);
+    }, 5 * 60 * 1000);
+    return () => window.clearInterval(intervalId);
+  }, [statusMeta.riotConfigured, autoSyncEnabled, riotIdInput, region, profileLoading]);
 
   const handleSyncSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    syncPlayer(riotIdInput, region, true);
+    syncPlayer(riotIdInput, region, true, 15, false);
+  };
+
+  const handleToggleAutoSync = () => {
+    setAutoSyncEnabled((prev) => {
+      const next = !prev;
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({
+          riotId: riotIdInput,
+          region,
+          role: defaultRole,
+          darkMode,
+          autoSyncEnabled: next,
+        }),
+      );
+      return next;
+    });
   };
 
   const handleSavePreferences = (prefs: {
@@ -193,13 +468,68 @@ export default function App() {
     region: RiotPlatform;
     role: Role;
     darkMode: boolean;
+    autoSyncEnabled: boolean;
   }) => {
     setRiotIdInput(prefs.riotId);
     setRegion(prefs.region);
     setDefaultRole(prefs.role);
     setDarkMode(prefs.darkMode);
+    setAutoSyncEnabled(prefs.autoSyncEnabled);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(prefs));
-    syncPlayer(prefs.riotId, prefs.region, true);
+    syncPlayer(prefs.riotId, prefs.region, true, 15, false);
+  };
+
+  const persistProfiles = (next: SavedPlayerProfile[]) => {
+    setSavedProfiles(next);
+    try {
+      localStorage.setItem(PROFILES_STORAGE_KEY, JSON.stringify(next));
+    } catch {
+      // ignore storage error
+    }
+  };
+
+  const handleSaveProfile = (input: Omit<SavedPlayerProfile, 'id'> & { id?: string }) => {
+    const cleanRiotId = input.riotId.trim();
+    if (!cleanRiotId) return;
+    if (input.id) {
+      const updated = savedProfiles.map((p) =>
+        p.id === input.id ? { ...p, ...input, riotId: cleanRiotId } : p,
+      );
+      persistProfiles(updated);
+    } else {
+      const newProf: SavedPlayerProfile = {
+        id: `prof-${Date.now()}`,
+        label: input.label.trim() || cleanRiotId.split('#')[0],
+        riotId: cleanRiotId,
+        region: input.region,
+        role: input.role,
+      };
+      persistProfiles([...savedProfiles, newProf]);
+    }
+  };
+
+  const handleDeleteProfile = (id: string) => {
+    const next = savedProfiles.filter((p) => p.id !== id);
+    if (next.length > 0) {
+      persistProfiles(next);
+    }
+  };
+
+  const handleSwitchProfile = (prof: SavedPlayerProfile) => {
+    setRiotIdInput(prof.riotId);
+    setRegion(prof.region);
+    setDefaultRole(prof.role);
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        riotId: prof.riotId,
+        region: prof.region,
+        role: prof.role,
+        darkMode,
+        autoSyncEnabled,
+      }),
+    );
+    syncPlayer(prof.riotId, prof.region, false, 15, false);
   };
 
   const handleSelectMatchForReview = (match: MatchRecord) => {
@@ -210,9 +540,8 @@ export default function App() {
   const handleImportMatch = (imported: MatchRecord) => {
     setProfile((prev) => {
       if (!prev) return prev;
-      const merged = [imported, ...prev.matches.filter((m) => m.matchId !== imported.matchId)].sort(
-        (a, b) => b.gameCreation - a.gameCreation,
-      );
+      const merged = mergeAccountMatches(prev.matches, [imported]);
+      saveArchiveForAccount(getAccountArchiveKey(riotIdInput, region), merged);
       return {
         ...prev,
         matches: merged,
@@ -224,6 +553,7 @@ export default function App() {
 
   const handleMergeLocalMatches = (localMatches: MatchRecord[]): number => {
     if (!profile) return 0;
+    const beforeCount = profile.matches.length;
     const existingById = new Set(profile.matches.map((m) => m.matchId));
     const newOnes = localMatches.filter((lm) => {
       if (existingById.has(lm.matchId)) return false;
@@ -236,14 +566,17 @@ export default function App() {
     });
     if (newOnes.length === 0) return 0;
 
-    const merged = [...newOnes, ...profile.matches].sort((a, b) => b.gameCreation - a.gameCreation);
+    const merged = mergeAccountMatches(profile.matches, newOnes);
+    saveArchiveForAccount(getAccountArchiveKey(riotIdInput, region), merged);
     setProfile({
       ...profile,
       matches: merged,
       tendencies: computePlayerTendencies(merged),
     });
-    setSelectedMatchId(merged[0].matchId);
-    return newOnes.length;
+    if (merged.length > 0) {
+      setSelectedMatchId(merged[0].matchId);
+    }
+    return Math.max(newOnes.length, merged.length - beforeCount);
   };
 
   const activeNavTitle = NAV_ITEMS.find((n) => n.id === activeTab)?.label || 'Tableau de bord';
@@ -400,6 +733,35 @@ export default function App() {
           </div>
 
           <form onSubmit={handleSyncSubmit} className="flex items-center gap-2 shrink-0">
+            {savedProfiles.length > 1 && (
+              <div className="hidden md:flex items-center gap-1.5">
+                <Users className="w-3.5 h-3.5 text-slate-400 shrink-0" aria-hidden="true" />
+                <select
+                  value={
+                    savedProfiles.find(
+                      (p) =>
+                        p.riotId.toLowerCase() === riotIdInput.trim().toLowerCase() &&
+                        p.region === region,
+                    )?.id || ''
+                  }
+                  onChange={(e) => {
+                    const target = savedProfiles.find((p) => p.id === e.target.value);
+                    if (target) handleSwitchProfile(target);
+                  }}
+                  aria-label="Changer de profil Famille / Amis"
+                  className="max-w-[140px] px-2 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#121722] text-slate-900 dark:text-white"
+                >
+                  <option value="" disabled>
+                    Profils ({savedProfiles.length})
+                  </option>
+                  {savedProfiles.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.label} ({p.riotId})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
             <input
               type="text"
               value={riotIdInput}
@@ -455,7 +817,11 @@ export default function App() {
                   riotConfigured={statusMeta.riotConfigured}
                   champions={ddragon.champions}
                   patchVersion={ddragon.version}
-                  onRetrySync={() => syncPlayer(riotIdInput, region, true)}
+                  autoSyncEnabled={autoSyncEnabled}
+                  lastSyncedAt={lastSyncedAt}
+                  onToggleAutoSync={handleToggleAutoSync}
+                  onDeepSync={() => syncPlayer(riotIdInput, region, true, 25, false)}
+                  onRetrySync={() => syncPlayer(riotIdInput, region, true, 15, false)}
                   onDismissError={() => setProfileError(null)}
                   onMergeLocalMatches={handleMergeLocalMatches}
                   onSelectMatchForReview={handleSelectMatchForReview}
@@ -464,6 +830,13 @@ export default function App() {
                     setActiveTab('builds');
                   }}
                   onNavigateToLive={() => setActiveTab('live')}
+                  onNavigateToSettings={() => setActiveTab('settings')}
+                  careerSynthesis={careerSynthesis}
+                  geminiConfigured={statusMeta.geminiConfigured}
+                  onSaveCareerSynthesis={(syn) => {
+                    saveCareerAiForAccount(activeAccountKey, syn);
+                    setCareerSynthesis(syn);
+                  }}
                 />
               )}
 
@@ -487,7 +860,10 @@ export default function App() {
                   matches={profile?.matches || []}
                   selectedMatchId={selectedMatchId}
                   champions={ddragon.champions}
+                  items={ddragon.items}
                   patchVersion={ddragon.version}
+                  riotId={riotIdInput}
+                  region={region}
                   onSelectMatchId={setSelectedMatchId}
                   onImportMatch={handleImportMatch}
                 />
@@ -511,6 +887,7 @@ export default function App() {
                 <ChampionEncyclopediaView
                   champions={ddragon.champions}
                   patchVersion={ddragon.version}
+                  recentChampionIds={profile?.matches.map((m) => m.player.championName) || []}
                   onUseInBuilder={(champId) => {
                     setBuilderInitialChamp(champId);
                     setActiveTab('builds');
@@ -524,12 +901,20 @@ export default function App() {
                   defaultRegion={region}
                   defaultRole={defaultRole}
                   darkMode={darkMode}
+                  autoSyncEnabled={autoSyncEnabled}
                   patchVersion={ddragon.version}
                   riotConfigured={statusMeta.riotConfigured}
                   riotKeyStartsWithRgapi={statusMeta.riotKeyStartsWithRgapi}
                   riotKeyLength={statusMeta.riotKeyLength}
                   geminiConfigured={statusMeta.geminiConfigured}
+                  savedProfiles={savedProfiles}
                   onSavePreferences={handleSavePreferences}
+                  onSaveProfile={handleSaveProfile}
+                  onDeleteProfile={handleDeleteProfile}
+                  onSwitchProfile={(prof) => {
+                    handleSwitchProfile(prof);
+                    setActiveTab('dashboard');
+                  }}
                   onRefreshDataDragon={() => loadBootstrap(true)}
                 />
               )}

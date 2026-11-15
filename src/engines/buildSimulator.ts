@@ -1,0 +1,1471 @@
+import { computeStatAtLevel } from './championEngine.ts';
+import { computeRuneStatsAtLevel, type RunePageSelection } from './runeEngine.ts';
+import type {
+  ChampionSummary,
+  EnemyThreatSummary,
+  GameModeContext,
+  ItemData,
+  Role,
+  RuneTree,
+} from './types.ts';
+
+export interface ParsedItemStats {
+  hp: number;
+  mana: number;
+  ad: number;
+  ap: number;
+  armor: number;
+  mr: number;
+  attackSpeedPct: number;
+  critChancePct: number;
+  critDamageBonusPct: number;
+  flatMoveSpeed: number;
+  percentMoveSpeedPct: number;
+  abilityHaste: number;
+  lethality: number;
+  armorPenPct: number;
+  magicPenFlat: number;
+  magicPenPct: number;
+  tenacityPct: number;
+  healShieldPowerPct: number;
+  lifeStealPct: number;
+  omnivampPct: number;
+  hpRegenPct: number;
+  manaRegenPct: number;
+}
+
+export interface ActiveItemPassiveInfo {
+  itemId: string;
+  itemName: string;
+  effectTitle: string;
+  detail: string;
+}
+
+export interface FullBuildStatBreakdown {
+  level: number;
+  totals: {
+    hp: number;
+    mana: number;
+    ad: number;
+    ap: number;
+    armor: number;
+    mr: number;
+    attackSpeed: number;
+    abilityHaste: number;
+    cooldownReductionPct: number;
+    moveSpeed: number;
+    critChancePct: number;
+    critDamagePct: number;
+    lethality: number;
+    armorPenPct: number;
+    magicPenFlat: number;
+    magicPenPct: number;
+    tenacityPct: number;
+    healShieldPowerPct: number;
+    healShieldReceivedPct: number;
+    lifeStealPct: number;
+    omnivampPct: number;
+    hpRegenPct: number;
+    manaRegenPct: number;
+    antiHealPct: number;
+    aaDamageReductionPct: number;
+    critDamageReductionPct: number;
+    combatBonusResistPct: number;
+    doubleOnHitActive: boolean;
+  };
+  sources: {
+    hp: { base: number; items: number; runes: number };
+    ad: { base: number; items: number; runes: number };
+    ap: { base: number; items: number; runes: number };
+    armor: { base: number; items: number; runes: number };
+    mr: { base: number; items: number; runes: number };
+    abilityHaste: { base: number; items: number; runes: number };
+    moveSpeed: { base: number; items: number; runes: number };
+  };
+  combat: {
+    physicalEhp: number;
+    magicEhp: number;
+    weightedEhp: number;
+    autoDps: number;
+    onHitPerAttack: number;
+    spellbladeProcDmg: number;
+    combatSustainPerSec: number;
+    abilityImpactIndex: number;
+    totalGold: number;
+    statGoldValue: number;
+    goldEfficiencyPct: number;
+    runeGoldValue: number;
+  };
+  activePassives: ActiveItemPassiveInfo[];
+  itemCount: number;
+}
+
+export interface RuneValidationCheck {
+  label: string;
+  passed: boolean;
+  detail: string;
+}
+
+export interface CombinatorialBuildCandidate {
+  id: string;
+  scenarioKey: 'balanced' | 'behind' | 'ahead' | 'anti_comp';
+  scenarioTitle: string;
+  scenarioBadge: string;
+  situationHint: string;
+  items: ItemData[];
+  runeSelection: RunePageSelection;
+  keystoneName: string;
+  primaryTreeName: string;
+  secondaryTreeName: string;
+  stats: FullBuildStatBreakdown;
+  score: number;
+  reasons: string[];
+}
+
+export interface CombinatorialOptimizerResult {
+  testedCombinationsCount: number;
+  testedItemCombos: number;
+  testedRuneCombos: number;
+  candidates: CombinatorialBuildCandidate[];
+}
+
+// Valeurs de référence officielles par point de statistique (LoL Gold Efficiency)
+const GOLD_PER_STAT = {
+  hp: 2.667, // Ruby Crystal 400g / 150 HP
+  mana: 1.4, // Sapphire Crystal
+  ad: 35, // Long Sword 350g / 10 AD
+  ap: 20, // Amplifying Tome 400g / 20 AP
+  armor: 20, // Cloth Armor 300g / 15 Armor
+  mr: 18, // Null-Magic Mantle
+  asPct: 25, // Dagger 250g / 10% AS
+  critPct: 40, // Cloak 600g / 15% Crit
+  ah: 50, // Glowing Mote 250g / 5 AH
+  msFlat: 12, // Boots 300g / 25 MS
+  lethality: 30,
+  magicPenFlat: 31.1,
+  healShieldPct: 55,
+  tenacityPct: 25,
+  lifeStealPct: 53.5,
+  regenPct: 3,
+};
+
+const HP_SCALING_CHAMPIONS = new Set([
+  'TahmKench',
+  'DrMundo',
+  'Sion',
+  'Chogath',
+  'Sejuani',
+  'Shen',
+  'Zac',
+  'Volibear',
+  'Skarner',
+]);
+
+const ONHIT_SPELLWEAVE_CHAMPIONS = new Set([
+  'TahmKench',
+  'Volibear',
+  'Jax',
+  'Kayle',
+  'Gwen',
+  'Diana',
+  'Shen',
+  'Warwick',
+  'Viego',
+  'Teemo',
+  'KogMaw',
+  'Varus',
+  'Kaisa',
+  'MasterYi',
+  'Irelia',
+  'Udyr',
+  'XinZhao',
+  'Trundle',
+]);
+
+function decodeHtmlText(raw: string): string {
+  return raw
+    .replace(/\u00a0/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/[ \t]+/g, ' ')
+    .trim();
+}
+
+/**
+ * Extrait 100% des statistiques réelles d'un objet Data Dragon en combinant
+ * item.stats ET la section <stats>...</stats> de item.description (Hâte, Ténacité,
+ * Pén. % Armure/RM, Létalité, Efficacité Soins/Boucliers, Régénérations, Dégâts Crit, Omnivamp).
+ */
+export function parseExactItemStats(item: ItemData): ParsedItemStats {
+  const s = item.stats || {};
+  let hp = Number(s.FlatHPPoolMod || 0);
+  let mana = Number(s.FlatMPPoolMod || 0);
+  let ad = Number(s.FlatPhysicalDamageMod || 0);
+  let ap = Number(s.FlatMagicDamageMod || 0);
+  let armor = Number(s.FlatArmorMod || 0);
+  let mr = Number(s.FlatSpellBlockMod || 0);
+  let attackSpeedPct = Math.round(Number(s.PercentAttackSpeedMod || 0) * 100);
+  let critChancePct = Math.round(Number(s.FlatCritChanceMod || 0) * 100);
+  let flatMoveSpeed = Number(s.FlatMovementSpeedMod || 0);
+  let percentMoveSpeedPct = Math.round(Number(s.PercentMovementSpeedMod || 0) * 100);
+  let lifeStealPct = Math.round(Number(s.PercentLifeStealMod || 0) * 100);
+
+  let abilityHaste = 0;
+  let lethality = 0;
+  let armorPenPct = 0;
+  let magicPenFlat = 0;
+  let magicPenPct = 0;
+  let tenacityPct = 0;
+  let healShieldPowerPct = 0;
+  let critDamageBonusPct = 0;
+  let omnivampPct = 0;
+  let hpRegenPct = 0;
+  let manaRegenPct = 0;
+
+  const statsBlockMatch = item.description.match(/<stats>([\s\S]*?)<\/stats>/i);
+  if (statsBlockMatch) {
+    const lines = decodeHtmlText(statsBlockMatch[1])
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
+
+    for (const line of lines) {
+      const m = line.match(/^\+?(\d+(?:[.,]\d+)?)\s*(%?)\s*(.+)$/);
+      if (!m) continue;
+      const val = Number(m[1].replace(',', '.'));
+      const isPct = m[2] === '%';
+      const label = m[3].toLowerCase();
+
+      if (label.includes('accélération de compétence') || label.includes('ability haste')) {
+        abilityHaste += val;
+      } else if (label.includes('ténacité') || label.includes('tenacity')) {
+        tenacityPct += val;
+      } else if (label.includes('létalité') || label.includes('lethality')) {
+        lethality += val;
+      } else if (
+        (label.includes("pénétration d'armure") || label.includes('armor penetration')) &&
+        isPct
+      ) {
+        armorPenPct += val;
+      } else if (
+        label.includes('pénétration magique') ||
+        label.includes('magic penetration')
+      ) {
+        if (isPct) magicPenPct += val;
+        else magicPenFlat += val;
+      } else if (
+        label.includes('soins et boucliers') ||
+        label.includes('heal and shield power')
+      ) {
+        healShieldPowerPct += val;
+      } else if (label.includes('omnivampirisme') || label.includes('omnivamp')) {
+        omnivampPct += val;
+      } else if (
+        label.includes('dégâts de coup critique') ||
+        label.includes('critical strike damage')
+      ) {
+        critDamageBonusPct += val;
+      } else if (
+        (label.includes('régénération de base des pv') || label.includes('base health regen')) &&
+        isPct
+      ) {
+        hpRegenPct += val;
+      } else if (
+        (label.includes('régénération de base du mana') || label.includes('base mana regen')) &&
+        isPct
+      ) {
+        manaRegenPct += val;
+      } else if (
+        isPct &&
+        (label.includes('vitesse de déplacement') || label.includes('move speed'))
+      ) {
+        if (percentMoveSpeedPct === 0) percentMoveSpeedPct += val;
+      } else if (
+        !isPct &&
+        (label.includes('vitesse de déplacement') || label.includes('move speed'))
+      ) {
+        if (flatMoveSpeed === 0) flatMoveSpeed += val;
+      } else if (
+        isPct &&
+        (label.includes('vol de vie') || label.includes('life steal'))
+      ) {
+        if (lifeStealPct === 0) lifeStealPct += val;
+      } else if (
+        isPct &&
+        (label.includes("vitesse d'attaque") || label.includes('attack speed'))
+      ) {
+        if (attackSpeedPct === 0) attackSpeedPct += val;
+      } else if (
+        isPct &&
+        (label.includes('chances de coup critique') || label.includes('critical strike chance'))
+      ) {
+        if (critChancePct === 0) critChancePct += val;
+      } else if (label === 'pv' || label === 'health' || label.includes('points de vie')) {
+        if (hp === 0 && !isPct) hp += val;
+      } else if (label === 'mana' && !isPct) {
+        if (mana === 0) mana += val;
+      } else if (label === 'armure' || label === 'armor') {
+        if (armor === 0) armor += val;
+      } else if (label.includes('résistance magique') || label.includes('magic resist')) {
+        if (mr === 0) mr += val;
+      } else if (label.includes("dégâts d'attaque") || label.includes('attack damage')) {
+        if (ad === 0) ad += val;
+      } else if (label === 'puissance' || label === 'ability power') {
+        if (ap === 0) ap += val;
+      }
+    }
+  }
+
+  return {
+    hp,
+    mana,
+    ad,
+    ap,
+    armor,
+    mr,
+    attackSpeedPct,
+    critChancePct,
+    critDamageBonusPct,
+    flatMoveSpeed,
+    percentMoveSpeedPct,
+    abilityHaste,
+    lethality,
+    armorPenPct,
+    magicPenFlat,
+    magicPenPct,
+    tenacityPct,
+    healShieldPowerPct,
+    lifeStealPct,
+    omnivampPct,
+    hpRegenPct,
+    manaRegenPct,
+  };
+}
+
+export function formatItemStatTags(item: ItemData): string[] {
+  const st = parseExactItemStats(item);
+  const tags: string[] = [];
+  if (st.hp) tags.push(`+${st.hp} PV`);
+  if (st.ad) tags.push(`+${st.ad} AD`);
+  if (st.ap) tags.push(`+${st.ap} AP`);
+  if (st.armor) tags.push(`+${st.armor} Arm.`);
+  if (st.mr) tags.push(`+${st.mr} RM`);
+  if (st.abilityHaste) tags.push(`+${st.abilityHaste} Hâte`);
+  if (st.attackSpeedPct) tags.push(`+${st.attackSpeedPct}% AS`);
+  if (st.critChancePct) tags.push(`+${st.critChancePct}% Crit`);
+  if (st.lethality) tags.push(`+${st.lethality} Lét.`);
+  if (st.armorPenPct) tags.push(`+${st.armorPenPct}% Pén.Arm`);
+  if (st.magicPenFlat) tags.push(`+${st.magicPenFlat} Pén.Mag`);
+  if (st.magicPenPct) tags.push(`+${st.magicPenPct}% Pén.Mag`);
+  if (st.tenacityPct) tags.push(`+${st.tenacityPct}% Tén.`);
+  if (st.healShieldPowerPct) tags.push(`+${st.healShieldPowerPct}% Soins/Boucl.`);
+  if (st.hpRegenPct) tags.push(`+${st.hpRegenPct}% Régén.PV`);
+  if (st.flatMoveSpeed) tags.push(`+${st.flatMoveSpeed} Vit.`);
+  if (st.percentMoveSpeedPct) tags.push(`+${st.percentMoveSpeedPct}% Vit.`);
+  return tags.slice(0, 4);
+}
+
+/**
+ * Calcule l'ensemble complet et vérifiable des statistiques du champion au niveau N
+ * (Croissance officielle Riot + Runes/Fragments + Équipements sélectionnés + Passifs uniques de combat).
+ */
+export function computeFullChampionBuildStats(params: {
+  champion: ChampionSummary;
+  role: Role;
+  level: number;
+  items: ItemData[];
+  runeSelection: RunePageSelection;
+  threats?: EnemyThreatSummary;
+  heartsteelStacksHp?: number;
+}): FullBuildStatBreakdown {
+  const { champion, role, level, items, runeSelection, threats, heartsteelStacksHp = 0 } = params;
+  const clampedLvl = Math.max(1, Math.min(18, level));
+
+  // 1. Base pure du champion au niveau N (sans runes ni objets)
+  const baseHp = Math.round(computeStatAtLevel(champion.stats.hp, champion.stats.hpperlevel, clampedLvl));
+  const baseMana =
+    champion.partype === 'Mana'
+      ? Math.round(computeStatAtLevel(champion.stats.mp, champion.stats.mpperlevel, clampedLvl))
+      : Math.round(champion.stats.mp);
+  const baseAd = computeStatAtLevel(champion.stats.attackdamage, champion.stats.attackdamageperlevel, clampedLvl);
+  const baseArmor = computeStatAtLevel(champion.stats.armor, champion.stats.armorperlevel, clampedLvl);
+  const baseMr = computeStatAtLevel(champion.stats.spellblock, champion.stats.spellblockperlevel, clampedLvl);
+  const baseMs = champion.stats.movespeed;
+  const levelAsProgress =
+    clampedLvl <= 1 ? 0 : ((clampedLvl - 1) * (0.7025 + 0.0175 * (clampedLvl - 1))) / 100;
+  const baseAsOnly = Number(
+    (champion.stats.attackspeed * (1 + (champion.stats.attackspeedperlevel * levelAsProgress) / 100)).toFixed(3),
+  );
+
+  // 2. Contribution exacte des Runes + Fragments 3x3
+  const withRunes = computeRuneStatsAtLevel(champion, role, runeSelection, clampedLvl);
+  const runeHp = Math.max(0, withRunes.hp - baseHp);
+  const runeAd = Math.max(0, Number((withRunes.ad - baseAd).toFixed(1)));
+  const runeAp = withRunes.ap;
+  const runeArmor = Math.max(0, Number((withRunes.armor - baseArmor).toFixed(1)));
+  const runeMr = Math.max(0, Number((withRunes.mr - baseMr).toFixed(1)));
+  const runeAh = withRunes.abilityHaste;
+  const runeMs = Math.max(0, withRunes.moveSpeed - baseMs);
+  const runeAsBonusPct = Math.max(
+    0,
+    (withRunes.attackSpeed / Math.max(0.1, champion.stats.attackspeed) -
+      baseAsOnly / Math.max(0.1, champion.stats.attackspeed)) *
+      100,
+  );
+
+  // 3. Contribution exacte des Objets équipés + détection des passifs de combat
+  let itemHp = 0;
+  let itemMana = 0;
+  let itemAd = 0;
+  let itemAp = 0;
+  let itemArmor = 0;
+  let itemMr = 0;
+  let itemAsPct = 0;
+  let itemCritPct = 0;
+  let itemCritDmgBonus = 0;
+  let itemFlatMs = 0;
+  let itemPctMs = 0;
+  let itemAh = 0;
+  let itemLethality = 0;
+  let itemArmorPenPct = 0;
+  let itemMagicPenFlat = 0;
+  let itemMagicPenPct = 0;
+  let itemHealShield = 0;
+  let itemLifeSteal = 0;
+  let itemOmnivamp = 0;
+  let itemHpRegenPct = 0;
+  let itemManaRegenPct = 0;
+  let totalGold = 0;
+  let tenacityMultiplier = 1 - withRunes.tenacityPct / 100;
+
+  let hasHeartsteel = false;
+  let hasPlatedSteelcaps = false;
+  let hasJakSho = false;
+  let hasDuskAndDawn = false;
+  let hasGuinsoo = false;
+  let hasSpiritVisage = false;
+  let hasUnendingDespair = false;
+  let hasRanduin = false;
+  let hasAntiHeal = false;
+  let hasProtoplasm = false;
+  let hasNashor = false;
+  let hasWitsEnd = false;
+  let hasBork = false;
+  let hasLiandry = false;
+  let hasLichBane = false;
+  let hasTrinity = false;
+  let hasIceborn = false;
+
+  const activePassives: ActiveItemPassiveInfo[] = [];
+
+  for (const it of items) {
+    const p = parseExactItemStats(it);
+    const lowName = it.name.toLowerCase();
+    const lowText = `${lowName} ${decodeHtmlText(it.description).toLowerCase()}`;
+
+    totalGold += it.gold.total;
+    itemHp += p.hp;
+    itemMana += p.mana;
+    itemAd += p.ad;
+    itemAp += p.ap;
+    itemArmor += p.armor;
+    itemMr += p.mr;
+    itemAsPct += p.attackSpeedPct;
+    itemCritPct += p.critChancePct;
+    itemCritDmgBonus += p.critDamageBonusPct;
+    itemFlatMs += p.flatMoveSpeed;
+    itemPctMs += p.percentMoveSpeedPct;
+    itemAh += p.abilityHaste;
+    itemLethality += p.lethality;
+    itemArmorPenPct = Math.max(itemArmorPenPct, p.armorPenPct);
+    itemMagicPenFlat += p.magicPenFlat;
+    itemMagicPenPct = Math.max(itemMagicPenPct, p.magicPenPct);
+    itemHealShield += p.healShieldPowerPct;
+    itemLifeSteal += p.lifeStealPct;
+    itemOmnivamp += p.omnivampPct;
+    itemHpRegenPct += p.hpRegenPct;
+    itemManaRegenPct += p.manaRegenPct;
+
+    if (p.tenacityPct > 0) {
+      tenacityMultiplier *= 1 - p.tenacityPct / 100;
+    }
+
+    if (it.id === '3084' || lowName.includes('cœuracier') || lowName.includes('heartsteel')) {
+      hasHeartsteel = true;
+    }
+    if (it.id === '3047' || lowName.includes('coques en acier')) {
+      hasPlatedSteelcaps = true;
+    }
+    if (it.id === '6665' || lowName.includes("jak'sho")) {
+      hasJakSho = true;
+    }
+    if (it.id === '2510' || lowName.includes('aube et crépuscule') || lowName.includes('dusk and dawn')) {
+      hasDuskAndDawn = true;
+    }
+    if (it.id === '3124' || lowName.includes('guinsoo')) {
+      hasGuinsoo = true;
+    }
+    if (it.id === '3065' || lowName.includes('visage spirituel')) {
+      hasSpiritVisage = true;
+    }
+    if (it.id === '2502' || lowName.includes('désespoir infini')) {
+      hasUnendingDespair = true;
+    }
+    if (it.id === '3143' || lowName.includes('randuin')) {
+      hasRanduin = true;
+    }
+    if (it.id === '2525' || lowName.includes('harnais protoplasmique')) {
+      hasProtoplasm = true;
+    }
+    if (it.id === '3115' || lowName.includes('nashor')) hasNashor = true;
+    if (it.id === '3091' || lowName.includes('bout du rouleau')) hasWitsEnd = true;
+    if (it.id === '3153' || lowName.includes('roi déchu')) hasBork = true;
+    if (it.id === '6653' || lowName.includes('liandry')) hasLiandry = true;
+    if (it.id === '3100' || lowName.includes('fléau de liche')) hasLichBane = true;
+    if (it.id === '3078' || lowName.includes('force de la trinité')) hasTrinity = true;
+    if (it.id === '6662' || lowName.includes('gantelet givrant')) hasIceborn = true;
+
+    if (lowText.match(/hémorragie|blessures graves|grievous wounds/)) {
+      hasAntiHeal = true;
+    }
+  }
+
+  // Bonus Heartsteel optionnel
+  const effectiveHeartsteelHp = hasHeartsteel ? heartsteelStacksHp : 0;
+  itemHp += effectiveHeartsteelHp;
+
+  // Conditionnement (rune 8429) : +3% Armure/RM bonus à partir du niv. 9
+  const hasConditioning =
+    clampedLvl >= 9 &&
+    (runeSelection.primaryMinorIds.includes(8429) || runeSelection.secondaryMinorIds.includes(8429));
+  const totalHp = Math.round(baseHp + runeHp + itemHp);
+  const bonusHp = Math.round(runeHp + itemHp);
+  const bonusArmorSum = runeArmor + itemArmor;
+  const bonusMrSum = runeMr + itemMr;
+  const conditioningArmor = hasConditioning ? bonusArmorSum * 0.03 : 0;
+  const conditioningMr = hasConditioning ? bonusMrSum * 0.03 : 0;
+
+  const totalArmor = Number((baseArmor + bonusArmorSum + conditioningArmor).toFixed(1));
+  const totalMr = Number((baseMr + bonusMrSum + conditioningMr).toFixed(1));
+  const totalAd = Number((baseAd + runeAd + itemAd).toFixed(1));
+  const totalAp = Math.round(runeAp + itemAp);
+  const totalMana = Math.round(baseMana + itemMana);
+  const totalAh = Math.round(runeAh + itemAh);
+  const cooldownReductionPct = Math.round((totalAh / (100 + totalAh)) * 100);
+  const totalCritPct = Math.min(100, itemCritPct);
+  const totalCritDmgPct = 175 + itemCritDmgBonus;
+  const totalHealShieldPct = withRunes.healShieldPowerPct + itemHealShield;
+  const healShieldReceivedPct = hasSpiritVisage ? 25 : 0;
+  const totalTenacityPct = Math.round((1 - tenacityMultiplier) * 100);
+  const antiHealPct = hasAntiHeal ? 40 : 0;
+  const aaDamageReductionPct = hasPlatedSteelcaps ? 10 : 0;
+  const critDamageReductionPct = hasRanduin ? 30 : 0;
+  const combatBonusResistPct = hasJakSho ? 30 : 0;
+  const doubleOnHitActive = hasDuskAndDawn || hasGuinsoo;
+
+  // Guinsoo donne jusqu'à +32% AS empilé en combat
+  const guinsooBonusAsPct = hasGuinsoo ? 32 : 0;
+  const totalAsBonusRatio =
+    (champion.stats.attackspeedperlevel * levelAsProgress +
+      runeAsBonusPct +
+      itemAsPct +
+      guinsooBonusAsPct) /
+    100;
+  const totalAs = Number(
+    Math.min(2.5, champion.stats.attackspeed * (1 + totalAsBonusRatio)).toFixed(3),
+  );
+
+  // Vitesse de déplacement : (Base + FlatObjets + FlatRunes) * (1 + %MS)
+  const rawMs = (baseMs + itemFlatMs + runeMs) * (1 + itemPctMs / 100);
+  const totalMs = Math.round(rawMs);
+
+  // 4. Simulation des Passifs Uniques, Effets à l'Impact (On-Hit) et Lame Enchantée
+  const isHpScaler = HP_SCALING_CHAMPIONS.has(champion.id);
+
+  // Dégâts à l'impact propres au champion (ex. Tahm Kench Goût acquis = 4% PV bonus + 2% AP pour 100 PV bonus + scaling niveau)
+  let champOnHitMagic = 0;
+  if (champion.id === 'TahmKench') {
+    champOnHitMagic = Math.round(6 + clampedLvl * 2.5 + bonusHp * (0.04 + totalAp / 5000));
+  } else if (champion.id === 'Teemo') {
+    champOnHitMagic = Math.round(14 + clampedLvl * 3.2 + totalAp * 0.3);
+  } else if (champion.id === 'Kayle') {
+    champOnHitMagic = Math.round(15 + clampedLvl * 2 + totalAp * 0.2);
+  } else if (champion.id === 'Gwen') {
+    champOnHitMagic = Math.round(25 + totalAp * 0.08);
+  } else if (champion.id === 'Warwick') {
+    champOnHitMagic = Math.round(12 + clampedLvl * 2 + Math.max(0, totalAd - baseAd) * 0.15 + totalAp * 0.1);
+  } else if (champion.id === 'Viego') {
+    champOnHitMagic = Math.round(totalHp * 0.015 + 35);
+  }
+
+  let itemOnHitDmg = 0;
+  if (hasGuinsoo) itemOnHitDmg += 30;
+  if (hasNashor) itemOnHitDmg += Math.round(15 + totalAp * 0.15);
+  if (hasWitsEnd) itemOnHitDmg += 45;
+  if (hasBork) itemOnHitDmg += 105; // ~8-10% PV actuels d'une cible moyenne (~1400 PV)
+
+  const baseOnHitPerAttack = champOnHitMagic + itemOnHitDmg;
+
+  // Multiplicateur de fréquence On-Hit (Aube et crépuscule applique les effets à l'impact 1 fois de plus après chaque sort ; Guinsoo toutes les 3 attaques)
+  const onHitDoubleMultiplier = hasDuskAndDawn && hasGuinsoo ? 1.85 : hasDuskAndDawn ? 1.65 : hasGuinsoo ? 1.33 : 1.0;
+  const effectiveOnHitPerAttack = Math.round(baseOnHitPerAttack * onHitDoubleMultiplier);
+
+  // Lame enchantée (Spellblade unique)
+  let spellbladeProcDmg = 0;
+  let spellbladeIntervalSec = 2.0;
+  if (hasDuskAndDawn) {
+    spellbladeProcDmg = Math.round(0.75 * baseAd + 0.1 * totalAp);
+    spellbladeIntervalSec = Math.max(1.5, 2.2 - totalAh * 0.012);
+    activePassives.push({
+      itemId: '2510',
+      itemName: 'Aube et crépuscule',
+      effectTitle: 'Lame enchantée + Double On-Hit',
+      detail: `+${spellbladeProcDmg} dégâts magiques après sort · Soin ~${Math.round(
+        (0.1 * totalAp + 0.03 * bonusHp) * (1 + healShieldReceivedPct / 100),
+      )} PV · Double l'application des effets à l'impact (${baseOnHitPerAttack} → ${effectiveOnHitPerAttack}/coup en moyenne).`,
+    });
+  } else if (hasLichBane) {
+    spellbladeProcDmg = Math.round(0.75 * baseAd + 0.45 * totalAp);
+    activePassives.push({
+      itemId: '3100',
+      itemName: 'Fléau de liche',
+      effectTitle: 'Lame enchantée AP',
+      detail: `+${spellbladeProcDmg} dégâts magiques après compétence (CD 1.5s).`,
+    });
+  } else if (hasTrinity) {
+    spellbladeProcDmg = Math.round(2.0 * baseAd);
+    activePassives.push({
+      itemId: '3078',
+      itemName: 'Force de la trinité',
+      effectTitle: 'Lame enchantée AD',
+      detail: `+${spellbladeProcDmg} dégâts physiques après compétence (CD 1.5s).`,
+    });
+  } else if (hasIceborn) {
+    spellbladeProcDmg = Math.round(1.5 * baseAd);
+    activePassives.push({
+      itemId: '6662',
+      itemName: 'Gantelet givrant',
+      effectTitle: 'Lame enchantée & Zone glaciale',
+      detail: `+${spellbladeProcDmg} dégâts + zone de ralentissement AoE.`,
+    });
+  }
+
+  if (hasHeartsteel) {
+    const hsProc = Math.round(70 + totalHp * 0.06);
+    activePassives.push({
+      itemId: '3084',
+      itemName: 'Cœuracier',
+      effectTitle: 'Consommation colossale',
+      detail: `+${hsProc} dégâts physiques sur proc (et +${Math.round(hsProc * 0.1)} PV max permanents / proc).`,
+    });
+  }
+  if (hasSpiritVisage) {
+    activePassives.push({
+      itemId: '3065',
+      itemName: 'Visage spirituel',
+      effectTitle: 'Vitalité intarissable (+25%)',
+      detail: `Amplifie de +25% tous les soins et boucliers reçus (Aube, Désespoir infini, Poigne, sorts).`,
+    });
+  }
+  if (hasUnendingDespair) {
+    const drainTick = Math.round((30 + totalHp * 0.03) * (1 + healShieldReceivedPct / 100));
+    activePassives.push({
+      itemId: '2502',
+      itemName: 'Désespoir infini',
+      effectTitle: 'Affliction (toutes les 4s)',
+      detail: `Drain AoE en combat estimé à ~${drainTick} PV toutes les 4s par champion proche.`,
+    });
+  }
+  if (hasJakSho) {
+    activePassives.push({
+      itemId: '6665',
+      itemName: "Jak'Sho, le Protéiforme",
+      effectTitle: 'Vigueur de Néantin (+30%)',
+      detail: `+${Math.round(bonusArmorSum * 0.3)} Armure et +${Math.round(bonusMrSum * 0.3)} RM bonus après 5s de combat.`,
+    });
+  }
+  if (hasPlatedSteelcaps) {
+    activePassives.push({
+      itemId: '3047',
+      itemName: 'Coques en acier',
+      effectTitle: 'Placage (-10% AA)',
+      detail: `Réduit de 10% les dégâts de toutes les attaques de base subies.`,
+    });
+  }
+  if (hasRanduin) {
+    activePassives.push({
+      itemId: '3143',
+      itemName: 'Présage de Randuin',
+      effectTitle: 'Vigueur (-30% Crit)',
+      detail: `Réduit de 30% les dégâts critiques adverses + ralentissement actif 70%.`,
+    });
+  }
+  if (hasProtoplasm) {
+    activePassives.push({
+      itemId: '2525',
+      itemName: 'Harnais protoplasmique',
+      effectTitle: 'Lien vital (+25% Ténacité)',
+      detail: `Sursaut de PV max & soin d'urgence sous 30% PV avec +25% Ténacité et +10% vitesse.`,
+    });
+  }
+  if (hasAntiHeal) {
+    activePassives.push({
+      itemId: 'antiheal',
+      itemName: 'Anti-soin actif',
+      effectTitle: 'Hémorragie (40%)',
+      detail: `Réduit de 40% les soins et la régénération des champions ennemis touchés.`,
+    });
+  }
+  if (hasGuinsoo) {
+    activePassives.push({
+      itemId: '3124',
+      itemName: 'Lame enragée de Guinsoo',
+      effectTitle: 'Frappe furieuse',
+      detail: `+32% vitesse d'attaque empilée + double application à l'impact toutes les 3 attaques.`,
+    });
+  }
+
+  // 5. EHP Réel (incluant Jak'Sho +30% résistances bonus, Coques -10%, Randuin -30% Crit, Visage spirituel)
+  const combatArmor = hasJakSho ? totalArmor + bonusArmorSum * 0.3 : totalArmor;
+  const combatMr = hasJakSho ? totalMr + bonusMrSum * 0.3 : totalMr;
+  const hasEnemyCritThreat =
+    threats?.profiles.some((p) => p.archetype.includes('Marksman')) ?? false;
+  const physMitigationFactor =
+    (hasPlatedSteelcaps ? 1.07 : 1) * (hasRanduin && hasEnemyCritThreat ? 1.12 : 1);
+
+  const healAmp = 1 + healShieldReceivedPct / 100;
+  const duskHealPerSec = hasDuskAndDawn
+    ? ((0.1 * totalAp + 0.03 * bonusHp) / spellbladeIntervalSec) * healAmp
+    : 0;
+  const despairHealPerSec = hasUnendingDespair
+    ? ((28 + totalHp * 0.025) / 4) * healAmp
+    : 0;
+  const champSustainPerSec =
+    champion.id === 'TahmKench' ? ((20 + bonusHp * 0.025) / 4.5) * healAmp : 0;
+  const combatSustainPerSec = Math.round(duskHealPerSec + despairHealPerSec + champSustainPerSec);
+
+  // Bonus EHP effectif sur 6 secondes de combat grâce au sustain en combat (cappé raisonnablement)
+  const effectiveCombatHp = totalHp + Math.min(totalHp * 0.35, combatSustainPerSec * 5);
+
+  const physicalEhp = Math.round(effectiveCombatHp * (1 + combatArmor / 100) * physMitigationFactor);
+  const magicEhp = Math.round(effectiveCombatHp * (1 + combatMr / 100));
+
+  const physShare = (threats?.physicalShare ?? 50) / 100;
+  const magShare = (threats?.magicShare ?? 50) / 100;
+  const weightedEhp = Math.round(physicalEhp * physShare + magicEhp * magShare);
+
+  // 6. Calcul DPS réaliste contre une cible adverse moyenne (Armure/RM estimées selon la compo)
+  const dummyArmor = Math.max(20, 75 + (threats?.tankCount ?? 1) * 28 - itemLethality) * (1 - itemArmorPenPct / 100);
+  const dummyMr = Math.max(20, (55 + (threats?.tankCount ?? 1) * 22) * (1 - itemMagicPenPct / 100) - itemMagicPenFlat);
+  const physMult = 100 / (100 + dummyArmor);
+  const magMult = 100 / (100 + dummyMr);
+
+  const critMultiplier = 1 + (totalCritPct / 100) * ((totalCritDmgPct - 100) / 100);
+  const rawPhysAutoDps = totalAd * critMultiplier * totalAs * physMult;
+  const rawMagicOnHitDps = effectiveOnHitPerAttack * totalAs * magMult;
+  const spellbladeDps =
+    (spellbladeProcDmg / spellbladeIntervalSec) * (hasTrinity || hasIceborn ? physMult : magMult);
+  const liandryDps = hasLiandry ? 45 * magMult : 0;
+  const heartsteelDps = hasHeartsteel ? ((70 + totalHp * 0.06) / 12) * physMult : 0;
+
+  const autoDps = Math.round(
+    rawPhysAutoDps + rawMagicOnHitDps + spellbladeDps + liandryDps + heartsteelDps,
+  );
+
+  const spellCycleMultiplier = 1 + totalAh / 100;
+  const abilityImpactIndex = Math.round(
+    (totalAp * 1.15 +
+      Math.max(0, totalAd - baseAd) * 1.25 +
+      (isHpScaler ? bonusHp * 0.12 : 0) +
+      totalHealShieldPct * 12 +
+      healShieldReceivedPct * 3.5 +
+      (hasDuskAndDawn ? 65 : 0) +
+      (hasLiandry ? 55 : 0)) *
+      (0.85 + 0.15 * spellCycleMultiplier),
+  );
+
+  const itemStatGoldValue = Math.round(
+    itemHp * GOLD_PER_STAT.hp +
+      itemMana * GOLD_PER_STAT.mana +
+      itemAd * GOLD_PER_STAT.ad +
+      itemAp * GOLD_PER_STAT.ap +
+      itemArmor * GOLD_PER_STAT.armor +
+      itemMr * GOLD_PER_STAT.mr +
+      itemAsPct * GOLD_PER_STAT.asPct +
+      itemCritPct * GOLD_PER_STAT.critPct +
+      itemAh * GOLD_PER_STAT.ah +
+      itemFlatMs * GOLD_PER_STAT.msFlat +
+      itemPctMs * 45 +
+      itemLethality * GOLD_PER_STAT.lethality +
+      itemMagicPenFlat * GOLD_PER_STAT.magicPenFlat +
+      itemHealShield * GOLD_PER_STAT.healShieldPct +
+      itemLifeSteal * GOLD_PER_STAT.lifeStealPct +
+      (itemHpRegenPct + itemManaRegenPct) * GOLD_PER_STAT.regenPct,
+  );
+
+  const runeGoldValue = Math.round(
+    runeHp * GOLD_PER_STAT.hp +
+      runeAd * GOLD_PER_STAT.ad +
+      runeAp * GOLD_PER_STAT.ap +
+      runeArmor * GOLD_PER_STAT.armor +
+      runeMr * GOLD_PER_STAT.mr +
+      runeAh * GOLD_PER_STAT.ah +
+      runeMs * GOLD_PER_STAT.msFlat +
+      runeAsBonusPct * GOLD_PER_STAT.asPct +
+      withRunes.tenacityPct * GOLD_PER_STAT.tenacityPct +
+      withRunes.healShieldPowerPct * GOLD_PER_STAT.healShieldPct,
+  );
+
+  const goldEfficiencyPct =
+    totalGold > 0 ? Math.round((itemStatGoldValue / totalGold) * 100) : 100;
+
+  return {
+    level: clampedLvl,
+    totals: {
+      hp: totalHp,
+      mana: totalMana,
+      ad: totalAd,
+      ap: totalAp,
+      armor: totalArmor,
+      mr: totalMr,
+      attackSpeed: totalAs,
+      abilityHaste: totalAh,
+      cooldownReductionPct,
+      moveSpeed: totalMs,
+      critChancePct: totalCritPct,
+      critDamagePct: totalCritDmgPct,
+      lethality: itemLethality,
+      armorPenPct: itemArmorPenPct,
+      magicPenFlat: itemMagicPenFlat,
+      magicPenPct: itemMagicPenPct,
+      tenacityPct: totalTenacityPct,
+      healShieldPowerPct: totalHealShieldPct,
+      healShieldReceivedPct,
+      lifeStealPct: itemLifeSteal,
+      omnivampPct: itemOmnivamp,
+      hpRegenPct: itemHpRegenPct,
+      manaRegenPct: itemManaRegenPct,
+      antiHealPct,
+      aaDamageReductionPct,
+      critDamageReductionPct,
+      combatBonusResistPct,
+      doubleOnHitActive,
+    },
+    sources: {
+      hp: { base: baseHp, items: Math.round(itemHp), runes: Math.round(runeHp) },
+      ad: { base: Number(baseAd.toFixed(1)), items: Number(itemAd.toFixed(1)), runes: runeAd },
+      ap: { base: 0, items: Math.round(itemAp), runes: Math.round(runeAp) },
+      armor: {
+        base: Number(baseArmor.toFixed(1)),
+        items: Number(itemArmor.toFixed(1)),
+        runes: Number((runeArmor + conditioningArmor).toFixed(1)),
+      },
+      mr: {
+        base: Number(baseMr.toFixed(1)),
+        items: Number(itemMr.toFixed(1)),
+        runes: Number((runeMr + conditioningMr).toFixed(1)),
+      },
+      abilityHaste: { base: 0, items: Math.round(itemAh), runes: Math.round(runeAh) },
+      moveSpeed: { base: baseMs, items: Math.round(totalMs - baseMs - runeMs), runes: Math.round(runeMs) },
+    },
+    combat: {
+      physicalEhp,
+      magicEhp,
+      weightedEhp,
+      autoDps,
+      onHitPerAttack: effectiveOnHitPerAttack,
+      spellbladeProcDmg,
+      combatSustainPerSec,
+      abilityImpactIndex,
+      totalGold,
+      statGoldValue: itemStatGoldValue,
+      goldEfficiencyPct,
+      runeGoldValue,
+    },
+    activePassives,
+    itemCount: items.length,
+  };
+}
+
+/**
+ * Vérifie et prouve pourquoi une page de runes est adaptée ou non au match-up.
+ */
+export function validateRuneConfiguration(params: {
+  champion: ChampionSummary;
+  role: Role;
+  threats: EnemyThreatSummary;
+  selection: RunePageSelection;
+  stats: FullBuildStatBreakdown;
+}): RuneValidationCheck[] {
+  const { champion, role, threats, selection, stats } = params;
+  const allRunes = new Set([
+    selection.keystoneId,
+    ...selection.primaryMinorIds,
+    ...selection.secondaryMinorIds,
+  ]);
+  const isTankOrSupport = champion.tags.includes('Tank') || role === 'SUPPORT';
+  const hasSurvivalRune =
+    allRunes.has(8444) || allRunes.has(8473) || allRunes.has(8345) || allRunes.has(8451) || allRunes.has(9111);
+  const hasTenacityOrMerc = stats.totals.tenacityPct >= 10;
+  const checks: RuneValidationCheck[] = [];
+
+  checks.push({
+    label: 'Valeur stat réelle des runes',
+    passed: stats.combat.runeGoldValue >= 350,
+    detail: `Équivalent à ~${stats.combat.runeGoldValue} po de statistiques pures au niv. ${stats.level} (sans compter l’effet actif de la fondamentale).`,
+  });
+
+  if (threats.ccThreatCount >= 2) {
+    checks.push({
+      label: `Couverture Contrôles (${threats.ccThreatCount} CC adverses)`,
+      passed: hasTenacityOrMerc || allRunes.has(8465),
+      detail: hasTenacityOrMerc
+        ? `${stats.totals.tenacityPct}% de Ténacité cumulée validée contre les contrôles ennemis.`
+        : 'Aucune ténacité sur les runes/bottes : envisagez Sandales de Mercure ou le fragment +10% Ténacité.',
+    });
+  }
+
+  if (threats.burstThreatCount >= 2 || isTankOrSupport) {
+    checks.push({
+      label: 'Tenue de lane & Anti-Burst',
+      passed: hasSurvivalRune,
+      detail: hasSurvivalRune
+        ? 'Présence validée de runes de survie (Plaque d’os / Second souffle / Biscuits / Surcroissance / Triomphe).'
+        : 'Aucune rune défensive active : attention aux échanges courts et ganks en début de partie.',
+    });
+  }
+
+  const isHpScaler = HP_SCALING_CHAMPIONS.has(champion.id);
+  if (isHpScaler) {
+    const usesHpRunes = allRunes.has(8437) || allRunes.has(8451) || selection.shardIndices[2] !== 1;
+    checks.push({
+      label: `Synergie ratios PV (${champion.name})`,
+      passed: usesHpRunes,
+      detail: usesHpRunes
+        ? `Validé : vos runes augmentent vos PV max (+${stats.sources.hp.runes} PV), boostant passif et boucliers.`
+        : 'Vous ne prenez pas de runes à scaling PV alors que votre kit scale directement sur vos PV max.',
+    });
+  } else {
+    checks.push({
+      label: 'Alignement Arbre / Archétype',
+      passed: stats.totals.ad > 0 || stats.totals.ap > 0,
+      detail: `Cohérence validée pour ${champion.name} (${role}) avec ${stats.totals.abilityHaste} Hâte (${stats.totals.cooldownReductionPct}% CDR).`,
+    });
+  }
+
+  return checks;
+}
+
+function inferStyle(
+  champ: ChampionSummary,
+  role: Role,
+): 'AD_CRIT' | 'AD_BRUISER' | 'AD_LETHALITY' | 'AP_MAGE' | 'TANK' | 'ENCHANTER' {
+  const tags = champ.tags;
+  if (role === 'ADC' || (tags.includes('Marksman') && champ.info.attack >= 7)) return 'AD_CRIT';
+  if (tags.includes('Tank') && role !== 'MID') return 'TANK';
+  if (role === 'SUPPORT' && tags.includes('Support') && !tags.includes('Tank')) return 'ENCHANTER';
+  if (tags.includes('Mage') || champ.info.magic >= champ.info.attack + 2) return 'AP_MAGE';
+  if (tags.includes('Assassin') && champ.info.attack >= champ.info.magic) return 'AD_LETHALITY';
+  return 'AD_BRUISER';
+}
+
+function buildRuneVariantsForStyle(
+  runeTrees: RuneTree[],
+  style: ReturnType<typeof inferStyle>,
+  champ: ChampionSummary,
+  threats: EnemyThreatSummary,
+  baseSelection: RunePageSelection,
+): Array<{ label: string; selection: RunePageSelection }> {
+  const variants: Array<{ label: string; selection: RunePageSelection }> = [
+    { label: 'Page Méta', selection: baseSelection },
+  ];
+
+  const resolveTree = runeTrees.find((t) => t.key === 'Resolve');
+  const inspTree = runeTrees.find((t) => t.key === 'Inspiration');
+  const precTree = runeTrees.find((t) => t.key === 'Precision');
+  const domTree = runeTrees.find((t) => t.key === 'Domination');
+  const sorcTree = runeTrees.find((t) => t.key === 'Sorcery');
+
+  if (style === 'TANK' && resolveTree && inspTree) {
+    variants.push({
+      label: 'Gardien Anti-Burst',
+      selection: {
+        primaryTreeId: resolveTree.id,
+        secondaryTreeId: inspTree.id,
+        keystoneId: 8465, // Gardien
+        primaryMinorIds: [8401, 8473, 8451],
+        secondaryMinorIds: [8345, 8347],
+        shardIndices: [2, 2, threats.ccThreatCount >= 2 ? 1 : 0],
+      },
+    });
+    if (precTree) {
+      variants.push({
+        label: 'Volonté + Précision (Duelliste / AS)',
+        selection: {
+          primaryTreeId: resolveTree.id,
+          secondaryTreeId: precTree.id,
+          keystoneId: 8437, // Poigne
+          primaryMinorIds: [8401, 8429, 8451],
+          secondaryMinorIds: [9111, 9104], // Triomphe + Alacrité (AS)
+          shardIndices: [1, 2, threats.ccThreatCount >= 2 ? 1 : 2],
+        },
+      });
+    }
+  } else if ((style === 'AP_MAGE' || style === 'ENCHANTER') && sorcTree && resolveTree) {
+    variants.push({
+      label: 'Sorcellerie + Volonté (Survie)',
+      selection: {
+        primaryTreeId: sorcTree.id,
+        secondaryTreeId: resolveTree.id,
+        keystoneId: style === 'ENCHANTER' ? 8214 : 8229,
+        primaryMinorIds: [8226, 8210, 8237],
+        secondaryMinorIds: [8473, 8451],
+        shardIndices: [0, 2, 0],
+      },
+    });
+    if (domTree && champ.id === 'Teemo') {
+      variants.push({
+        label: 'Moisson Noire + Sorcellerie',
+        selection: {
+          primaryTreeId: domTree.id,
+          secondaryTreeId: sorcTree.id,
+          keystoneId: 8128,
+          primaryMinorIds: [8126, 8140, 8106],
+          secondaryMinorIds: [8210, 8236],
+          shardIndices: [1, 0, 2],
+        },
+      });
+    }
+  } else if (precTree && resolveTree) {
+    variants.push({
+      label: 'Précision + Volonté (Survie)',
+      selection: {
+        primaryTreeId: precTree.id,
+        secondaryTreeId: resolveTree.id,
+        keystoneId: style === 'AD_CRIT' ? 8021 : 8010,
+        primaryMinorIds: [9111, 9104, 8299],
+        secondaryMinorIds: [8473, 8451],
+        shardIndices: [1, 0, threats.ccThreatCount >= 2 ? 1 : 0],
+      },
+    });
+  }
+
+  return variants;
+}
+
+/**
+ * Calculateur combinatoire multi-situations :
+ * Sélectionne un large vivier d'objets (jusqu'à 13 objets couvrant tanks, hybrides on-hit comme Aube et crépuscule,
+ * anti-soin, résistances et peel économique) et évalue toutes les combinaisons (Bottes x Trios x Runes).
+ */
+export function runCombinatorialBuildAndRuneSearch(params: {
+  gameMode: GameModeContext;
+  playerChampion: ChampionSummary;
+  duoPartner: ChampionSummary | null;
+  role: Role;
+  threats: EnemyThreatSummary;
+  items: ItemData[];
+  runeTrees: RuneTree[];
+  baseRuneSelection: RunePageSelection;
+  simLevel: number;
+}): CombinatorialOptimizerResult {
+  const {
+    gameMode,
+    playerChampion,
+    duoPartner,
+    role,
+    threats,
+    items,
+    runeTrees,
+    baseRuneSelection,
+    simLevel,
+  } = params;
+
+  const style = inferStyle(playerChampion, role);
+  const mapKey = gameMode === 'ARAM' ? '12' : '11';
+
+  const validMapItems = items.filter(
+    (it) =>
+      Number(it.id) < 100000 &&
+      it.gold.purchasable &&
+      (!it.maps || it.maps[mapKey] !== false),
+  );
+  const dedup = new Map<string, ItemData>();
+  for (const it of validMapItems) {
+    const key = it.name.trim().toLowerCase();
+    const prev = dedup.get(key);
+    if (!prev || Number(it.id) < Number(prev.id)) dedup.set(key, it);
+  }
+  const pool = Array.from(dedup.values());
+
+  // Top 2 bottes les plus cohérentes (pour garder un calcul combinatoire fluide)
+  const allBoots = pool.filter(
+    (it) => it.tags.includes('Boots') && it.gold.total >= 800 && it.gold.total <= 1500,
+  );
+  const candidateBoots = allBoots
+    .sort((a, b) => scoreItemForStyle(b, style, threats, playerChampion) - scoreItemForStyle(a, style, threats, playerChampion))
+    .slice(0, 2);
+
+  // Vivier large d'objets complets (13 objets diversifiés : Core, On-Hit/Hybride, Anti-soin, Low-cost, Résistances)
+  const allCompleted = pool.filter(
+    (it) =>
+      !it.tags.includes('Boots') &&
+      !it.tags.includes('Consumable') &&
+      !it.tags.includes('Trinket') &&
+      it.gold.total >= 2100 &&
+      (!it.into || it.into.length === 0),
+  );
+
+  const scoredAll = allCompleted
+    .map((it) => ({
+      item: it,
+      baseScore: scoreItemForStyle(it, style, threats, playerChampion),
+    }))
+    .filter((x) => x.baseScore > 0)
+    .sort((a, b) => b.baseScore - a.baseScore);
+
+  const selectedMap = new Map<string, ItemData>();
+  for (const entry of scoredAll.slice(0, 10)) {
+    selectedMap.set(entry.item.id, entry.item);
+  }
+
+  // Garantir l'inclusion de spécialistes clés (Aube et crépuscule sur on-hit/spellweave, Anti-soin, Budget Peel)
+  const forceIncludeIfViable = (predicate: (it: ItemData) => boolean) => {
+    const hit = scoredAll.find((x) => predicate(x.item) && !selectedMap.has(x.item.id));
+    if (hit) selectedMap.set(hit.item.id, hit.item);
+  };
+
+  if (ONHIT_SPELLWEAVE_CHAMPIONS.has(playerChampion.id) || style === 'AP_MAGE') {
+    forceIncludeIfViable((it) => it.id === '2510'); // Aube et crépuscule
+  }
+  if (threats.highHealCount >= 1) {
+    forceIncludeIfViable((it) =>
+      Boolean(`${it.name} ${it.description}`.toLowerCase().match(/hémorragie|blessures graves/)),
+    );
+  }
+  forceIncludeIfViable((it) => it.gold.total <= 2600 && ['3109', '3190', '2525', '3107'].includes(it.id));
+  forceIncludeIfViable((it) => parseExactItemStats(it).mr >= 45);
+
+  const rankedCompleted = Array.from(selectedMap.values()).slice(0, 13);
+
+  const runeVariants = buildRuneVariantsForStyle(
+    runeTrees,
+    style,
+    playerChampion,
+    threats,
+    baseRuneSelection,
+  );
+
+  // Générer tous les trios d'objets distincts (jusqu'à C(13,3) = 286 trios), en interdisant >1 Lame enchantée unique
+  const isSpellblade = (it: ItemData) => ['2510', '3100', '3078', '6662'].includes(it.id);
+  const itemTrios: ItemData[][] = [];
+  for (let i = 0; i < rankedCompleted.length; i++) {
+    for (let j = i + 1; j < rankedCompleted.length; j++) {
+      for (let k = j + 1; k < rankedCompleted.length; k++) {
+        const trio = [rankedCompleted[i], rankedCompleted[j], rankedCompleted[k]];
+        const sbCount = trio.filter(isSpellblade).length;
+        if (sbCount <= 1) {
+          itemTrios.push(trio);
+        }
+      }
+    }
+  }
+
+  let testedItemCombos = 0;
+  let testedCombinationsCount = 0;
+
+  type ScoredCombo = {
+    items: ItemData[];
+    runeSelection: RunePageSelection;
+    stats: FullBuildStatBreakdown;
+    balancedScore: number;
+    behindScore: number;
+    aheadScore: number;
+    antiCompScore: number;
+    hasAntiHeal: boolean;
+    hasTenacity: boolean;
+  };
+
+  const evaluations: ScoredCombo[] = [];
+
+  for (const boots of candidateBoots) {
+    for (const trio of itemTrios) {
+      testedItemCombos += 1;
+      const comboItems = [boots, ...trio];
+      const hasAntiHeal = comboItems.some((it) =>
+        `${it.name} ${it.description}`.toLowerCase().match(/hémorragie|blessures graves|épineuse|thornmail|mortal|morello/),
+      );
+      const hasHeartsteel = comboItems.some((it) => it.id === '3084');
+      const hasDuskAndDawn = comboItems.some((it) => it.id === '2510');
+      const hasSpiritVisage = comboItems.some((it) => it.id === '3065');
+      const hasPeelSupport = comboItems.some((it) =>
+        ['3109', '3190', '3107', '3222', '2525'].includes(it.id),
+      );
+
+      for (const rv of runeVariants) {
+        testedCombinationsCount += 1;
+        const stats = computeFullChampionBuildStats({
+          champion: playerChampion,
+          role,
+          level: simLevel,
+          items: comboItems,
+          runeSelection: rv.selection,
+          threats,
+        });
+
+        const ehpScore = stats.combat.weightedEhp / 100;
+        const dpsScore = (stats.combat.autoDps + stats.combat.abilityImpactIndex * 0.45) / 8;
+        const sustainScore = stats.combat.combatSustainPerSec * 0.25;
+        const effScore = stats.combat.goldEfficiencyPct * 0.26;
+        const costPenaltyBehind = Math.max(0, (stats.combat.totalGold - 8800) / 75);
+
+        const isTankOrSup = style === 'TANK' || style === 'ENCHANTER';
+        const isOnHitUser = ONHIT_SPELLWEAVE_CHAMPIONS.has(playerChampion.id);
+
+        const balancedScore =
+          (isTankOrSup ? ehpScore * 1.08 + dpsScore * 0.62 : dpsScore * 1.15 + ehpScore * 0.55) +
+          sustainScore +
+          effScore +
+          (hasAntiHeal && threats.highHealCount >= 1 ? 14 : 0) +
+          (stats.totals.tenacityPct >= 25 && threats.ccThreatCount >= 2 ? 12 : 0) +
+          (hasDuskAndDawn && isOnHitUser ? 10 : 0) +
+          (hasDuskAndDawn && hasSpiritVisage ? 6 : 0) +
+          (duoPartner && hasPeelSupport && role === 'SUPPORT' ? 8 : 0);
+
+        const behindScore =
+          ehpScore * 1.35 +
+          sustainScore * 0.8 +
+          effScore * 1.2 +
+          (hasPeelSupport ? 20 : 0) +
+          (rv.selection.keystoneId === 8465 || rv.selection.keystoneId === 8214 ? 14 : 0) -
+          costPenaltyBehind -
+          (hasHeartsteel ? 14 : 0);
+
+        // En avance : valorise le vrai DPS combiné (dont Double On-Hit + Lame enchantée d'Aube et crépuscule) + scaling PV/AP
+        const aheadScore =
+          dpsScore * 1.35 +
+          ehpScore * 0.72 +
+          sustainScore * 0.9 +
+          (hasHeartsteel ? 16 : 0) +
+          (hasDuskAndDawn && isOnHitUser ? 26 : 0) +
+          (hasHeartsteel && hasDuskAndDawn ? 10 : 0) +
+          (rv.selection.keystoneId === 8437 ||
+          rv.selection.keystoneId === 8128 ||
+          rv.selection.keystoneId === 8008 ||
+          rv.selection.keystoneId === 8010
+            ? 14
+            : 0);
+
+        const antiCompScore =
+          balancedScore +
+          (hasAntiHeal && threats.highHealCount >= 1 ? 26 : 0) +
+          (stats.totals.tenacityPct >= 25 && threats.ccThreatCount >= 2 ? 20 : 0) +
+          (threats.physicalShare >= 65 && stats.totals.armor >= 140 ? 14 : 0) +
+          (threats.magicShare >= 55 && stats.totals.mr >= 100 ? 14 : 0);
+
+        evaluations.push({
+          items: comboItems,
+          runeSelection: rv.selection,
+          stats,
+          balancedScore,
+          behindScore,
+          aheadScore,
+          antiCompScore,
+          hasAntiHeal: Boolean(hasAntiHeal),
+          hasTenacity: stats.totals.tenacityPct >= 20,
+        });
+      }
+    }
+  }
+
+  const pickBest = (
+    key: CombinatorialBuildCandidate['scenarioKey'],
+    sortFn: (a: ScoredCombo, b: ScoredCombo) => number,
+    meta: { title: string; badge: string; hint: string },
+    excludeSigs: Set<string>,
+  ): CombinatorialBuildCandidate | null => {
+    const sorted = [...evaluations].sort(sortFn);
+    const chosen =
+      sorted.find((ev) => !excludeSigs.has(ev.items.map((i) => i.id).join('-'))) || sorted[0];
+    if (!chosen) return null;
+
+    const sig = chosen.items.map((i) => i.id).join('-');
+    excludeSigs.add(sig);
+
+    const pTree = runeTrees.find((t) => t.id === chosen.runeSelection.primaryTreeId);
+    const sTree = runeTrees.find((t) => t.id === chosen.runeSelection.secondaryTreeId);
+    const ks = pTree?.slots?.[0]?.runes?.find((r) => r.id === chosen.runeSelection.keystoneId);
+
+    const rawScore =
+      key === 'behind'
+        ? chosen.behindScore
+        : key === 'ahead'
+          ? chosen.aheadScore
+          : key === 'anti_comp'
+            ? chosen.antiCompScore
+            : chosen.balancedScore;
+
+    const normalizedScore = Math.max(78, Math.min(99, Math.round(70 + rawScore / 9)));
+
+    const reasons: string[] = [
+      `Coût ${chosen.stats.combat.totalGold} po · Rentabilité Or ${chosen.stats.combat.goldEfficiencyPct}% · DPS ${chosen.stats.combat.autoDps}/s.`,
+      `EHP Phys. ${chosen.stats.combat.physicalEhp} · EHP Mag. ${chosen.stats.combat.magicEhp} · Hâte ${chosen.stats.totals.abilityHaste}.`,
+    ];
+    if (chosen.stats.totals.doubleOnHitActive) {
+      reasons.push(
+        `Double effets à l'impact actif (${chosen.stats.combat.onHitPerAttack}/coup + Lame enchantée ${chosen.stats.combat.spellbladeProcDmg}).`,
+      );
+    }
+    if (chosen.hasAntiHeal && threats.highHealCount >= 1) {
+      reasons.push(`Coupe les soins de ${threats.highHealCount} menace(s) adverses.`);
+    }
+    if (chosen.hasTenacity && threats.ccThreatCount >= 2) {
+      reasons.push(`${chosen.stats.totals.tenacityPct}% Ténacité contre les contrôles ennemis.`);
+    }
+
+    return {
+      id: `${key}-${sig}-${chosen.runeSelection.keystoneId}`,
+      scenarioKey: key,
+      scenarioTitle: meta.title,
+      scenarioBadge: meta.badge,
+      situationHint: meta.hint,
+      items: chosen.items,
+      runeSelection: chosen.runeSelection,
+      keystoneName: ks?.name || 'Fondamentale',
+      primaryTreeName: pTree?.name || 'Principal',
+      secondaryTreeName: sTree?.name || 'Secondaire',
+      stats: chosen.stats,
+      score: normalizedScore,
+      reasons,
+    };
+  };
+
+  const used = new Set<string>();
+  const results: CombinatorialBuildCandidate[] = [];
+
+  const balanced = pickBest(
+    'balanced',
+    (a, b) => b.balancedScore - a.balancedScore,
+    {
+      title: 'Optimal Équilibré (50/50)',
+      badge: 'Meilleur ratio global',
+      hint: 'Partie serrée ou standard : meilleur équilibre EHP, DPS, sustain et rentabilité d’or.',
+    },
+    used,
+  );
+  if (balanced) results.push(balanced);
+
+  const behind = pickBest(
+    'behind',
+    (a, b) => b.behindScore - a.behindScore,
+    {
+      title: 'Je me fais dominer (Retard / Sécurité)',
+      badge: 'Low-cost & Survie',
+      hint: 'Si vous êtes derrière en or ou campé : pics moins chers, peel maximal et résistances immédiates.',
+    },
+    used,
+  );
+  if (behind) results.push(behind);
+
+  const ahead = pickBest(
+    'ahead',
+    (a, b) => b.aheadScore - a.aheadScore,
+    {
+      title: 'En avance (Snowball / Duelliste DPS)',
+      badge: 'Dégâts & Scaling max',
+      hint: 'Si vous dominez votre lane : exploite les synergies offensives/on-hit (ex. Aube et crépuscule / Cœuracier).',
+    },
+    used,
+  );
+  if (ahead) results.push(ahead);
+
+  const antiComp = pickBest(
+    'anti_comp',
+    (a, b) => b.antiCompScore - a.antiCompScore,
+    {
+      title: 'Spécialiste Anti-Composition',
+      badge: 'Contre ciblé',
+      hint: `Maximise les contres directs (${threats.highHealCount > 0 ? 'Anti-soin · ' : ''}${
+        threats.ccThreatCount >= 2 ? 'Ténacité · ' : ''
+      }${threats.physicalShare >= 60 ? 'Armure' : threats.magicShare >= 55 ? 'RM' : 'Résistances'}).`,
+    },
+    used,
+  );
+  if (antiComp) results.push(antiComp);
+
+  return {
+    testedCombinationsCount,
+    testedItemCombos,
+    testedRuneCombos: runeVariants.length,
+    candidates: results,
+  };
+}
+
+function scoreItemForStyle(
+  item: ItemData,
+  style: ReturnType<typeof inferStyle>,
+  threats: EnemyThreatSummary,
+  champ: ChampionSummary,
+): number {
+  const st = parseExactItemStats(item);
+  const text = `${item.name} ${item.plaintext} ${decodeHtmlText(item.description)}`.toLowerCase();
+  let score = 0;
+
+  if (item.tags.includes('Boots')) {
+    score = 35;
+    if (st.armor > 0 && threats.physicalShare >= 58) score += 45;
+    if (st.tenacityPct > 0 && (threats.ccThreatCount >= 2 || threats.magicShare >= 50)) score += 45;
+    if (st.magicPenFlat > 0 && style === 'AP_MAGE') score += 35;
+    if (st.attackSpeedPct > 0 && style === 'AD_CRIT') score += 38;
+    if (st.abilityHaste > 0 && (style === 'ENCHANTER' || style === 'AP_MAGE' || style === 'AD_LETHALITY')) {
+      score += 32;
+    }
+    if (text.includes('célérit') || text.includes('swiftness')) score += 22;
+    return score;
+  }
+
+  const isOnHitChamp = ONHIT_SPELLWEAVE_CHAMPIONS.has(champ.id);
+  const isDuskAndDawn = item.id === '2510' || item.name.toLowerCase().includes('aube et crépuscule');
+
+  if (style === 'TANK') {
+    if (isDuskAndDawn && isOnHitChamp) {
+      // Aube et crépuscule : +300 PV, +60 AP, +20 Hâte, +20% AS + double on-hit sur Tahm Kench / Volibear / Shen
+      return 62;
+    }
+    if (st.ad > 40 || st.ap > 75 || st.critChancePct > 0) return -50;
+    score += st.hp * 0.05 + st.armor * 0.8 + st.mr * 0.8 + st.abilityHaste * 0.7;
+    if (champ.id === 'TahmKench' && item.id === '3084') score += 38;
+    if (['2502', '6665', '3065', '3109', '3190', '2525'].includes(item.id)) {
+      score += 22;
+    }
+  } else if (style === 'ENCHANTER') {
+    if (st.ad > 0) return -50;
+    score += st.healShieldPowerPct * 3 + st.ap * 0.6 + st.abilityHaste * 1.4 + st.manaRegenPct * 0.15;
+  } else if (style === 'AP_MAGE') {
+    if (st.ad > 0) return -50;
+    score += st.ap * 0.9 + st.abilityHaste * 1.2 + st.hp * 0.04 + st.magicPenFlat * 1.8 + st.magicPenPct * 1.2;
+    if (isDuskAndDawn && isOnHitChamp) score += 36;
+    if (champ.id === 'Teemo' && ['6653', '3115', '3118', '2503', '2510'].includes(item.id)) {
+      score += 35;
+    }
+  } else if (style === 'AD_CRIT') {
+    if (st.ap > 0 && item.id !== '3124') return -50;
+    score += st.ad * 1.1 + st.critChancePct * 1.5 + st.attackSpeedPct * 0.9 + st.armorPenPct * 1.1;
+  } else if (style === 'AD_LETHALITY') {
+    if (st.ap > 0) return -50;
+    score += st.ad * 1.1 + st.lethality * 2.2 + st.abilityHaste * 1.1 + st.armorPenPct * 1.1;
+  } else {
+    if (st.ap > 70 && !isOnHitChamp) return -50;
+    score += st.ad * 1.1 + st.hp * 0.05 + st.abilityHaste * 1.2 + st.armor * 0.5 + st.mr * 0.5;
+    if (isDuskAndDawn && isOnHitChamp) score += 34;
+  }
+
+  if (threats.physicalShare >= 62 && st.armor >= 30) score += 18;
+  if (threats.magicShare >= 50 && st.mr >= 30) score += 18;
+  if (threats.highHealCount >= 1 && text.match(/hémorragie|blessures graves|épineuse|thornmail|morello|rappel mortel/)) {
+    score += 20;
+  }
+
+  return score;
+}

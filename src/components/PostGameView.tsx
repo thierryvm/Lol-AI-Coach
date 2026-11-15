@@ -1,7 +1,15 @@
 import { useMemo, useState } from 'react';
-import { AlertTriangle, Brain, CheckCircle2, FileUp, Sparkles } from 'lucide-react';
+import {
+  AlertTriangle,
+  Brain,
+  CheckCircle2,
+  FileUp,
+  Search,
+  ShieldCheck,
+  Sparkles,
+} from 'lucide-react';
 import { analyzePostGameMatch } from '../engines/postGameEngine.ts';
-import type { ChampionSummary, MatchRecord } from '../engines/types.ts';
+import type { ChampionSummary, ItemData, MatchRecord, RiotPlatform } from '../engines/types.ts';
 import { SafeGameIcon } from './SafeGameIcon.tsx';
 import { SummonersRiftMap } from './SummonersRiftMap.tsx';
 import { TimelineCurveChart } from './TimelineCurveChart.tsx';
@@ -10,16 +18,31 @@ interface PostGameViewProps {
   matches: MatchRecord[];
   selectedMatchId: string | null;
   champions: ChampionSummary[];
+  items?: ItemData[];
   patchVersion: string;
+  riotId?: string;
+  region?: RiotPlatform;
   onSelectMatchId: (id: string) => void;
   onImportMatch: (match: MatchRecord) => void;
+}
+
+function parseRiotId(riotId: string): { gameName: string; tagLine: string } {
+  const trimmed = riotId.trim();
+  if (trimmed.includes('#')) {
+    const [gameName, tagLine] = trimmed.split('#');
+    return { gameName: gameName || 'Boulvae', tagLine: tagLine || 'EUW' };
+  }
+  return { gameName: trimmed || 'Boulvae', tagLine: 'EUW' };
 }
 
 export function PostGameView({
   matches,
   selectedMatchId,
   champions,
+  items = [],
   patchVersion,
+  riotId = 'Boulvae#EUW',
+  region = 'EUW1',
   onSelectMatchId,
   onImportMatch,
 }: PostGameViewProps) {
@@ -32,6 +55,18 @@ export function PostGameView({
     () => (activeMatch ? analyzePostGameMatch(activeMatch) : null),
     [activeMatch],
   );
+
+  const itemMap = useMemo(() => {
+    const map = new Map<number, ItemData>();
+    for (const it of items) {
+      map.set(Number(it.id), it);
+    }
+    return map;
+  }, [items]);
+
+  const [matchIdQuery, setMatchIdQuery] = useState('');
+  const [matchIdLoading, setMatchIdLoading] = useState(false);
+  const [matchIdError, setMatchIdError] = useState<string | null>(null);
 
   const [showImport, setShowImport] = useState(false);
   const [importJsonText, setImportJsonText] = useState('');
@@ -53,6 +88,31 @@ export function PostGameView({
         c.id.toLowerCase() === championName.toLowerCase() ||
         c.name.toLowerCase() === championName.toLowerCase(),
     )?.imageUrl;
+
+  const handleLoadMatchById = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleaned = matchIdQuery.trim();
+    if (!cleaned) return;
+    setMatchIdError(null);
+    setMatchIdLoading(true);
+    try {
+      const { gameName, tagLine } = parseRiotId(riotId);
+      const res = await fetch(
+        `/api/riot/match/${encodeURIComponent(cleaned)}?gameName=${encodeURIComponent(
+          gameName,
+        )}&tagLine=${encodeURIComponent(tagLine)}&region=${encodeURIComponent(region)}`,
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Impossible de charger cette partie.');
+      onImportMatch(data as MatchRecord);
+      setMatchIdQuery('');
+      setAiReview(null);
+    } catch (err) {
+      setMatchIdError(err instanceof Error ? err.message : 'Erreur réseau.');
+    } finally {
+      setMatchIdLoading(false);
+    }
+  };
 
   const handleImportSubmit = async () => {
     setImportError(null);
@@ -97,12 +157,119 @@ export function PostGameView({
     }
   };
 
+  // Évaluation déterministe de l'équipement acheté face aux ennemis du match
+  const itemAudit = useMemo(() => {
+    if (!activeMatch) return null;
+    const p = activeMatch.player;
+    const validIds = (p.items || []).filter((id) => id > 0);
+    const ownedItems = validIds.map((id) => ({
+      id,
+      data: itemMap.get(id),
+    }));
+
+    const bootIds = new Set([3006, 3009, 3020, 3047, 3111, 3117, 3158]);
+    const antiHealIds = new Set([3076, 3075, 3123, 3033, 3916, 3165, 3011]);
+    const hasBoots = validIds.some((id) => bootIds.has(id));
+    const hasAntiHeal = validIds.some((id) => antiHealIds.has(id));
+
+    const enemies = activeMatch.participants.filter((part) => part.teamId !== p.teamId);
+    const enemyChampions = enemies
+      .map((e) =>
+        champions.find(
+          (c) =>
+            c.id.toLowerCase() === e.championName.toLowerCase() ||
+            c.name.toLowerCase() === e.championName.toLowerCase(),
+        ),
+      )
+      .filter((c): c is ChampionSummary => Boolean(c));
+
+    const apThreats = enemyChampions.filter((c) => c.tags.includes('Mage') || c.info?.magic >= 6).length;
+    const adThreats = enemyChampions.filter(
+      (c) => c.tags.includes('Marksman') || c.tags.includes('Fighter') || c.tags.includes('Assassin'),
+    ).length;
+
+    let totalMr = 0;
+    let totalArmor = 0;
+    let totalHp = 0;
+    let totalAp = 0;
+    let totalAd = 0;
+    for (const oi of ownedItems) {
+      const st = oi.data?.stats;
+      if (!st) continue;
+      totalMr += st.FlatSpellBlockMod || 0;
+      totalArmor += st.FlatArmorMod || 0;
+      totalHp += st.FlatHPPoolMod || 0;
+      totalAp += st.FlatMagicDamageMod || 0;
+      totalAd += st.FlatPhysicalDamageMod || 0;
+    }
+
+    const notes: Array<{ ok: boolean; text: string }> = [];
+    notes.push({
+      ok: hasBoots,
+      text: hasBoots
+        ? 'Bottes complètes équipées pour la mobilité et le tempo sur la carte.'
+        : 'Aucune botte complète détectée dans votre inventaire final : pensez à finir vos bottes tôt pour esquiver et suivre les rotations.',
+    });
+
+    if (apThreats >= 2) {
+      notes.push({
+        ok: totalMr >= 35,
+        text:
+          totalMr >= 35
+            ? `Résistance magique adaptée (+${Math.round(totalMr)} RM via vos objets) face à ${apThreats} menaces magiques.`
+            : `${apThreats} champions magiques adverses détectés, mais peu de Résistance Magique (+${Math.round(totalMr)} RM) dans votre stuff final.`,
+      });
+    }
+    if (adThreats >= 3) {
+      notes.push({
+        ok: totalArmor >= 40,
+        text:
+          totalArmor >= 40
+            ? `Armure cohérente (+${Math.round(totalArmor)} Armure) face à une composition très orientée dégâts physiques.`
+            : `Composition ennemie lourde en dégâts physiques (${adThreats} menaces AD), envisagez davantage d’Armure (+${Math.round(totalArmor)} actuelle).`,
+      });
+    }
+    if (hasAntiHeal) {
+      notes.push({
+        ok: true,
+        text: 'Investissement anti-soin présent dans votre build (réduit efficacement la régénération ennemie).',
+      });
+    }
+
+    return {
+      ownedItems,
+      totalArmor: Math.round(totalArmor),
+      totalMr: Math.round(totalMr),
+      totalHp: Math.round(totalHp),
+      totalAp: Math.round(totalAp),
+      totalAd: Math.round(totalAd),
+      notes,
+    };
+  }, [activeMatch, itemMap, champions]);
+
   if (!activeMatch || !analysis) {
     return (
-      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-8 text-center">
-        <p className="text-sm text-slate-600 dark:text-slate-300">
-          Aucun match synchronisé pour le moment. Synchronisez un Riot ID ou importez un JSON Match-V5.
+      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-8 space-y-4">
+        <p className="text-sm text-slate-600 dark:text-slate-300 text-center">
+          Aucun match synchronisé pour le moment. Chargez une partie via son ID Riot ou importez un JSON Match-V5.
         </p>
+        <form onSubmit={handleLoadMatchById} className="max-w-md mx-auto flex gap-2">
+          <input
+            type="text"
+            value={matchIdQuery}
+            onChange={(e) => setMatchIdQuery(e.target.value)}
+            placeholder="ID de partie Riot (ex : 8046196983)"
+            className="flex-1 px-3 py-2 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B0E14] text-slate-900 dark:text-white"
+          />
+          <button
+            type="submit"
+            disabled={matchIdLoading || !matchIdQuery.trim()}
+            className="px-4 py-2 text-xs font-semibold rounded-lg bg-amber-600 dark:bg-amber-500 text-white dark:text-slate-950 disabled:opacity-50"
+          >
+            {matchIdLoading ? 'Chargement...' : 'Charger'}
+          </button>
+        </form>
+        {matchIdError && <p className="text-xs text-rose-500 text-center">{matchIdError}</p>}
       </div>
     );
   }
@@ -111,9 +278,9 @@ export function PostGameView({
 
   return (
     <div className="space-y-6">
-      {/* Barre de sélection de match & import */}
+      {/* Barre de sélection de match, recherche par Match ID & import JSON */}
       <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5 space-y-4">
-        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+        <div className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4">
           <div className="flex items-center gap-3.5">
             <SafeGameIcon
               src={getChampIcon(p.championName)}
@@ -134,12 +301,14 @@ export function PostGameView({
                 <span aria-hidden="true" className="mx-2">·</span>
                 <span className="font-mono tabular-nums">{Math.round(activeMatch.gameDurationSec / 60)} min</span>
                 <span aria-hidden="true" className="mx-2">·</span>
-                <span>Source : {activeMatch.source}</span>
+                <span className="font-mono">{activeMatch.matchId}</span>
+                <span aria-hidden="true" className="mx-2">·</span>
+                <span>{activeMatch.source}</span>
               </p>
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2.5">
             <select
               value={activeMatch.matchId}
               onChange={(e) => {
@@ -156,16 +325,44 @@ export function PostGameView({
               ))}
             </select>
 
+            {/* Recherche directe par ID de partie Riot (ex: 8046196983) */}
+            <form onSubmit={handleLoadMatchById} className="flex items-center gap-1.5">
+              <div className="relative">
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" aria-hidden="true" />
+                <input
+                  type="text"
+                  value={matchIdQuery}
+                  onChange={(e) => setMatchIdQuery(e.target.value)}
+                  placeholder="ID partie (ex: 8046196983)"
+                  aria-label="Charger une partie par ID Riot"
+                  className="w-44 pl-8 pr-2.5 py-2 text-xs font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B0E14] text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={matchIdLoading || !matchIdQuery.trim()}
+                className="px-3 py-2 text-xs font-semibold rounded-lg bg-amber-600 dark:bg-amber-500 text-white dark:text-slate-950 hover:bg-amber-500 disabled:opacity-50 whitespace-nowrap shrink-0"
+              >
+                {matchIdLoading ? 'Recherche...' : 'Charger ID'}
+              </button>
+            </form>
+
             <button
               type="button"
               onClick={() => setShowImport((v) => !v)}
               className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0"
             >
               <FileUp className="w-3.5 h-3.5" aria-hidden="true" />
-              Importer JSON Match-V5
+              Importer JSON
             </button>
           </div>
         </div>
+
+        {matchIdError && (
+          <div className="p-3 rounded-lg border border-rose-500/30 bg-rose-500/5 text-xs text-rose-600 dark:text-rose-400">
+            {matchIdError}
+          </div>
+        )}
 
         {showImport && (
           <div className="pt-4 border-t border-slate-200 dark:border-slate-800 space-y-3">
@@ -223,6 +420,71 @@ export function PostGameView({
           </div>
         ))}
       </section>
+
+      {/* Bilan Stuff & Synergie Build vs Composition adverse */}
+      {itemAudit && itemAudit.ownedItems.length > 0 && (
+        <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5 space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+            <h2 className="text-base font-semibold text-slate-900 dark:text-white flex items-center gap-2">
+              <ShieldCheck className="w-4 h-4 text-emerald-500" aria-hidden="true" />
+              Bilan de votre équipement final ({p.championName})
+            </h2>
+            <div className="text-xs font-mono tabular-nums text-slate-500 dark:text-slate-400">
+              Bonus objets : +{itemAudit.totalHp} PV · +{itemAudit.totalArmor} Armure · +{itemAudit.totalMr} RM
+              {itemAudit.totalAp > 0 ? ` · +${itemAudit.totalAp} AP` : ''}
+              {itemAudit.totalAd > 0 ? ` · +${itemAudit.totalAd} AD` : ''}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
+            <div className="lg:col-span-6 flex flex-wrap gap-2.5">
+              {itemAudit.ownedItems.map((oi, idx) => (
+                <div
+                  key={`${oi.id}-${idx}`}
+                  className="flex items-center gap-2.5 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C]"
+                >
+                  <SafeGameIcon
+                    src={`https://ddragon.leagueoflegends.com/cdn/${patchVersion}/img/item/${oi.id}.png`}
+                    alt={oi.data?.name || `Objet ${oi.id}`}
+                    fallbackLabel={String(oi.id)}
+                    sizeClass="w-8 h-8"
+                  />
+                  <div>
+                    <div className="text-xs font-semibold text-slate-900 dark:text-white">
+                      {oi.data?.name || `Objet #${oi.id}`}
+                    </div>
+                    {oi.data?.gold?.total ? (
+                      <div className="text-[11px] font-mono tabular-nums text-amber-600 dark:text-amber-400">
+                        {oi.data.gold.total} po
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="lg:col-span-6 space-y-2 text-xs">
+              {itemAudit.notes.map((n, i) => (
+                <div
+                  key={i}
+                  className={`flex items-start gap-2 rounded-lg px-3 py-2 border ${
+                    n.ok
+                      ? 'border-emerald-500/25 bg-emerald-500/5 text-emerald-700 dark:text-emerald-300'
+                      : 'border-amber-500/30 bg-amber-500/5 text-amber-700 dark:text-amber-300'
+                  }`}
+                >
+                  {n.ok ? (
+                    <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" aria-hidden="true" />
+                  ) : (
+                    <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" aria-hidden="true" />
+                  )}
+                  <span className="leading-relaxed">{n.text}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+      )}
 
       {/* Carte de placement & Courbe de farming */}
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-stretch">
@@ -356,7 +618,7 @@ export function PostGameView({
               </div>
               <div className="space-y-1">
                 <div className="font-semibold text-slate-800 dark:text-slate-200">
-                  Analyse du farming & tempo
+                  Analyse du farming &amp; tempo
                 </div>
                 <p className="text-slate-600 dark:text-slate-300">{aiReview.farmingReview}</p>
               </div>
@@ -376,7 +638,7 @@ export function PostGameView({
           ) : (
             !aiLoading && (
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                Cliquez sur « Lancer le débriefing IA » pour recevoir une correction ciblée de vos zones de mort et de vos fenêtres de rappel sur cette partie.
+                Cliquez sur « Lancer le débriefing IA » pour recevoir une correction ciblée de vos zones de mort, de votre équipement et de vos fenêtres de rappel sur cette partie.
               </p>
             )
           )}
@@ -388,7 +650,7 @@ export function PostGameView({
         <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
           <div>
             <h2 className="text-base font-semibold text-slate-900 dark:text-white">
-              Tableau complet de la partie (10 joueurs & équipements)
+              Tableau complet de la partie (10 joueurs &amp; équipements)
             </h2>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
               Équipement final, dégâts infligés, score de vision et rythme de farm de chaque joueur sur ce match.
@@ -425,7 +687,7 @@ export function PostGameView({
                 <table className="w-full text-xs">
                   <thead>
                     <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-500 dark:text-slate-400">
-                      <th className="py-2.5 px-5 text-left font-medium">Joueur & Champion</th>
+                      <th className="py-2.5 px-5 text-left font-medium">Joueur &amp; Champion</th>
                       <th className="py-2.5 px-3 text-left font-medium">Rôle</th>
                       <th className="py-2.5 px-3 text-right font-medium">K / D / A</th>
                       <th className="py-2.5 px-3 text-right font-medium">CS</th>
@@ -501,20 +763,23 @@ export function PostGameView({
                               <span className="text-[11px] text-slate-400">Aucun objet</span>
                             ) : (
                               <div className="flex flex-wrap items-center gap-1">
-                                {validItems.map((itemId, itemIdx) => (
-                                  <div
-                                    key={`${part.puuid}-item-${itemIdx}-${itemId}`}
-                                    title={`Objet #${itemId}`}
-                                  >
-                                    <SafeGameIcon
-                                      key={`pg-item-${activeMatch.matchId}-${part.puuid}-${itemIdx}-${itemId}`}
-                                      src={`https://ddragon.leagueoflegends.com/cdn/${patchVersion}/img/item/${itemId}.png`}
-                                      alt={`Objet ${itemId}`}
-                                      fallbackLabel={String(itemId)}
-                                      sizeClass="w-7 h-7"
-                                    />
-                                  </div>
-                                ))}
+                                {validItems.map((itemId, itemIdx) => {
+                                  const itemInfo = itemMap.get(itemId);
+                                  return (
+                                    <div
+                                      key={`${part.puuid}-item-${itemIdx}-${itemId}`}
+                                      title={itemInfo ? `${itemInfo.name} (${itemInfo.gold.total} po)` : `Objet #${itemId}`}
+                                    >
+                                      <SafeGameIcon
+                                        key={`pg-item-${activeMatch.matchId}-${part.puuid}-${itemIdx}-${itemId}`}
+                                        src={`https://ddragon.leagueoflegends.com/cdn/${patchVersion}/img/item/${itemId}.png`}
+                                        alt={itemInfo?.name || `Objet ${itemId}`}
+                                        fallbackLabel={String(itemId)}
+                                        sizeClass="w-7 h-7"
+                                      />
+                                    </div>
+                                  );
+                                })}
                               </div>
                             )}
                           </td>

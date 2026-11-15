@@ -503,12 +503,14 @@ export async function syncRiotPlayerProfile(
   tagLine: string,
   platform: RiotPlatform,
   forceRefresh = false,
+  matchCount = 15,
 ): Promise<PlayerProfileResponse> {
   if (!hasRiotApiKey()) {
     return buildReferenceProfile(`${gameName}#${tagLine}`, platform);
   }
 
-  const cacheKey = `${platform}:${gameName.toLowerCase()}#${tagLine.toLowerCase()}`;
+  const clampedCount = Math.max(5, Math.min(25, Math.round(matchCount || 15)));
+  const cacheKey = `${platform}:${gameName.toLowerCase()}#${tagLine.toLowerCase()}:${clampedCount}`;
   const now = Date.now();
 
   if (!forceRefresh) {
@@ -532,8 +534,9 @@ export async function syncRiotPlayerProfile(
     const regionalHost = `${regional}.api.riotgames.com`;
 
     // 1. Account-V1 (mis en cache 30 min)
-    let account = riotCaches.accounts.get(cacheKey)?.value;
-    const accountEntry = riotCaches.accounts.get(cacheKey);
+    const accountCacheKey = `${platform}:${gameName.toLowerCase()}#${tagLine.toLowerCase()}`;
+    let account = riotCaches.accounts.get(accountCacheKey)?.value;
+    const accountEntry = riotCaches.accounts.get(accountCacheKey);
     if (!account || !accountEntry || accountEntry.expiresAt <= Date.now()) {
       account = await fetchRiotWithRetry<{ puuid: string; gameName: string; tagLine: string }>(
         `https://${regionalHost}/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(
@@ -541,7 +544,7 @@ export async function syncRiotPlayerProfile(
         )}/${encodeURIComponent(tagLine)}`,
         headers,
       );
-      riotCaches.accounts.set(cacheKey, {
+      riotCaches.accounts.set(accountCacheKey, {
         value: account,
         expiresAt: Date.now() + ACCOUNT_TTL_MS,
       });
@@ -573,7 +576,7 @@ export async function syncRiotPlayerProfile(
         headers,
       ).catch(() => null),
       fetchRiotWithRetry<string[]>(
-        `https://${regionalHost}/lol/match/v5/matches/by-puuid/${account.puuid}/ids?start=0&count=10`,
+        `https://${regionalHost}/lol/match/v5/matches/by-puuid/${account.puuid}/ids?start=0&count=${clampedCount}`,
         headers,
       ),
     ]);
@@ -591,7 +594,7 @@ export async function syncRiotPlayerProfile(
           `https://${regionalHost}/lol/match/v5/matches/${matchId}`,
           headers,
         );
-        if (riotCaches.matches.size > 200) {
+        if (riotCaches.matches.size > 300) {
           const oldest = riotCaches.matches.keys().next().value;
           if (oldest) riotCaches.matches.delete(oldest);
         }
@@ -599,23 +602,20 @@ export async function syncRiotPlayerProfile(
         await sleep(95);
       }
 
-      let timelineData: any = null;
-      if (idx < 4) {
-        timelineData = riotCaches.timelines.get(matchId) || null;
-        if (!timelineData) {
-          timelineData = await fetchRiotWithRetry<any>(
-            `https://${regionalHost}/lol/match/v5/matches/${matchId}/timeline`,
-            headers,
-            1,
-          ).catch(() => null);
-          if (timelineData) {
-            if (riotCaches.timelines.size > 100) {
-              const oldestTl = riotCaches.timelines.keys().next().value;
-              if (oldestTl) riotCaches.timelines.delete(oldestTl);
-            }
-            riotCaches.timelines.set(matchId, timelineData);
-            await sleep(95);
+      let timelineData: any = riotCaches.timelines.get(matchId) || null;
+      if (!timelineData && idx < 5) {
+        timelineData = await fetchRiotWithRetry<any>(
+          `https://${regionalHost}/lol/match/v5/matches/${matchId}/timeline`,
+          headers,
+          1,
+        ).catch(() => null);
+        if (timelineData) {
+          if (riotCaches.timelines.size > 150) {
+            const oldestTl = riotCaches.timelines.keys().next().value;
+            if (oldestTl) riotCaches.timelines.delete(oldestTl);
           }
+          riotCaches.timelines.set(matchId, timelineData);
+          await sleep(95);
         }
       }
 

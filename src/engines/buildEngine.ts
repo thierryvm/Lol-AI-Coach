@@ -5,6 +5,7 @@ import type {
   ChampionSummary,
   EnemyThreatSummary,
   GameModeContext,
+  GameScenario,
   ItemData,
   PlayerTendencies,
   RecommendedItem,
@@ -219,6 +220,7 @@ function selectRecommendedBoots(
 export function computeBuildRecommendation(params: {
   patchVersion: string;
   gameMode?: GameModeContext;
+  scenario?: GameScenario;
   playerChampion: ChampionSummary;
   duoPartner?: ChampionSummary | null;
   role: Role;
@@ -230,6 +232,7 @@ export function computeBuildRecommendation(params: {
   const {
     patchVersion,
     gameMode = 'CLASSIC',
+    scenario = 'balanced',
     playerChampion,
     duoPartner = null,
     role,
@@ -333,6 +336,7 @@ export function computeBuildRecommendation(params: {
     const isSunfireOrHollow = item.id === '3068' || item.id === '6664';
     const isRanduin = item.id === '3143' || hasText(item, ['randuin']);
     const isRookern = item.id === '2504' || hasText(item, ['rookern']);
+    const isDuskAndDawn = item.id === '2510' || hasText(item, ['aube et crépuscule', 'dusk and dawn']);
 
     const isKnightsVow = item.id === '3109' || hasText(item, ['vœu du chevalier', "knight's vow"]);
     const isArdent = hasText(item, ['encensoir ardent', 'ardent censer']);
@@ -341,6 +345,9 @@ export function computeBuildRecommendation(params: {
     const isMikael = item.id === '3222' || hasText(item, ['bénédiction de mikael', "mikael's blessing"]);
     const isRedemption = item.id === '3107' || hasText(item, ['rédemption', 'redemption']);
     const isSolari = item.id === '3190' || hasText(item, ['iron solari', 'locket']);
+
+    const ONHIT_TANK_BRUISERS = new Set(['TahmKench', 'Volibear', 'Shen', 'Chogath', 'Jax', 'Kayle', 'Gwen', 'Diana', 'Teemo', 'Warwick']);
+    const isOnHitHybridChamp = ONHIT_TANK_BRUISERS.has(playerChampion.id);
 
     // Compatibilité archétype joueur
     if (style === 'AD_CRIT') {
@@ -418,7 +425,14 @@ export function computeBuildRecommendation(params: {
       if (armor >= 40 || mr >= 40) score += 24;
       else if (armor > 0 || mr > 0) score += 12;
 
-      if (ad > 45 || ap > 70) score -= 60;
+      if (isDuskAndDawn && isOnHitHybridChamp) {
+        score += scenario === 'ahead' ? 54 : 30;
+        reasons.push(
+          `Lame enchantée + double application des effets à l’impact sur ${playerChampion.name} (PV, Hâte, AS et soin en duel).`,
+        );
+      } else if (ad > 45 || ap > 70) {
+        score -= 60;
+      }
 
       // Noyau Saison 16 pour les tanks à ratio PV (Tahm Kench, Mundo, Sion, etc.)
       if (isHpScaler) {
@@ -531,6 +545,26 @@ export function computeBuildRecommendation(params: {
     if (threats.burstThreatCount >= 2 && (isDefensiveShield || hp >= 400)) {
       score += 16;
       reasons.push(`Sécurise la survie face à ${threats.burstThreatCount} menaces de burst.`);
+    }
+
+    // Adaptation selon l'état de la partie (En difficulté / En avance / Équilibré)
+    if (scenario === 'behind') {
+      if (item.gold.total <= 2650) {
+        score += 22;
+        reasons.push(`Pic économique rapide (${item.gold.total} po) idéal pour revenir dans la partie.`);
+      } else if (item.gold.total >= 3200) {
+        score -= 16;
+      }
+      if (armor >= 40 || mr >= 40 || isDefensiveShield || isKnightsVow || isSolari) {
+        score += 18;
+      }
+      if (isHeartsteel && playerChampion.id === 'TahmKench') {
+        score -= 18; // En retard, on privilégie d'abord résistances/utilitaire rapide plutôt que stacker des PV bruts tardifs
+      }
+    } else if (scenario === 'ahead') {
+      if (isHeartsteel || ad >= 60 || ap >= 80 || crit > 0) {
+        score += 14;
+      }
     }
 
     // Prise en compte des performances passées du joueur (sans spammer la même phrase sur tous les objets)
@@ -652,10 +686,35 @@ export function computeBuildRecommendation(params: {
         `Prévoir une pénétration en pourcentage dès le 3e objet complet pour ne pas perdre le DPS en mid-game.`,
       );
     }
-    if (tendencies && tendencies.avgCsPerMin < 6.5 && role !== 'SUPPORT') {
-      laneWinConditions.push(
-        `Objectif personnel : atteindre au moins 7.0 CS/min afin d'accélérer votre 2e objet cœur de 2 à 3 minutes.`,
+    if (tendencies && tendencies.gamesAnalyzed >= 3) {
+      const champHist = tendencies.championStats?.find(
+        (c) =>
+          c.championName.toLowerCase() === playerChampion.id.toLowerCase() ||
+          c.championName.toLowerCase() === playerChampion.name.toLowerCase(),
       );
+      if (champHist && champHist.games >= 2) {
+        laneWinConditions.push(
+          `Historique ${playerChampion.name} (${champHist.games} parties · ${champHist.winRate}% WR · ${champHist.avgDeaths} morts/m) : ${
+            champHist.avgDeaths >= 6.0
+              ? 'build orienté survie et tempo sécurisé pour limiter les morts coûteuses.'
+              : 'bonne maîtrise confirmée — conservez ce rythme pour prendre l’initiative.'
+          }`,
+        );
+      } else if (tendencies.avgDeaths >= 6.5) {
+        laneWinConditions.push(
+          `Adaptation carrière (${tendencies.gamesAnalyzed} matchs, ${tendencies.avgDeaths} morts/m) : priorité aux objets défensifs/boucliers pour stabiliser votre mid-game.`,
+        );
+      }
+      if (tendencies.preObjectiveDeathRate >= 0.25) {
+        laneWinConditions.push(
+          `Rappel proactif : ${Math.round(tendencies.preObjectiveDeathRate * 100)}% de vos morts historiques précèdent un objectif — reculez 55s avant Dragon/Baron.`,
+        );
+      }
+      if (tendencies.avgCsPerMin < 6.5 && role !== 'SUPPORT') {
+        laneWinConditions.push(
+          `Objectif personnel (${tendencies.gamesAnalyzed} parties) : passer de ${tendencies.avgCsPerMin} à 7.0+ CS/min pour accélérer votre 2e objet de 2 minutes.`,
+        );
+      }
     }
     if (laneWinConditions.length === 0) {
       laneWinConditions.push(
@@ -664,7 +723,17 @@ export function computeBuildRecommendation(params: {
     }
   }
 
-  const comparisonAtLevels = buildComparisonCurve(playerChampion, coreItems);
+  if (scenario === 'behind') {
+    laneWinConditions.unshift(
+      `Plan anti-retard activé : privilégiez les composants défensifs rapides, gelez/récupérez les vagues sous tour et jouez en peel autour de votre allié le plus fort.`,
+    );
+  } else if (scenario === 'ahead') {
+    laneWinConditions.unshift(
+      `Plan Snowball activé : convertissez votre avance en pression de vision profonde et forcez les objectifs 30s avant leur apparition.`,
+    );
+  }
+
+  const comparisonAtLevels = buildComparisonCurve(playerChampion, boots, coreItems);
 
   return {
     patchVersion,
@@ -877,28 +946,41 @@ function selectRunes(
 
 function buildComparisonCurve(
   champ: ChampionSummary,
+  boots: RecommendedItem,
   coreItems: RecommendedItem[],
 ): BuildComparisonMetrics[] {
   const levels = [6, 11, 16];
+  const isHpScaler = ['TahmKench', 'DrMundo', 'Sion', 'Chogath', 'Sejuani', 'Shen', 'Zac'].includes(
+    champ.id,
+  );
   return levels.map((lvl, idx) => {
-    const itemsActive = coreItems.slice(0, idx + 1);
+    const itemsActive = [boots, ...coreItems.slice(0, idx + 1)];
     const bonusHp = itemsActive.reduce((a, r) => a + getStat(r.item, 'FlatHPPoolMod'), 0);
     const bonusArmor = itemsActive.reduce((a, r) => a + getStat(r.item, 'FlatArmorMod'), 0);
     const bonusMr = itemsActive.reduce((a, r) => a + getStat(r.item, 'FlatSpellBlockMod'), 0);
     const bonusAd = itemsActive.reduce((a, r) => a + getStat(r.item, 'FlatPhysicalDamageMod'), 0);
     const bonusAp = itemsActive.reduce((a, r) => a + getStat(r.item, 'FlatMagicDamageMod'), 0);
+    const bonusAs = itemsActive.reduce((a, r) => a + getStat(r.item, 'PercentAttackSpeedMod'), 0);
+    const bonusCrit = itemsActive.reduce((a, r) => a + getStat(r.item, 'FlatCritChanceMod'), 0);
     const totalGold = itemsActive.reduce((a, r) => a + r.item.gold.total, 0);
 
     const hp = computeStatAtLevel(champ.stats.hp, champ.stats.hpperlevel, lvl) + bonusHp;
     const armor = computeStatAtLevel(champ.stats.armor, champ.stats.armorperlevel, lvl) + bonusArmor;
     const mr = computeStatAtLevel(champ.stats.spellblock, champ.stats.spellblockperlevel, lvl) + bonusMr;
     const ad = computeStatAtLevel(champ.stats.attackdamage, champ.stats.attackdamageperlevel, lvl) + bonusAd;
+    const asGrowth = ((lvl - 1) * (0.7025 + 0.0175 * (lvl - 1))) / 100;
+    const effAs = champ.stats.attackspeed * (1 + bonusAs + champ.stats.attackspeedperlevel * asGrowth);
+    const hpPassiveBonus = isHpScaler ? bonusHp * 0.04 : 0;
+
+    const offensiveIndex = Math.round(
+      ad * effAs * (1 + bonusCrit * 0.75) + bonusAp * 1.1 + hpPassiveBonus,
+    );
 
     return {
       level: lvl,
       physicalEhp: Math.round(hp * (1 + armor / 100)),
       magicEhp: Math.round(hp * (1 + mr / 100)),
-      offensiveIndex: Math.round(ad * 1.4 + bonusAp * 1.15),
+      offensiveIndex,
       totalGold,
     };
   });

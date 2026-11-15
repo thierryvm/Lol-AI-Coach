@@ -1,29 +1,51 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AlertTriangle,
   Ban,
   Brain,
   Check,
+  CheckCircle2,
   Copy,
   Download,
   ExternalLink,
+  FlaskConical,
+  Gauge,
+  Layers,
   Pencil,
   Plus,
   Radar,
   Radio,
   RefreshCw,
+  RotateCcw,
   Search,
   Shield,
   Sparkles,
   Swords,
+  Trash2,
   Users,
   X,
 } from 'lucide-react';
 import { computeBuildRecommendation } from '../engines/buildEngine.ts';
+import {
+  computeFullChampionBuildStats,
+  formatItemStatTags,
+  parseExactItemStats,
+  runCombinatorialBuildAndRuneSearch,
+  validateRuneConfiguration,
+} from '../engines/buildSimulator.ts';
+import {
+  buildDefaultSelectionForTrees,
+  compareRunePages,
+  selectionFromRecommendation,
+  type RunePageSelection,
+} from '../engines/runeEngine.ts';
 import type {
   ChampionSummary,
   DDragonBootstrap,
   DetectedRunePage,
   GameModeContext,
+  GameScenario,
+  ItemData,
   PlayerProfileResponse,
   PlayerTendencies,
   RiotPlatform,
@@ -38,6 +60,7 @@ import {
   UNIVERSAL_STATE_CLIPBOARD_CMD,
 } from '../utils/liveBridge.ts';
 import { SafeGameIcon } from './SafeGameIcon.tsx';
+import { VisualRunePage } from './VisualRunePage.tsx';
 
 interface BuildOptimizerViewProps {
   ddragon: DDragonBootstrap;
@@ -52,7 +75,231 @@ interface BuildOptimizerViewProps {
 
 const ROLES: Role[] = ['TOP', 'JUNGLE', 'MID', 'ADC', 'SUPPORT'];
 const ENEMY_SLOT_LABELS = ['Top', 'Jungle', 'Mid', 'ADC', 'Support'];
-const PICKER_TAGS = ['Tous', 'Fighter', 'Mage', 'Assassin', 'Tank', 'Marksman', 'Support'];
+const PICKER_TAG_OPTIONS: Array<{ id: string; label: string }> = [
+  { id: 'Tous', label: 'Tous' },
+  { id: 'Fighter', label: 'Combattants' },
+  { id: 'Mage', label: 'Mages' },
+  { id: 'Assassin', label: 'Assassins' },
+  { id: 'Tank', label: 'Tanks' },
+  { id: 'Marksman', label: 'Tireurs' },
+  { id: 'Support', label: 'Supports' },
+];
+
+const SCENARIO_OPTIONS: Array<{ id: GameScenario; label: string; hint: string }> = [
+  { id: 'balanced', label: 'Équilibré (50/50)', hint: 'Rythme standard' },
+  { id: 'ahead', label: 'En avance (Snowball)', hint: 'Scaling & dégâts max' },
+  { id: 'behind', label: 'Je me fais dominer', hint: 'Objets éco & survie' },
+];
+
+type ItemFilterKey =
+  | 'all'
+  | 'boots'
+  | 'budget'
+  | 'tank'
+  | 'armor'
+  | 'mr'
+  | 'ad'
+  | 'ap'
+  | 'haste'
+  | 'antiheal';
+
+const ITEM_FILTER_OPTIONS: Array<{ id: ItemFilterKey; label: string }> = [
+  { id: 'all', label: 'Tous' },
+  { id: 'boots', label: 'Bottes' },
+  { id: 'budget', label: 'Éco ≤ 2650 po' },
+  { id: 'tank', label: 'PV / Tank' },
+  { id: 'armor', label: 'Armure' },
+  { id: 'mr', label: 'Résist. Mag.' },
+  { id: 'ad', label: 'AD / Crit' },
+  { id: 'ap', label: 'Puissance (AP)' },
+  { id: 'haste', label: 'Hâte / CDR' },
+  { id: 'antiheal', label: 'Anti-soin' },
+];
+
+function SlotPortraitCard({
+  champion,
+  slotLabel,
+  subLabel,
+  emptyLabel = 'En attente...',
+  accentTone = 'amber',
+  onClick,
+  onClear,
+}: {
+  champion: ChampionSummary | null;
+  slotLabel: string;
+  subLabel?: string;
+  emptyLabel?: string;
+  accentTone?: 'amber' | 'sky' | 'rose';
+  onClick: () => void;
+  onClear?: () => void;
+}) {
+  const [imgStage, setImgStage] = useState<'loading' | 'square' | 'fallback'>('loading');
+
+  useEffect(() => {
+    setImgStage('loading');
+  }, [champion?.id]);
+
+  const borderHover =
+    accentTone === 'sky'
+      ? 'border-sky-500/40 hover:border-sky-400'
+      : accentTone === 'rose'
+        ? 'border-slate-200 dark:border-slate-800 hover:border-rose-500/70'
+        : 'border-amber-500/45 hover:border-amber-400';
+
+  const kickerColor =
+    accentTone === 'sky'
+      ? 'text-sky-300'
+      : accentTone === 'rose'
+        ? 'text-rose-300'
+        : 'text-amber-300';
+
+  if (!champion) {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        className="group relative aspect-[3/4] w-full rounded-xl border border-dashed border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0D121C] hover:border-amber-500/70 transition-colors flex flex-col items-center justify-between p-2.5 text-center"
+      >
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+          {slotLabel}
+        </span>
+        <div className="w-10 h-10 rounded-lg border border-dashed border-slate-300 dark:border-slate-700 flex items-center justify-center text-slate-400 group-hover:text-amber-500 transition-colors">
+          <Plus className="w-4 h-4" />
+        </div>
+        <span className="text-[11px] text-slate-500 dark:text-slate-400 group-hover:text-amber-500 transition-colors">
+          {emptyLabel}
+        </span>
+      </button>
+    );
+  }
+
+  const src =
+    imgStage === 'loading'
+      ? `https://ddragon.leagueoflegends.com/cdn/img/champion/loading/${champion.id}_0.jpg`
+      : champion.imageUrl;
+
+  return (
+    <div
+      className={`group relative aspect-[3/4] w-full rounded-xl overflow-hidden border transition-all bg-[#0B0E14] ${borderHover}`}
+    >
+      <button
+        type="button"
+        onClick={onClick}
+        className="w-full h-full text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
+      >
+        {imgStage === 'fallback' ? (
+          <div className="w-full h-full bg-gradient-to-br from-slate-800 to-slate-950 flex items-center justify-center text-sm font-bold text-slate-300">
+            {champion.name.slice(0, 3).toUpperCase()}
+          </div>
+        ) : (
+          <img
+            src={src}
+            alt={champion.name}
+            referrerPolicy="no-referrer"
+            loading="lazy"
+            onError={() => setImgStage((prev) => (prev === 'loading' ? 'square' : 'fallback'))}
+            className="w-full h-full object-cover object-top transition-transform duration-200 group-hover:scale-105"
+          />
+        )}
+        <div
+          aria-hidden="true"
+          className="absolute inset-0 bg-gradient-to-t from-black/95 via-black/35 to-black/40"
+        />
+        <div className="absolute inset-x-0 top-0 px-2.5 pt-2 flex items-center justify-between gap-1">
+          <span className={`text-[10px] font-semibold uppercase tracking-wider truncate ${kickerColor}`}>
+            {slotLabel}
+          </span>
+          <Pencil
+            className="w-3 h-3 text-white/70 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+            aria-hidden="true"
+          />
+        </div>
+        <div className="absolute inset-x-0 bottom-0 px-2.5 pb-2.5 pt-6">
+          <div className="text-xs font-bold text-white truncate leading-tight">
+            {champion.name}
+          </div>
+          <div className="text-[10px] text-slate-300 truncate mt-0.5">
+            {subLabel || champion.tags.slice(0, 2).join(' · ')}
+          </div>
+        </div>
+      </button>
+      {onClear && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onClear();
+          }}
+          title="Retirer le partenaire"
+          aria-label="Retirer le partenaire"
+          className="absolute top-1.5 right-1.5 p-1 rounded-md bg-black/70 text-slate-200 hover:text-rose-400 opacity-0 group-hover:opacity-100 transition-opacity"
+        >
+          <X className="w-3 h-3" />
+        </button>
+      )}
+    </div>
+  );
+}
+
+function PickerPortraitTile({
+  champion,
+  selected,
+  onSelect,
+}: {
+  champion: ChampionSummary;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  const [imgStage, setImgStage] = useState<'loading' | 'square' | 'fallback'>('loading');
+  const src =
+    imgStage === 'loading'
+      ? `https://ddragon.leagueoflegends.com/cdn/img/champion/loading/${champion.id}_0.jpg`
+      : champion.imageUrl;
+
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      className={`group relative aspect-[3/4] rounded-xl overflow-hidden text-left transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 ${
+        selected
+          ? 'border-2 border-amber-400 shadow-lg shadow-amber-500/20'
+          : 'border border-slate-200 dark:border-slate-800 hover:border-amber-500/70'
+      }`}
+    >
+      {imgStage === 'fallback' ? (
+        <div className="w-full h-full bg-gradient-to-br from-slate-800 to-slate-950 flex items-center justify-center text-xs font-bold text-slate-300">
+          {champion.name.slice(0, 3).toUpperCase()}
+        </div>
+      ) : (
+        <img
+          src={src}
+          alt={champion.name}
+          referrerPolicy="no-referrer"
+          loading="lazy"
+          onError={() => setImgStage((prev) => (prev === 'loading' ? 'square' : 'fallback'))}
+          className="w-full h-full object-cover object-top transition-transform duration-200 group-hover:scale-105"
+        />
+      )}
+      <div
+        aria-hidden="true"
+        className="absolute inset-0 bg-gradient-to-t from-black/95 via-black/30 to-transparent"
+      />
+      {selected && (
+        <div className="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded bg-amber-500 text-[9px] font-bold text-slate-950 uppercase tracking-wide">
+          Actuel
+        </div>
+      )}
+      <div className="absolute inset-x-0 bottom-0 px-2 pb-2 pt-4">
+        <div className="text-[11px] font-semibold text-white truncate leading-tight">
+          {champion.name}
+        </div>
+        <div className="text-[9px] text-slate-300 truncate mt-0.5">
+          {champion.tags.slice(0, 2).join(' · ')}
+        </div>
+      </div>
+    </button>
+  );
+}
 
 const GAME_MODE_OPTIONS: Array<{ id: GameModeContext; label: string }> = [
   { id: 'CLASSIC', label: 'Faille (Classée / Normale)' },
@@ -99,6 +346,7 @@ export function BuildOptimizerView({
   const [playerChampId, setPlayerChampId] = useState<string>(() => findChamp(initialChampionName).id);
   const [role, setRole] = useState<Role>(initialRole);
   const [gameMode, setGameMode] = useState<GameModeContext>('CLASSIC');
+  const [scenario, setScenario] = useState<GameScenario>('balanced');
   const [duoPartnerId, setDuoPartnerId] = useState<string | null>('Jinx');
   const [enemyIds, setEnemyIds] = useState<string[]>(['Aatrox', 'Viego', 'Zed', 'Kaisa', 'Leona']);
   const [bannedChampIds, setBannedChampIds] = useState<string[]>([]);
@@ -119,6 +367,15 @@ export function BuildOptimizerView({
   const [copiedCmd, setCopiedCmd] = useState(false);
   const [detectedRunePage, setDetectedRunePage] = useState<DetectedRunePage | null>(null);
   const [runeViewMode, setRuneViewMode] = useState<'recommended' | 'current'>('recommended');
+  const [customRuneSelection, setCustomRuneSelection] = useState<RunePageSelection | null>(null);
+  const [runeSimLevel, setRuneSimLevel] = useState<number>(11);
+
+  // Atelier d'équipement interactif (6 emplacements + stacks Cœuracier + modale Data Dragon)
+  const [customBuildItemIds, setCustomBuildItemIds] = useState<(string | null)[] | null>(null);
+  const [heartsteelStacksHp, setHeartsteelStacksHp] = useState<number>(300);
+  const [itemPickerSlotIdx, setItemPickerSlotIdx] = useState<number | null>(null);
+  const [itemSearchQuery, setItemSearchQuery] = useState('');
+  const [itemFilterKey, setItemFilterKey] = useState<ItemFilterKey>('all');
 
   const manualOverrideRef = useRef(false);
 
@@ -386,6 +643,7 @@ export function BuildOptimizerView({
       computeBuildRecommendation({
         patchVersion: ddragon.version,
         gameMode,
+        scenario,
         playerChampion,
         duoPartner,
         role,
@@ -394,8 +652,283 @@ export function BuildOptimizerView({
         runeTrees: ddragon.runeTrees,
         tendencies,
       }),
-    [ddragon, gameMode, playerChampion, duoPartner, role, enemyChampions, tendencies],
+    [ddragon, gameMode, scenario, playerChampion, duoPartner, role, enemyChampions, tendencies],
   );
+
+  useEffect(() => {
+    setCustomRuneSelection(null);
+    setCustomBuildItemIds(null);
+  }, [playerChampion.id, role, gameMode]);
+
+  useEffect(() => {
+    setCustomBuildItemIds(null);
+  }, [scenario]);
+
+  const metaRuneSelection = useMemo(
+    () => selectionFromRecommendation(recommendation.runes, ddragon.runeTrees),
+    [recommendation.runes, ddragon.runeTrees],
+  );
+
+  const activeSandboxSelection = customRuneSelection || metaRuneSelection;
+
+  const recommendedBuildItems = useMemo<ItemData[]>(
+    () => [
+      recommendation.boots.item,
+      ...recommendation.coreItems.map((c) => c.item),
+      ...recommendation.situationalItems.slice(0, 2).map((s) => s.item),
+    ],
+    [recommendation],
+  );
+
+  const itemByIdMap = useMemo(() => {
+    const m = new Map<string, ItemData>();
+    for (const it of ddragon.items) {
+      m.set(it.id, it);
+    }
+    return m;
+  }, [ddragon.items]);
+
+  const sandboxSlots = useMemo<(ItemData | null)[]>(() => {
+    if (!customBuildItemIds) {
+      return Array.from({ length: 6 }, (_, i) => recommendedBuildItems[i] || null);
+    }
+    return customBuildItemIds.map((id) => (id ? itemByIdMap.get(id) || null : null));
+  }, [customBuildItemIds, recommendedBuildItems, itemByIdMap]);
+
+  const sandboxActiveItems = useMemo(
+    () => sandboxSlots.filter((it): it is ItemData => Boolean(it)),
+    [sandboxSlots],
+  );
+
+  const isBuildModified = customBuildItemIds !== null;
+
+  const sandboxStats = useMemo(
+    () =>
+      computeFullChampionBuildStats({
+        champion: playerChampion,
+        role,
+        level: runeSimLevel,
+        items: sandboxActiveItems,
+        runeSelection: activeSandboxSelection,
+        threats: recommendation.threatSummary,
+        heartsteelStacksHp,
+      }),
+    [
+      playerChampion,
+      role,
+      runeSimLevel,
+      sandboxActiveItems,
+      activeSandboxSelection,
+      recommendation.threatSummary,
+      heartsteelStacksHp,
+    ],
+  );
+
+  const recommendedStats = useMemo(
+    () =>
+      computeFullChampionBuildStats({
+        champion: playerChampion,
+        role,
+        level: runeSimLevel,
+        items: recommendedBuildItems,
+        runeSelection: metaRuneSelection,
+        threats: recommendation.threatSummary,
+        heartsteelStacksHp,
+      }),
+    [
+      playerChampion,
+      role,
+      runeSimLevel,
+      recommendedBuildItems,
+      metaRuneSelection,
+      recommendation.threatSummary,
+      heartsteelStacksHp,
+    ],
+  );
+
+  const combinatorialResult = useMemo(
+    () =>
+      runCombinatorialBuildAndRuneSearch({
+        gameMode,
+        playerChampion,
+        duoPartner,
+        role,
+        threats: recommendation.threatSummary,
+        items: ddragon.items,
+        runeTrees: ddragon.runeTrees,
+        baseRuneSelection: metaRuneSelection,
+        simLevel: runeSimLevel,
+      }),
+    [
+      gameMode,
+      playerChampion,
+      duoPartner,
+      role,
+      recommendation.threatSummary,
+      ddragon.items,
+      ddragon.runeTrees,
+      metaRuneSelection,
+      runeSimLevel,
+    ],
+  );
+
+  const runeComparison = useMemo(
+    () =>
+      compareRunePages({
+        champ: playerChampion,
+        role,
+        threats: recommendation.threatSummary,
+        runeTrees: ddragon.runeTrees,
+        custom: activeSandboxSelection,
+        meta: metaRuneSelection,
+        level: runeSimLevel,
+      }),
+    [
+      playerChampion,
+      role,
+      recommendation.threatSummary,
+      ddragon.runeTrees,
+      activeSandboxSelection,
+      metaRuneSelection,
+      runeSimLevel,
+    ],
+  );
+
+  const purchasableCatalog = useMemo(() => {
+    const mapKey = gameMode === 'ARAM' ? '12' : '11';
+    const raw = ddragon.items.filter(
+      (it) =>
+        Number(it.id) < 100000 &&
+        it.gold.purchasable &&
+        it.gold.total >= 300 &&
+        !it.tags.includes('Consumable') &&
+        !it.tags.includes('Trinket') &&
+        (!it.maps || it.maps[mapKey] !== false),
+    );
+    const dedup = new Map<string, ItemData>();
+    for (const it of raw) {
+      const k = it.name.trim().toLowerCase();
+      const prev = dedup.get(k);
+      if (!prev || Number(it.id) < Number(prev.id)) dedup.set(k, it);
+    }
+    return Array.from(dedup.values()).sort((a, b) => b.gold.total - a.gold.total);
+  }, [ddragon.items, gameMode]);
+
+  const filteredCatalogItems = useMemo(() => {
+    const q = itemSearchQuery.trim().toLowerCase();
+    return purchasableCatalog.filter((it) => {
+      if (q) {
+        const matchesName =
+          it.name.toLowerCase().includes(q) || it.plaintext.toLowerCase().includes(q);
+        if (!matchesName) return false;
+      }
+      if (itemFilterKey === 'all') return true;
+      const st = parseExactItemStats(it);
+      const txt = `${it.name} ${it.description}`.toLowerCase();
+      if (itemFilterKey === 'boots') return it.tags.includes('Boots');
+      if (itemFilterKey === 'budget') return !it.tags.includes('Boots') && it.gold.total >= 1800 && it.gold.total <= 2650;
+      if (itemFilterKey === 'tank') return st.hp >= 250 || st.armor >= 35 || st.mr >= 35;
+      if (itemFilterKey === 'armor') return st.armor > 0;
+      if (itemFilterKey === 'mr') return st.mr > 0;
+      if (itemFilterKey === 'ad') return st.ad > 0 || st.critChancePct > 0;
+      if (itemFilterKey === 'ap') return st.ap > 0;
+      if (itemFilterKey === 'haste') return st.abilityHaste > 0;
+      if (itemFilterKey === 'antiheal') {
+        return Boolean(txt.match(/hémorragie|blessures graves|épineuse|thornmail|mortal|morello|bourreau/));
+      }
+      return true;
+    });
+  }, [purchasableCatalog, itemSearchQuery, itemFilterKey]);
+
+  const handleAssignItemToSlot = (slotIdx: number, item: ItemData | null) => {
+    setCustomBuildItemIds((prev) => {
+      const baseIds =
+        prev || Array.from({ length: 6 }, (_, i) => recommendedBuildItems[i]?.id || null);
+      const next = [...baseIds];
+      next[slotIdx] = item ? item.id : null;
+      return next;
+    });
+    setItemPickerSlotIdx(null);
+  };
+
+  const handleQuickTestItem = (item: ItemData) => {
+    setCustomBuildItemIds((prev) => {
+      const baseIds =
+        prev || Array.from({ length: 6 }, (_, i) => recommendedBuildItems[i]?.id || null);
+      if (baseIds.includes(item.id)) return baseIds;
+      const next = [...baseIds];
+      const emptyIdx = next.findIndex((id) => !id);
+      if (emptyIdx !== -1) {
+        next[emptyIdx] = item.id;
+      } else {
+        next[next.length - 1] = item.id;
+      }
+      return next;
+    });
+  };
+
+  const detectedAsSelection = useMemo<RunePageSelection | null>(() => {
+    if (!detectedRunePage?.primaryTreeId) return null;
+    const pTreeId = detectedRunePage.primaryTreeId;
+    const sTreeId =
+      detectedRunePage.secondaryTreeId ||
+      ddragon.runeTrees.find((t) => t.id !== pTreeId)?.id ||
+      pTreeId;
+    const base = buildDefaultSelectionForTrees(ddragon.runeTrees, pTreeId, sTreeId);
+    const pTree = ddragon.runeTrees.find((t) => t.id === pTreeId);
+    const sTree = ddragon.runeTrees.find((t) => t.id === sTreeId);
+    const pickedSet = new Set(detectedRunePage.selectedRuneIds);
+
+    const primaryMinors = (pTree?.slots || [])
+      .slice(1, 4)
+      .map((sl, i) => sl.runes.find((r) => pickedSet.has(r.id))?.id || base.primaryMinorIds[i])
+      .filter((id): id is number => Boolean(id));
+
+    const secondaryMinors = (sTree?.slots || [])
+      .slice(1, 4)
+      .flatMap((sl) => sl.runes)
+      .filter((r) => pickedSet.has(r.id))
+      .map((r) => r.id)
+      .slice(0, 2);
+
+    return {
+      primaryTreeId: pTreeId,
+      secondaryTreeId: sTreeId,
+      keystoneId: detectedRunePage.keystoneId || base.keystoneId,
+      primaryMinorIds: primaryMinors.length === 3 ? primaryMinors : base.primaryMinorIds,
+      secondaryMinorIds: secondaryMinors.length === 2 ? secondaryMinors : base.secondaryMinorIds,
+      shardIndices: detectedRunePage.selectedShardRowIndices || [0, 0, 0],
+    };
+  }, [detectedRunePage, ddragon.runeTrees]);
+
+  const pickerTagCounts = useMemo(() => {
+    const counts: Record<string, number> = { Tous: ddragon.champions.length };
+    for (const c of ddragon.champions) {
+      for (const t of c.tags) {
+        counts[t] = (counts[t] || 0) + 1;
+      }
+    }
+    return counts;
+  }, [ddragon.champions]);
+
+  const currentPickerChampId = useMemo(() => {
+    if (!pickerTarget) return null;
+    if (pickerTarget.type === 'player') return playerChampId;
+    if (pickerTarget.type === 'duo') return duoPartnerId;
+    return typeof pickerTarget.index === 'number' ? enemyIds[pickerTarget.index] || null : null;
+  }, [pickerTarget, playerChampId, duoPartnerId, enemyIds]);
+
+  useEffect(() => {
+    if (!pickerTarget && itemPickerSlotIdx === null) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setPickerTarget(null);
+        setItemPickerSlotIdx(null);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [pickerTarget, itemPickerSlotIdx]);
 
   const filteredChampions = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -680,7 +1213,7 @@ export function BuildOptimizerView({
         )}
       </section>
 
-      {/* Sélection Champion Joueur + Partenaire Duo + 5 Adversaires */}
+      {/* Sélection Champion Joueur + Partenaire Duo + 5 Adversaires (Portraits cohérents Champion Select) */}
       <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5 space-y-5">
         <div className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-3">
           <div>
@@ -698,7 +1231,7 @@ export function BuildOptimizerView({
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2.5">
             {/* Sélecteur de Mode (Classée/Normale, Swiftplay, ARAM) */}
             <div className="flex flex-wrap items-center gap-1 p-1 rounded-lg bg-slate-100 dark:bg-[#0B0E14] border border-slate-200 dark:border-slate-800">
               {GAME_MODE_OPTIONS.map((m) => (
@@ -712,7 +1245,7 @@ export function BuildOptimizerView({
                   }}
                   className={`px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
                     gameMode === m.id
-                      ? 'bg-amber-600 dark:bg-amber-500 text-white dark:text-slate-950'
+                      ? 'bg-amber-600 dark:bg-amber-500 text-white dark:text-slate-950 font-semibold'
                       : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
                   }`}
                 >
@@ -742,110 +1275,81 @@ export function BuildOptimizerView({
                 </button>
               ))}
             </div>
+
+            {/* Sélecteur de Dynamique de Partie (Proactif en avance / en difficulté) */}
+            <div className="flex flex-wrap items-center gap-1 p-1 rounded-lg bg-slate-100 dark:bg-[#0B0E14] border border-slate-200 dark:border-slate-800">
+              {SCENARIO_OPTIONS.map((opt) => (
+                <button
+                  key={opt.id}
+                  type="button"
+                  title={opt.hint}
+                  onClick={() => {
+                    setScenario(opt.id);
+                    setAiPlan(null);
+                  }}
+                  className={`px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
+                    scenario === opt.id
+                      ? opt.id === 'behind'
+                        ? 'bg-rose-600 text-white font-semibold'
+                        : opt.id === 'ahead'
+                          ? 'bg-emerald-600 text-white font-semibold'
+                          : 'bg-slate-900 dark:bg-slate-700 text-white font-semibold'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-          {/* Votre champion + Partenaire de Duo / Allié */}
-          <div className="lg:col-span-5 grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <div className="text-xs font-medium text-slate-500 dark:text-slate-400">
-                Votre champion
-              </div>
-              <button
-                type="button"
-                onClick={() => setPickerTarget({ type: 'player' })}
-                className="w-full flex items-center justify-between gap-3 p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] hover:border-amber-500/60 transition-colors text-left"
-              >
-                <div className="flex items-center gap-3 min-w-0">
-                  <SafeGameIcon
-                    key={`builder-player-${playerChampion.id}`}
-                    src={playerChampion.imageUrl}
-                    alt={playerChampion.name}
-                    fallbackLabel={playerChampion.name}
-                    sizeClass="w-11 h-11"
-                  />
-                  <div className="min-w-0">
-                    <div className="font-semibold text-sm text-slate-900 dark:text-white truncate">
-                      {playerChampion.name}
-                    </div>
-                    <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
-                      {playerChampion.tags.join(' / ')}
-                    </div>
-                  </div>
-                </div>
-                <Pencil className="w-3.5 h-3.5 text-amber-500 shrink-0" aria-hidden="true" />
-              </button>
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+          {/* Votre champion + Partenaire de Duo (Grands portraits cohérents Champion Select) */}
+          <div className="lg:col-span-4 space-y-2">
+            <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+              <span className="font-medium">Votre Duo (cliquez pour changer)</span>
+              <span className="text-[11px] font-mono tabular-nums text-amber-600 dark:text-amber-400">
+                {role}
+              </span>
             </div>
-
-            <div className="space-y-2">
-              <div className="flex items-center justify-between text-xs">
-                <span className="font-medium text-slate-500 dark:text-slate-400 flex items-center gap-1">
-                  <Users className="w-3.5 h-3.5 text-sky-500" aria-hidden="true" />
-                  {role === 'SUPPORT'
-                    ? 'Votre ADC (Duo)'
+            <div className="grid grid-cols-2 gap-3">
+              <SlotPortraitCard
+                champion={playerChampion}
+                slotLabel="Votre champion"
+                accentTone="amber"
+                onClick={() => setPickerTarget({ type: 'player' })}
+              />
+              <SlotPortraitCard
+                champion={duoPartner}
+                slotLabel={
+                  role === 'SUPPORT'
+                    ? 'Votre ADC'
                     : role === 'ADC'
-                      ? 'Votre Support (Duo)'
-                      : 'Allié clé / Duo'}
-                </span>
-                {duoPartner && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      manualOverrideRef.current = true;
-                      setDuoPartnerId(null);
-                      setAiPlan(null);
-                    }}
-                    className="text-[11px] text-slate-400 hover:text-rose-400"
-                  >
-                    Retirer
-                  </button>
-                )}
-              </div>
-
-              {duoPartner ? (
-                <button
-                  type="button"
-                  onClick={() => setPickerTarget({ type: 'duo' })}
-                  className="w-full flex items-center justify-between gap-3 p-3 rounded-xl border border-sky-500/30 bg-sky-500/5 hover:border-sky-500/60 transition-colors text-left"
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <SafeGameIcon
-                      key={`builder-duo-${duoPartner.id}`}
-                      src={duoPartner.imageUrl}
-                      alt={duoPartner.name}
-                      fallbackLabel={duoPartner.name}
-                      sizeClass="w-11 h-11"
-                    />
-                    <div className="min-w-0">
-                      <div className="font-semibold text-sm text-slate-900 dark:text-white truncate">
-                        {duoPartner.name}
-                      </div>
-                      <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
-                        {duoPartner.tags.join(' / ')}
-                      </div>
-                    </div>
-                  </div>
-                  <Pencil className="w-3.5 h-3.5 text-sky-400 shrink-0" aria-hidden="true" />
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => setPickerTarget({ type: 'duo' })}
-                  className="w-full h-[68px] flex items-center justify-center gap-2 p-3 rounded-xl border border-dashed border-slate-300 dark:border-slate-700 text-xs font-medium text-slate-500 dark:text-slate-400 hover:border-sky-500 hover:text-sky-400 transition-colors"
-                >
-                  <Plus className="w-4 h-4" aria-hidden="true" />
-                  Ajouter un partenaire de duo
-                </button>
-              )}
+                      ? 'Votre Support'
+                      : 'Allié Duo'
+                }
+                emptyLabel="Ajouter Duo"
+                accentTone="sky"
+                onClick={() => setPickerTarget({ type: 'duo' })}
+                onClear={
+                  duoPartner
+                    ? () => {
+                        manualOverrideRef.current = true;
+                        setDuoPartnerId(null);
+                        setAiPlan(null);
+                      }
+                    : undefined
+                }
+              />
             </div>
           </div>
 
-          {/* 5 champions adverses */}
-          <div className="lg:col-span-7 space-y-2">
+          {/* 5 champions adverses en portraits cohérents */}
+          <div className="lg:col-span-8 space-y-2">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span className="text-xs font-medium text-slate-500 dark:text-slate-400">
-                Champions adverses (cliquez sur un slot pour choisir parmi les {ddragon.champions.length} champions)
+                Composition adverse ({enemyChampions.length}/5 · cliquez un portrait pour modifier parmi {ddragon.champions.length} champions)
               </span>
               <div className="flex flex-wrap items-center gap-3">
                 {PRESET_COMPS.map((preset) => (
@@ -865,46 +1369,29 @@ export function BuildOptimizerView({
               </div>
             </div>
 
-            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
               {enemyIds.map((id, idx) => {
-                const enemy = id ? ddragon.champions.find((c) => c.id === id) : null;
+                const enemy = id ? ddragon.champions.find((c) => c.id === id) || null : null;
+                const prof = enemy
+                  ? recommendation.threatSummary.profiles.find((p) => p.championId === enemy.id)
+                  : null;
+                const slotTitle =
+                  gameMode === 'ARAM' ? `Adversaire ${idx + 1}` : ENEMY_SLOT_LABELS[idx];
+
                 return (
-                  <button
-                    key={`${id || 'empty'}-${idx}`}
-                    type="button"
+                  <SlotPortraitCard
+                    key={`enemy-slot-${idx}-${id || 'empty'}`}
+                    champion={enemy}
+                    slotLabel={slotTitle}
+                    subLabel={
+                      prof
+                        ? `${prof.primaryDamage} · ${prof.keyThreats?.[0] || enemy?.tags[0] || ''}`
+                        : undefined
+                    }
+                    emptyLabel="Choisir"
+                    accentTone="rose"
                     onClick={() => setPickerTarget({ type: 'enemy', index: idx })}
-                    className="group flex flex-col items-center gap-1.5 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] hover:border-amber-500/70 transition-colors"
-                  >
-                    <span className="text-[10px] uppercase tracking-wider text-slate-400">
-                      {gameMode === 'ARAM' ? `Adversaire ${idx + 1}` : ENEMY_SLOT_LABELS[idx]}
-                    </span>
-                    {enemy ? (
-                      <>
-                        <SafeGameIcon
-                          key={`builder-enemy-${idx}-${enemy.id}`}
-                          src={enemy.imageUrl}
-                          alt={enemy.name}
-                          fallbackLabel={enemy.name}
-                          sizeClass="w-11 h-11"
-                        />
-                        <span className="text-xs font-medium text-slate-800 dark:text-slate-200 truncate w-full text-center">
-                          {enemy.name}
-                        </span>
-                      </>
-                    ) : (
-                      <>
-                        <div className="w-11 h-11 rounded-lg border border-dashed border-slate-300 dark:border-slate-700 flex items-center justify-center text-slate-400">
-                          <Plus className="w-4 h-4" />
-                        </div>
-                        <span className="text-xs text-slate-400 truncate w-full text-center">
-                          En attente...
-                        </span>
-                      </>
-                    )}
-                    <span className="text-[10px] text-amber-600 dark:text-amber-400 opacity-80 group-hover:opacity-100">
-                      Choisir
-                    </span>
-                  </button>
+                  />
                 );
               })}
             </div>
@@ -942,32 +1429,79 @@ export function BuildOptimizerView({
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-3 pt-1 text-xs">
-              <div className="p-3 rounded-lg bg-slate-50 dark:bg-[#0D121C] border border-slate-200/70 dark:border-slate-800">
-                <div className="text-slate-500 dark:text-slate-400">Tanks / Frontline</div>
-                <div className="mt-1 text-lg font-bold font-mono tabular-nums text-slate-900 dark:text-white">
+            <div className="grid grid-cols-4 gap-2 pt-1 text-xs">
+              <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-[#0D121C] border border-slate-200/70 dark:border-slate-800">
+                <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">Tanks</div>
+                <div className="mt-0.5 text-base font-bold font-mono tabular-nums text-slate-900 dark:text-white">
                   {recommendation.threatSummary.tankCount}
                 </div>
               </div>
-              <div className="p-3 rounded-lg bg-slate-50 dark:bg-[#0D121C] border border-slate-200/70 dark:border-slate-800">
-                <div className="text-slate-500 dark:text-slate-400">Sources de soin</div>
-                <div className="mt-1 text-lg font-bold font-mono tabular-nums text-slate-900 dark:text-white">
+              <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-[#0D121C] border border-slate-200/70 dark:border-slate-800">
+                <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">Soin</div>
+                <div className="mt-0.5 text-base font-bold font-mono tabular-nums text-slate-900 dark:text-white">
                   {recommendation.threatSummary.highHealCount}
                 </div>
               </div>
-              <div className="p-3 rounded-lg bg-slate-50 dark:bg-[#0D121C] border border-slate-200/70 dark:border-slate-800">
-                <div className="text-slate-500 dark:text-slate-400">Menaces Burst</div>
-                <div className="mt-1 text-lg font-bold font-mono tabular-nums text-slate-900 dark:text-white">
+              <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-[#0D121C] border border-slate-200/70 dark:border-slate-800">
+                <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">Burst</div>
+                <div className="mt-0.5 text-base font-bold font-mono tabular-nums text-slate-900 dark:text-white">
                   {recommendation.threatSummary.burstThreatCount}
                 </div>
               </div>
-              <div className="p-3 rounded-lg bg-slate-50 dark:bg-[#0D121C] border border-slate-200/70 dark:border-slate-800">
-                <div className="text-slate-500 dark:text-slate-400">Contrôles majeurs (CC)</div>
-                <div className="mt-1 text-lg font-bold font-mono tabular-nums text-slate-900 dark:text-white">
+              <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-[#0D121C] border border-slate-200/70 dark:border-slate-800">
+                <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">CC</div>
+                <div className="mt-0.5 text-base font-bold font-mono tabular-nums text-slate-900 dark:text-white">
                   {recommendation.threatSummary.ccThreatCount}
                 </div>
               </div>
             </div>
+
+            {/* Détail concret champion par champion avec contre recommandé */}
+            {recommendation.threatSummary.profiles.length > 0 && (
+              <div className="pt-3 border-t border-slate-200 dark:border-slate-800 space-y-2.5">
+                <div className="text-xs font-semibold text-slate-700 dark:text-slate-200">
+                  Menaces concrètes &amp; contres à prioriser
+                </div>
+                <div className="divide-y divide-slate-200/70 dark:divide-slate-800/70">
+                  {recommendation.threatSummary.profiles.map((prof, idx) => {
+                    const champObj = ddragon.champions.find((c) => c.id === prof.championId);
+                    const dmgColor =
+                      prof.primaryDamage === 'Physique'
+                        ? 'text-orange-600 dark:text-orange-400'
+                        : prof.primaryDamage === 'Magique'
+                          ? 'text-sky-600 dark:text-sky-400'
+                          : 'text-amber-600 dark:text-amber-400';
+
+                    return (
+                      <div
+                        key={`${prof.championId}-${idx}`}
+                        className="py-2.5 first:pt-0 last:pb-0 flex items-start gap-2.5 text-xs"
+                      >
+                        <SafeGameIcon
+                          src={champObj?.imageUrl}
+                          alt={prof.championName}
+                          fallbackLabel={prof.championName}
+                          sizeClass="w-8 h-8"
+                        />
+                        <div className="flex-1 min-w-0 space-y-0.5">
+                          <div className="flex flex-wrap items-baseline justify-between gap-2">
+                            <span className="font-semibold text-slate-900 dark:text-white">
+                              {prof.championName}
+                            </span>
+                            <span className={`text-[11px] font-semibold ${dmgColor}`}>
+                              {prof.primaryDamage} · {prof.keyThreats?.join(' / ') || prof.archetype}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-snug">
+                            Contre : {prof.recommendedCounter}
+                          </p>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </section>
 
           <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5 space-y-3">
@@ -1095,28 +1629,37 @@ export function BuildOptimizerView({
                   {recommendation.situationalItems.map((rec) => (
                     <div
                       key={rec.item.id}
-                      className="p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] space-y-2"
+                      className="p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] space-y-2 flex flex-col justify-between"
                     >
-                      <div className="flex items-center gap-2.5">
-                        <SafeGameIcon
-                          key={`sit-item-${rec.item.id}`}
-                          src={rec.item.imageUrl}
-                          alt={rec.item.name}
-                          fallbackLabel={rec.item.name}
-                          sizeClass="w-9 h-9"
-                        />
-                        <div className="min-w-0">
-                          <div className="text-xs font-semibold text-slate-900 dark:text-white truncate">
-                            {rec.item.name}
-                          </div>
-                          <div className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
-                            {rec.item.gold.total} po
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2.5">
+                          <SafeGameIcon
+                            key={`sit-item-${rec.item.id}`}
+                            src={rec.item.imageUrl}
+                            alt={rec.item.name}
+                            fallbackLabel={rec.item.name}
+                            sizeClass="w-9 h-9"
+                          />
+                          <div className="min-w-0">
+                            <div className="text-xs font-semibold text-slate-900 dark:text-white truncate">
+                              {rec.item.name}
+                            </div>
+                            <div className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                              {rec.item.gold.total} po
+                            </div>
                           </div>
                         </div>
+                        <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                          {rec.reasons[0]}
+                        </p>
                       </div>
-                      <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
-                        {rec.reasons[0]}
-                      </p>
+                      <button
+                        type="button"
+                        onClick={() => handleQuickTestItem(rec.item)}
+                        className="w-full px-2.5 py-1.5 text-[11px] font-semibold rounded-md border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:border-amber-500 hover:text-amber-600 dark:hover:text-amber-400 transition-colors"
+                      >
+                        Tester dans l’atelier
+                      </button>
                     </div>
                   ))}
                 </div>
@@ -1126,404 +1669,921 @@ export function BuildOptimizerView({
         </div>
       </div>
 
-      {/* Section Pleine Largeur : Page de Runes officielle (Client LoL) avec comparaison directe */}
-      <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-6 space-y-5">
-        {(() => {
-          const showingCurrent = runeViewMode === 'current' && Boolean(detectedRunePage);
+      {/* Atelier Équipement Interactif + Statistiques Exactes & Deltas en Temps Réel */}
+      <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5 space-y-5">
+        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 pb-4 border-b border-slate-200 dark:border-slate-800">
+          <div className="space-y-1">
+            <h2 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+              <FlaskConical className="w-4 h-4 text-amber-500 shrink-0" aria-hidden="true" />
+              <span>Atelier Équipement &amp; Statistiques Exactes ({playerChampion.name} Niv.{runeSimLevel})</span>
+            </h2>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              Modifiez librement vos 6 emplacements ci-dessous : chaque statistique combine exactement la croissance Riot du champion, vos runes/fragments actifs et les statistiques complètes du patch {ddragon.version}.
+            </p>
+          </div>
 
-          const recPrimaryTree = recommendation.runes.primaryTree;
-          const recSecondaryTree = recommendation.runes.secondaryTree;
-          const recSelectedIds = new Set([
-            ...(recommendation.runes.keystone ? [recommendation.runes.keystone.id] : []),
-            ...recommendation.runes.primarySlots.map((r) => r.id),
-            ...recommendation.runes.secondarySlots.map((r) => r.id),
-          ]);
+          <div className="flex flex-wrap items-center gap-3 shrink-0">
+            {/* Slider Niveau 1 à 18 */}
+            <div className="flex items-center gap-2.5 px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-[#0B0E14] border border-slate-200 dark:border-slate-800">
+              <span className="text-xs text-slate-600 dark:text-slate-300 whitespace-nowrap">
+                Niveau <strong className="font-mono tabular-nums text-amber-600 dark:text-amber-400">{runeSimLevel}</strong>
+              </span>
+              <input
+                type="range"
+                min={1}
+                max={18}
+                value={runeSimLevel}
+                onChange={(e) => setRuneSimLevel(Number(e.target.value))}
+                aria-label="Simuler le niveau du champion"
+                className="w-24 accent-amber-500 cursor-pointer"
+              />
+            </div>
 
-          const curPrimaryTree = detectedRunePage?.primaryTreeId
-            ? ddragon.runeTrees.find((t) => t.id === detectedRunePage.primaryTreeId) || recPrimaryTree
-            : recPrimaryTree;
-          const curSecondaryTree = detectedRunePage?.secondaryTreeId
-            ? ddragon.runeTrees.find((t) => t.id === detectedRunePage.secondaryTreeId) || recSecondaryTree
-            : recSecondaryTree;
+            {sandboxActiveItems.some((it) => it.id === '3084' || it.name.toLowerCase().includes('cœuracier')) && (
+              <div className="flex items-center gap-1 p-1 rounded-lg bg-slate-100 dark:bg-[#0B0E14] border border-slate-200 dark:border-slate-800 text-[11px]">
+                <span className="px-2 text-slate-500 dark:text-slate-400">Cœuracier :</span>
+                {[0, 300, 600, 900].map((stHp) => (
+                  <button
+                    key={stHp}
+                    type="button"
+                    onClick={() => setHeartsteelStacksHp(stHp)}
+                    className={`px-2 py-1 rounded font-mono tabular-nums transition-colors ${
+                      heartsteelStacksHp === stHp
+                        ? 'bg-amber-600 dark:bg-amber-500 text-white dark:text-slate-950 font-semibold'
+                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                    }`}
+                  >
+                    +{stHp}
+                  </button>
+                ))}
+              </div>
+            )}
 
-          const activePrimaryTree = showingCurrent ? curPrimaryTree : recPrimaryTree;
-          const activeSecondaryTree = showingCurrent ? curSecondaryTree : recSecondaryTree;
+            {isBuildModified && (
+              <button
+                type="button"
+                onClick={() => setCustomBuildItemIds(null)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 whitespace-nowrap shrink-0"
+              >
+                <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
+                Réinitialiser au conseillé
+              </button>
+            )}
+          </div>
+        </div>
 
-          const activeKeystoneId = showingCurrent
-            ? detectedRunePage?.keystoneId
-            : recommendation.runes.keystone?.id;
+        {/* 6 Emplacements d'équipement cliquables */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+          {sandboxSlots.map((item, slotIdx) => {
+            const tags = item ? formatItemStatTags(item) : [];
+            return (
+              <div
+                key={`sandbox-slot-${slotIdx}-${item?.id || 'empty'}`}
+                className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] p-3 flex flex-col justify-between gap-2"
+              >
+                <div className="flex items-center justify-between gap-1 text-[10px] text-slate-400">
+                  <span className="font-mono tabular-nums uppercase">Emplacement {slotIdx + 1}</span>
+                  {item && (
+                    <button
+                      type="button"
+                      onClick={() => handleAssignItemToSlot(slotIdx, null)}
+                      title="Vider cet emplacement"
+                      aria-label={`Retirer ${item.name}`}
+                      className="text-slate-400 hover:text-rose-500 transition-colors"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  )}
+                </div>
 
-          const activeRuneIds = showingCurrent
-            ? new Set(detectedRunePage?.selectedRuneIds || [])
-            : recSelectedIds;
-
-          const activeShardIndices: [number, number, number] = showingCurrent && detectedRunePage?.selectedShardRowIndices
-            ? detectedRunePage.selectedShardRowIndices
-            : [
-                recommendation.runes.shardRows[0]?.selectedIndex ?? 0,
-                recommendation.runes.shardRows[1]?.selectedIndex ?? 0,
-                recommendation.runes.shardRows[2]?.selectedIndex ?? 0,
-              ];
-
-          const activeShardLabels = showingCurrent && detectedRunePage?.shardLabels?.length === 3
-            ? detectedRunePage.shardLabels
-            : recommendation.runes.shards;
-
-          const matchingCount = detectedRunePage
-            ? detectedRunePage.selectedRuneIds.filter((id) => recSelectedIds.has(id)).length
-            : null;
-
-          const cleanText = (raw: string) =>
-            raw.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-
-          const allRunesInTree = (tree: typeof activePrimaryTree) =>
-            (tree?.slots || []).flatMap((s) => s.runes);
-
-          const selectedPrimaryList = allRunesInTree(activePrimaryTree).filter(
-            (r) => r.id === activeKeystoneId || activeRuneIds.has(r.id),
-          );
-          const selectedSecondaryList = (activeSecondaryTree?.slots || [])
-            .slice(1, 4)
-            .flatMap((s) => s.runes)
-            .filter((r) => activeRuneIds.has(r.id));
-
-          const shardShortTokens = [
-            ['+9 AD/AP', '+10% AS', '+8 Hâte'],
-            ['+9 AD/AP', '+2% Vit.', '+PV/niv'],
-            ['+65 PV', '+10% Tén.', '+PV/niv'],
-          ];
-
-          return (
-            <>
-              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-                <div>
-                  <h2 className="text-base font-semibold text-slate-900 dark:text-white">
-                    Page de Runes officielle (Client LoL)
-                  </h2>
-                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                    {showingCurrent && detectedRunePage ? (
-                      <>
-                        <span>
-                          Page détectée{detectedRunePage.pageName ? ` : « ${detectedRunePage.pageName} »` : ''}
-                        </span>
-                        <span className="mx-2" aria-hidden="true">·</span>
-                        <span>Source : {detectedRunePage.sourceLabel}</span>
-                        {matchingCount !== null && (
-                          <>
-                            <span className="mx-2" aria-hidden="true">·</span>
-                            <span className={matchingCount === 6 ? 'text-emerald-500 font-semibold' : 'text-amber-500 font-semibold'}>
-                              {matchingCount}/6 runes alignées avec la méta
-                            </span>
-                          </>
-                        )}
-                      </>
-                    ) : (
-                      <>
-                        <span>
-                          {activePrimaryTree?.name} + {activeSecondaryTree?.name}
-                        </span>
-                        {detectedRunePage && matchingCount !== null && (
-                          <>
-                            <span className="mx-2" aria-hidden="true">·</span>
-                            <span className="text-sky-500 font-medium">
-                              Page équipée détectée ({matchingCount}/6 runes identiques)
-                            </span>
-                          </>
-                        )}
-                      </>
+                {item ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setItemSearchQuery('');
+                      setItemFilterKey(slotIdx === 0 ? 'boots' : 'all');
+                      setItemPickerSlotIdx(slotIdx);
+                    }}
+                    className="text-left space-y-2 group"
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <SafeGameIcon
+                        src={item.imageUrl}
+                        alt={item.name}
+                        fallbackLabel={item.name}
+                        sizeClass="w-10 h-10"
+                      />
+                      <div className="min-w-0">
+                        <div className="text-xs font-semibold text-slate-900 dark:text-white truncate group-hover:text-amber-500 transition-colors">
+                          {item.name}
+                        </div>
+                        <div className="text-[11px] font-mono tabular-nums text-amber-600 dark:text-amber-400">
+                          {item.gold.total} po
+                        </div>
+                      </div>
+                    </div>
+                    {tags.length > 0 && (
+                      <div className="text-[10px] font-mono tabular-nums text-slate-500 dark:text-slate-400 leading-snug">
+                        {tags.join(' · ')}
+                      </div>
                     )}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setItemSearchQuery('');
+                      setItemFilterKey('all');
+                      setItemPickerSlotIdx(slotIdx);
+                    }}
+                    className="py-4 flex flex-col items-center justify-center gap-1 text-slate-400 hover:text-amber-500 transition-colors"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span className="text-[11px] font-medium">Ajouter objet</span>
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Bandeau de synthèse combat & rentabilité Or avec Delta en temps réel */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+          {[
+            {
+              label: 'Coût total',
+              val: sandboxStats.combat.totalGold,
+              ref: recommendedStats.combat.totalGold,
+              suffix: ' po',
+              inverseGood: true,
+            },
+            {
+              label: 'Rentabilité Or',
+              val: sandboxStats.combat.goldEfficiencyPct,
+              ref: recommendedStats.combat.goldEfficiencyPct,
+              suffix: '%',
+            },
+            {
+              label: 'EHP Physique',
+              val: sandboxStats.combat.physicalEhp,
+              ref: recommendedStats.combat.physicalEhp,
+              suffix: '',
+            },
+            {
+              label: 'EHP Magique',
+              val: sandboxStats.combat.magicEhp,
+              ref: recommendedStats.combat.magicEhp,
+              suffix: '',
+            },
+            {
+              label: 'DPS Auto-attaques',
+              val: sandboxStats.combat.autoDps,
+              ref: recommendedStats.combat.autoDps,
+              suffix: '/s',
+            },
+            {
+              label: 'Impact Sorts',
+              val: sandboxStats.combat.abilityImpactIndex,
+              ref: recommendedStats.combat.abilityImpactIndex,
+              suffix: '',
+            },
+          ].map((kpi) => {
+            const diff = kpi.val - kpi.ref;
+            const isGood = kpi.inverseGood ? diff <= 0 : diff >= 0;
+            return (
+              <div
+                key={kpi.label}
+                className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] px-3.5 py-2.5"
+              >
+                <div className="text-[11px] text-slate-500 dark:text-slate-400">{kpi.label}</div>
+                <div className="mt-1 flex items-baseline justify-between gap-2 font-mono tabular-nums">
+                  <span className="text-base font-bold text-slate-900 dark:text-white">
+                    {kpi.val}
+                    {kpi.suffix}
+                  </span>
+                  {diff !== 0 && (
+                    <span
+                      className={`text-[11px] font-semibold ${
+                        isGood
+                          ? 'text-emerald-600 dark:text-emerald-400'
+                          : 'text-rose-600 dark:text-rose-400'
+                      }`}
+                    >
+                      {diff > 0 ? `+${diff}` : diff}
+                    </span>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Tableau complet des statistiques exactes (Base + Runes + Objets vs Conseillé) */}
+        <div className="grid grid-cols-1 xl:grid-cols-12 gap-5 items-start">
+          <div className="xl:col-span-7 overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] text-slate-500 dark:text-slate-400">
+                  <th className="py-2.5 px-4 text-left font-medium">Statistique réelle</th>
+                  <th className="py-2.5 px-3 text-right font-medium">Votre test</th>
+                  <th className="py-2.5 px-3 text-right font-medium">Base + Runes + Objets</th>
+                  <th className="py-2.5 px-4 text-right font-medium">Écart vs Conseillé</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200/70 dark:divide-slate-800/70 font-mono tabular-nums">
+                {[
+                  {
+                    label: 'Points de vie (PV)',
+                    val: sandboxStats.totals.hp,
+                    ref: recommendedStats.totals.hp,
+                    breakdown: `${sandboxStats.sources.hp.base} base · +${sandboxStats.sources.hp.runes} run. · +${sandboxStats.sources.hp.items} obj.`,
+                  },
+                  {
+                    label: 'Dégâts d’attaque (AD)',
+                    val: sandboxStats.totals.ad,
+                    ref: recommendedStats.totals.ad,
+                    breakdown: `${sandboxStats.sources.ad.base} base · +${sandboxStats.sources.ad.runes} run. · +${sandboxStats.sources.ad.items} obj.`,
+                  },
+                  {
+                    label: 'Puissance (AP)',
+                    val: sandboxStats.totals.ap,
+                    ref: recommendedStats.totals.ap,
+                    breakdown: `0 base · +${sandboxStats.sources.ap.runes} run. · +${sandboxStats.sources.ap.items} obj.`,
+                  },
+                  {
+                    label: 'Armure',
+                    val: sandboxStats.totals.armor,
+                    ref: recommendedStats.totals.armor,
+                    breakdown: `${sandboxStats.sources.armor.base} base · +${sandboxStats.sources.armor.runes} run. · +${sandboxStats.sources.armor.items} obj.`,
+                  },
+                  {
+                    label: 'Résistance magique',
+                    val: sandboxStats.totals.mr,
+                    ref: recommendedStats.totals.mr,
+                    breakdown: `${sandboxStats.sources.mr.base} base · +${sandboxStats.sources.mr.runes} run. · +${sandboxStats.sources.mr.items} obj.`,
+                  },
+                  {
+                    label: 'Vitesse d’attaque',
+                    val: sandboxStats.totals.attackSpeed,
+                    ref: recommendedStats.totals.attackSpeed,
+                    decimals: 3,
+                    breakdown: 'Base + Croissance + Runes + Objets',
+                  },
+                  {
+                    label: 'Hâte de compétence (% CDR)',
+                    val: sandboxStats.totals.abilityHaste,
+                    ref: recommendedStats.totals.abilityHaste,
+                    suffix: ` (${sandboxStats.totals.cooldownReductionPct}% CDR)`,
+                    breakdown: `0 base · +${sandboxStats.sources.abilityHaste.runes} run. · +${sandboxStats.sources.abilityHaste.items} obj.`,
+                  },
+                  {
+                    label: 'Vitesse de déplacement',
+                    val: sandboxStats.totals.moveSpeed,
+                    ref: recommendedStats.totals.moveSpeed,
+                    breakdown: `${sandboxStats.sources.moveSpeed.base} base · +${sandboxStats.sources.moveSpeed.runes} run. · +${sandboxStats.sources.moveSpeed.items} obj.`,
+                  },
+                ].map((row) => {
+                  const rawDiff = row.decimals
+                    ? Number((row.val - row.ref).toFixed(row.decimals))
+                    : Number((row.val - row.ref).toFixed(1));
+                  const formattedVal = row.decimals ? row.val.toFixed(row.decimals) : row.val;
+                  const formattedDiff =
+                    rawDiff === 0
+                      ? '—'
+                      : row.decimals
+                        ? `${rawDiff > 0 ? '+' : ''}${rawDiff.toFixed(row.decimals)}`
+                        : rawDiff > 0
+                          ? `+${rawDiff}`
+                          : `${rawDiff}`;
+
+                  return (
+                    <tr key={row.label} className="hover:bg-slate-50 dark:hover:bg-slate-800/30">
+                      <td className="py-2 px-4 font-sans text-slate-700 dark:text-slate-200">
+                        {row.label}
+                      </td>
+                      <td className="py-2 px-3 text-right font-semibold text-slate-900 dark:text-white">
+                        {formattedVal}
+                        {row.suffix || ''}
+                      </td>
+                      <td className="py-2 px-3 text-right text-[11px] font-sans text-slate-500 dark:text-slate-400 whitespace-nowrap">
+                        {row.breakdown}
+                      </td>
+                      <td
+                        className={`py-2 px-4 text-right font-semibold ${
+                          rawDiff > 0
+                            ? 'text-emerald-600 dark:text-emerald-400'
+                            : rawDiff < 0
+                              ? 'text-rose-600 dark:text-rose-400'
+                              : 'text-slate-400'
+                        }`}
+                      >
+                        {formattedDiff}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="xl:col-span-5 space-y-3">
+            <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] p-4 space-y-3">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-semibold text-slate-900 dark:text-white">
+                  Statistiques secondaires &amp; utilitaires
+                </span>
+                <span className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                  Valeur objets : {sandboxStats.combat.statGoldValue} po
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-xs font-mono tabular-nums">
+                {[
+                  {
+                    label: 'Régén. PV de base',
+                    val: `+${sandboxStats.totals.hpRegenPct}%`,
+                    highlight: sandboxStats.totals.hpRegenPct > 0,
+                  },
+                  {
+                    label: 'Soins / Boucliers reçus',
+                    val: `+${sandboxStats.totals.healShieldReceivedPct}%`,
+                    highlight: sandboxStats.totals.healShieldReceivedPct > 0,
+                  },
+                  {
+                    label: 'Anti-soin (Hémorragie)',
+                    val: sandboxStats.totals.antiHealPct > 0 ? `${sandboxStats.totals.antiHealPct}% actif` : '0%',
+                    highlight: sandboxStats.totals.antiHealPct > 0,
+                  },
+                  {
+                    label: 'On-Hit / Lame enchantée',
+                    val: `+${sandboxStats.combat.onHitPerAttack} / +${sandboxStats.combat.spellbladeProcDmg}`,
+                    highlight:
+                      sandboxStats.combat.onHitPerAttack > 0 ||
+                      sandboxStats.combat.spellbladeProcDmg > 0,
+                  },
+                  {
+                    label: 'Double On-Hit',
+                    val: sandboxStats.totals.doubleOnHitActive ? 'Actif (×2)' : 'Inactif',
+                    highlight: sandboxStats.totals.doubleOnHitActive,
+                  },
+                  {
+                    label: 'Sustain combat estimé',
+                    val: `~${sandboxStats.combat.combatSustainPerSec} PV/s`,
+                    highlight: sandboxStats.combat.combatSustainPerSec > 0,
+                  },
+                  {
+                    label: 'Réd. dégâts AA / Crit',
+                    val: `-${sandboxStats.totals.aaDamageReductionPct}% / -${sandboxStats.totals.critDamageReductionPct}%`,
+                    highlight:
+                      sandboxStats.totals.aaDamageReductionPct > 0 ||
+                      sandboxStats.totals.critDamageReductionPct > 0,
+                  },
+                  {
+                    label: 'Ténacité cumulée',
+                    val: `${sandboxStats.totals.tenacityPct}%`,
+                    highlight: sandboxStats.totals.tenacityPct > 0,
+                  },
+                  {
+                    label: 'Soins & Boucliers donnés',
+                    val: `+${sandboxStats.totals.healShieldPowerPct}%`,
+                    highlight: sandboxStats.totals.healShieldPowerPct > 0,
+                  },
+                  {
+                    label: 'Vol de vie / Omnivamp',
+                    val: `${sandboxStats.totals.lifeStealPct}% / ${sandboxStats.totals.omnivampPct}%`,
+                    highlight:
+                      sandboxStats.totals.lifeStealPct > 0 ||
+                      sandboxStats.totals.omnivampPct > 0,
+                  },
+                  {
+                    label: 'Crit. / Pén. Arm. / Lét.',
+                    val: `${sandboxStats.totals.critChancePct}% · ${sandboxStats.totals.armorPenPct}% / ${sandboxStats.totals.lethality}`,
+                    highlight:
+                      sandboxStats.totals.critChancePct > 0 ||
+                      sandboxStats.totals.armorPenPct > 0 ||
+                      sandboxStats.totals.lethality > 0,
+                  },
+                  {
+                    label: 'Pén. Magique',
+                    val: `${sandboxStats.totals.magicPenPct}% / +${sandboxStats.totals.magicPenFlat}`,
+                    highlight:
+                      sandboxStats.totals.magicPenPct > 0 ||
+                      sandboxStats.totals.magicPenFlat > 0,
+                  },
+                  {
+                    label: 'Mana max (Régén.)',
+                    val: `${sandboxStats.totals.mana} (+${sandboxStats.totals.manaRegenPct}%)`,
+                    highlight: sandboxStats.totals.manaRegenPct > 0,
+                  },
+                  {
+                    label: 'Valeur Runes (Niv.' + runeSimLevel + ')',
+                    val: `~${sandboxStats.combat.runeGoldValue} po`,
+                    highlight: true,
+                  },
+                ].map((sec) => (
+                  <div
+                    key={sec.label}
+                    className="rounded-lg border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-[#121722] px-3 py-2"
+                  >
+                    <div className="font-sans text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                      {sec.label}
+                    </div>
+                    <div
+                      className={`mt-0.5 font-semibold ${
+                        sec.highlight
+                          ? 'text-amber-600 dark:text-amber-400'
+                          : 'text-slate-900 dark:text-white'
+                      }`}
+                    >
+                      {sec.val}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Passifs uniques & synergies de combat actifs sur la configuration */}
+        {sandboxStats.activePassives.length > 0 && (
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+              <span className="font-semibold text-slate-900 dark:text-white flex items-center gap-1.5">
+                <Sparkles className="w-3.5 h-3.5 text-amber-500" aria-hidden="true" />
+                Passifs uniques &amp; effets de combat actifs ({sandboxStats.activePassives.length})
+              </span>
+              <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                Calculés dynamiquement selon vos PV, AP, Armure, RM et le niveau {runeSimLevel}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2.5">
+              {sandboxStats.activePassives.map((pas, idx) => {
+                const matchedItem = sandboxActiveItems.find((it) => it.id === pas.itemId);
+                return (
+                  <div
+                    key={`${pas.itemId}-${idx}`}
+                    className="rounded-lg border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-[#121722] p-3 flex items-start gap-2.5 text-xs"
+                  >
+                    {matchedItem ? (
+                      <SafeGameIcon
+                        src={matchedItem.imageUrl}
+                        alt={matchedItem.name}
+                        fallbackLabel={matchedItem.name}
+                        sizeClass="w-8 h-8"
+                      />
+                    ) : (
+                      <div className="w-8 h-8 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-center shrink-0">
+                        <Swords className="w-4 h-4 text-amber-500" aria-hidden="true" />
+                      </div>
+                    )}
+                    <div className="min-w-0 space-y-0.5">
+                      <div className="flex flex-wrap items-baseline gap-1.5">
+                        <span className="font-semibold text-slate-900 dark:text-white">
+                          {pas.itemName}
+                        </span>
+                        <span className="text-[11px] font-medium text-amber-600 dark:text-amber-400">
+                          · {pas.effectTitle}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-snug">
+                        {pas.detail}
+                      </p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </section>
+
+      {/* Calculateur Multi-Combinaisons (Test réel de centaines de combinaisons Objets x Runes) */}
+      <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5 space-y-4">
+        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-2">
+          <div>
+            <h2 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+              <Layers className="w-4 h-4 text-amber-500 shrink-0" aria-hidden="true" />
+              <span>Calculateur Multi-Combinaisons — Meilleurs choix par situation</span>
+            </h2>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+              Évaluation déterministe en direct de{' '}
+              <strong className="font-mono tabular-nums text-slate-700 dark:text-slate-200">
+                {combinatorialResult.testedCombinationsCount}
+              </strong>{' '}
+              combinaisons ({combinatorialResult.testedItemCombos} configurations d’objets × {combinatorialResult.testedRuneCombos} variantes de runes) sur le patch {ddragon.version}.
+            </p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3.5">
+          {combinatorialResult.candidates.map((cand) => (
+            <div
+              key={cand.id}
+              className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] p-4 flex flex-col justify-between gap-3"
+            >
+              <div className="space-y-2.5">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <div className="text-xs font-bold text-slate-900 dark:text-white">
+                      {cand.scenarioTitle}
+                    </div>
+                    <div className="text-[11px] font-medium text-amber-600 dark:text-amber-400">
+                      {cand.scenarioBadge} · Score {cand.score}/100
+                    </div>
+                  </div>
+                </div>
+
+                <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                  {cand.situationHint}
+                </p>
+
+                <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                  {cand.items.map((it) => (
+                    <div key={it.id} title={`${it.name} (${it.gold.total} po)`}>
+                      <SafeGameIcon
+                        src={it.imageUrl}
+                        alt={it.name}
+                        fallbackLabel={it.name}
+                        sizeClass="w-8 h-8"
+                      />
+                    </div>
+                  ))}
+                </div>
+
+                <div className="text-[11px] text-slate-700 dark:text-slate-200 pt-1 border-t border-slate-200/70 dark:border-slate-800 space-y-0.5">
+                  <div>
+                    Runes : <strong>{cand.keystoneName}</strong> ({cand.primaryTreeName} + {cand.secondaryTreeName})
+                  </div>
+                  <div className="font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                    {cand.stats.combat.totalGold} po · {cand.stats.combat.goldEfficiencyPct}% eff. · DPS {cand.stats.combat.autoDps}/s
+                  </div>
+                </div>
+
+                <ul className="space-y-0.5 text-[11px] text-slate-600 dark:text-slate-300">
+                  {cand.reasons.map((r, i) => (
+                    <li key={i}>· {r}</li>
+                  ))}
+                </ul>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  const paddedIds: (string | null)[] = Array.from(
+                    { length: 6 },
+                    (_, i) => cand.items[i]?.id || null,
+                  );
+                  setCustomBuildItemIds(paddedIds);
+                  setCustomRuneSelection(cand.runeSelection);
+                  setRuneViewMode('recommended');
+                  if (cand.scenarioKey === 'behind') setScenario('behind');
+                  else if (cand.scenarioKey === 'ahead') setScenario('ahead');
+                  else setScenario('balanced');
+                }}
+                className="w-full px-3 py-2 text-xs font-semibold rounded-lg bg-amber-600 dark:bg-amber-500 text-white dark:text-slate-950 hover:bg-amber-500 dark:hover:bg-amber-400 transition-colors"
+              >
+                Charger ce build + runes
+              </button>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* Section Pleine Largeur : Page de Runes interactive (Client LoL) + Simulateur d'impact en temps réel */}
+      {(() => {
+        const showingCurrent = runeViewMode === 'current' && Boolean(detectedRunePage);
+        const isModified = customRuneSelection !== null;
+
+        const metaAllIds = new Set([
+          metaRuneSelection.keystoneId,
+          ...metaRuneSelection.primaryMinorIds,
+          ...metaRuneSelection.secondaryMinorIds,
+        ]);
+
+        const displaySelection =
+          showingCurrent && detectedAsSelection ? detectedAsSelection : activeSandboxSelection;
+
+        const displayAllIds = [
+          displaySelection.keystoneId,
+          ...displaySelection.primaryMinorIds,
+          ...displaySelection.secondaryMinorIds,
+        ];
+
+        const activeComparison = showingCurrent && detectedAsSelection
+          ? compareRunePages({
+              champ: playerChampion,
+              role,
+              threats: recommendation.threatSummary,
+              runeTrees: ddragon.runeTrees,
+              custom: detectedAsSelection,
+              meta: metaRuneSelection,
+              level: runeSimLevel,
+            })
+          : runeComparison;
+
+        const verdictColors = {
+          emerald: 'text-emerald-600 dark:text-emerald-400 border-emerald-500/35 bg-emerald-500/10',
+          sky: 'text-sky-600 dark:text-sky-400 border-sky-500/35 bg-sky-500/10',
+          amber: 'text-amber-600 dark:text-amber-400 border-amber-500/35 bg-amber-500/10',
+          rose: 'text-rose-600 dark:text-rose-400 border-rose-500/35 bg-rose-500/10',
+        }[activeComparison.verdictTone];
+
+        return (
+          <div className="space-y-4">
+            <VisualRunePage
+              runeTrees={ddragon.runeTrees}
+              primaryTreeId={displaySelection.primaryTreeId}
+              secondaryTreeId={displaySelection.secondaryTreeId}
+              keystoneId={displaySelection.keystoneId}
+              selectedRuneIds={displayAllIds}
+              shardIndicesOverride={displaySelection.shardIndices}
+              compareRuneIds={showingCurrent || isModified ? metaAllIds : undefined}
+              championName={playerChampion.name}
+              editable={!showingCurrent}
+              onChangeSelection={(next) => {
+                setRuneViewMode('recommended');
+                setCustomRuneSelection(next);
+              }}
+              onResetToMeta={isModified ? () => setCustomRuneSelection(null) : undefined}
+              pageTitle={
+                showingCurrent && detectedRunePage
+                  ? `Page équipée${detectedRunePage.pageName ? ` · « ${detectedRunePage.pageName} »` : ''}`
+                  : isModified
+                    ? `${playerChampion.name} · Test en direct (${activeComparison.score}/100)`
+                    : `${playerChampion.name} · Page conseillée (Méta)`
+              }
+              sourceLabel={
+                showingCurrent && detectedRunePage
+                  ? `${detectedRunePage.sourceLabel} · ${activeComparison.matchedCount}/6 alignées méta`
+                  : isModified
+                    ? `Bac à sable interactif (${activeComparison.matchedCount}/6 méta)`
+                    : `Moteur S16 (${playerChampion.name})`
+              }
+              headerActions={
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <div className="flex items-center gap-1 p-1 rounded-lg bg-[#08101C] border border-[#C8AA6E]/35">
+                    <button
+                      type="button"
+                      onClick={() => setRuneViewMode('recommended')}
+                      className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 ${
+                        !showingCurrent
+                          ? 'bg-[#C8AA6E] text-[#09121F]'
+                          : 'text-[#C8C3B4] hover:text-white'
+                      }`}
+                    >
+                      {isModified ? 'Bac à sable (Modifiée)' : 'Page conseillée / Test'}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!detectedRunePage}
+                      onClick={() => setRuneViewMode('current')}
+                      title={
+                        detectedRunePage
+                          ? 'Afficher votre page de runes actuellement utilisée dans League of Legends'
+                          : 'Lancez le pont local ou collez votre partie pour détecter vos runes actives'
+                      }
+                      className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 ${
+                        showingCurrent
+                          ? 'bg-sky-500 text-white'
+                          : detectedRunePage
+                            ? 'text-[#F0E6D2] hover:bg-white/10'
+                            : 'text-slate-500 opacity-60 cursor-not-allowed'
+                      }`}
+                    >
+                      {detectedRunePage
+                        ? `Votre page équipée${detectedRunePage.pageName ? ` (${detectedRunePage.pageName})` : ''}`
+                        : 'Votre page (non détectée)'}
+                    </button>
+                  </div>
+                  {showingCurrent && detectedAsSelection && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCustomRuneSelection(detectedAsSelection);
+                        setRuneViewMode('recommended');
+                      }}
+                      className="px-3 py-1.5 text-xs font-semibold rounded-lg border border-sky-400/50 bg-sky-500/15 text-sky-200 hover:bg-sky-500/25 transition-colors whitespace-nowrap"
+                    >
+                      Modifier cette page
+                    </button>
+                  )}
+                </div>
+              }
+              footerNote={
+                showingCurrent
+                  ? 'Comparaison directe : les runes entourées en bleu sur votre page équipée diffèrent de la page méta recommandée.'
+                  : isModified
+                    ? 'Mode interactif actif : cliquez sur n’importe quel arbre, rune ou fragment pour mesurer son impact en jeu ci-dessous.'
+                    : `${recommendation.runes.rationale} Cliquez sur une rune ou un fragment ci-dessus pour tester des variantes en direct.`
+              }
+            />
+
+            {/* Simulateur d'impact en jeu (Stats Lv 1-18, Mécaniques & Verdict Comparatif) */}
+            <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5 space-y-5">
+              <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 pb-4 border-b border-slate-200 dark:border-slate-800">
+                <div className="space-y-1">
+                  <div className="flex flex-wrap items-center gap-2.5">
+                    <h3 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                      <Gauge className="w-4 h-4 text-amber-500" aria-hidden="true" />
+                      Impact en jeu &amp; Comparatif interactif
+                    </h3>
+                    <span
+                      className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 text-xs font-bold rounded-md border font-mono tabular-nums ${verdictColors}`}
+                    >
+                      {activeComparison.verdict} · {activeComparison.score}/100
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                    {activeComparison.summary}
                   </p>
                 </div>
 
-                {/* Sélecteur Conseillée vs Page équipée (Client LoL) */}
-                <div className="flex items-center gap-1 p-1 rounded-lg bg-slate-100 dark:bg-[#0B0E14] border border-slate-200 dark:border-slate-800 self-start md:self-auto">
-                  <button
-                    type="button"
-                    onClick={() => setRuneViewMode('recommended')}
-                    className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 ${
-                      !showingCurrent
-                        ? 'bg-amber-600 dark:bg-amber-500 text-white dark:text-slate-950'
-                        : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
-                    }`}
-                  >
-                    Page conseillée (Méta)
-                  </button>
-                  <button
-                    type="button"
-                    disabled={!detectedRunePage}
-                    onClick={() => setRuneViewMode('current')}
-                    title={
-                      detectedRunePage
-                        ? 'Afficher votre page de runes actuellement utilisée dans League of Legends'
-                        : 'Lancez le pont local ou collez votre partie pour détecter vos runes actives'
-                    }
-                    className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 ${
-                      showingCurrent
-                        ? 'bg-sky-600 text-white'
-                        : detectedRunePage
-                          ? 'text-slate-700 dark:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-slate-800'
-                          : 'text-slate-400 dark:text-slate-500 opacity-60 cursor-not-allowed'
-                    }`}
-                  >
-                    {detectedRunePage
-                      ? `Votre page équipée${detectedRunePage.pageName ? ` (${detectedRunePage.pageName})` : ''}`
-                      : 'Votre page (non détectée)'}
-                  </button>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
-                {/* Colonne 1 : Arbre Principal (Grille visuelle + Noms lisibles à côté) */}
-                <div className="lg:col-span-5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0B0E14] p-4 flex flex-col justify-between gap-4">
-                  <div className="flex items-center justify-between gap-2 pb-2.5 border-b border-slate-200 dark:border-slate-800">
-                    <div className="flex items-center gap-2.5">
-                      {activePrimaryTree && (
-                        <SafeGameIcon
-                          src={activePrimaryTree.imageUrl}
-                          alt={activePrimaryTree.name}
-                          fallbackLabel={activePrimaryTree.name}
-                          sizeClass="w-8 h-8"
-                          className="rounded-full border-0"
-                        />
-                      )}
-                      <div>
-                        <div className="text-sm font-bold text-amber-600 dark:text-amber-400">
-                          {activePrimaryTree?.name || 'Arbre Principal'}
-                        </div>
-                        <div className="text-[11px] text-slate-500 dark:text-slate-400">
-                          Branche principale (4 runes)
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Rangée 0 : Runes fondamentales */}
-                  {activePrimaryTree?.slots?.[0] && (
-                    <div className="flex items-center justify-around gap-2 py-1">
-                      {activePrimaryTree.slots[0].runes.map((rune) => {
-                        const active = rune.id === activeKeystoneId;
-                        const differsFromRec = showingCurrent && active && !recSelectedIds.has(rune.id);
-                        return (
-                          <div
-                            key={rune.id}
-                            title={`${rune.name} — ${cleanText(rune.shortDesc)}`}
-                            className={`flex flex-col items-center gap-1 transition-all ${
-                              active ? 'scale-105' : 'opacity-35 grayscale hover:opacity-85 hover:grayscale-0'
-                            }`}
-                          >
-                            <div
-                              className={`p-0.5 rounded-full ${
-                                active
-                                  ? differsFromRec
-                                    ? 'ring-2 ring-sky-400 bg-sky-500/20'
-                                    : 'ring-2 ring-amber-400 bg-amber-500/20 shadow-md shadow-amber-500/20'
-                                  : 'border border-slate-700/60'
-                              }`}
-                            >
-                              <SafeGameIcon
-                                src={rune.imageUrl}
-                                alt={rune.name}
-                                fallbackLabel={rune.name}
-                                sizeClass="w-11 h-11"
-                                className="rounded-full border-0"
-                              />
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-
-                  {/* Rangées 1 à 3 : Runes mineures */}
-                  <div className="space-y-3">
-                    {(activePrimaryTree?.slots || []).slice(1, 4).map((slot, rowIdx) => (
-                      <div
-                        key={rowIdx}
-                        className="flex items-center justify-around gap-2 pt-2.5 border-t border-slate-200/70 dark:border-slate-800/80"
-                      >
-                        {slot.runes.map((rune) => {
-                          const active = activeRuneIds.has(rune.id);
-                          const differsFromRec = showingCurrent && active && !recSelectedIds.has(rune.id);
-                          return (
-                            <div
-                              key={rune.id}
-                              title={`${rune.name} — ${cleanText(rune.shortDesc)}`}
-                              className={`p-0.5 rounded-full transition-all ${
-                                active
-                                  ? differsFromRec
-                                    ? 'ring-2 ring-sky-400 bg-sky-500/20 scale-105'
-                                    : 'ring-2 ring-amber-400 bg-amber-500/15 scale-105'
-                                  : 'opacity-35 grayscale hover:opacity-85 hover:grayscale-0'
-                              }`}
-                            >
-                              <SafeGameIcon
-                                src={rune.imageUrl}
-                                alt={rune.name}
-                                fallbackLabel={rune.name}
-                                sizeClass="w-9 h-9"
-                                className="rounded-full border-0"
-                              />
-                            </div>
-                          );
-                        })}
-                      </div>
-                    ))}
-                  </div>
-
-                  {/* Liste claire & lisible des 4 runes actives */}
-                  <div className="pt-3 border-t border-slate-200 dark:border-slate-800 space-y-1.5 text-xs">
-                    {selectedPrimaryList.map((rune, idx) => (
-                      <div key={rune.id} className="flex items-baseline justify-between gap-2">
-                        <span
-                          className={
-                            idx === 0
-                              ? 'font-semibold text-amber-600 dark:text-amber-400'
-                              : 'font-medium text-slate-800 dark:text-slate-200'
-                          }
-                        >
-                          {idx === 0 ? '★ ' : '· '}
-                          {rune.name}
-                        </span>
-                        {showingCurrent && !recSelectedIds.has(rune.id) && (
-                          <span className="text-[11px] text-sky-500 shrink-0">Différente de la méta</span>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Colonne 2 : Arbre Secondaire */}
-                <div className="lg:col-span-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0B0E14] p-4 flex flex-col justify-between gap-4">
-                  <div className="flex items-center gap-2.5 pb-2.5 border-b border-slate-200 dark:border-slate-800">
-                    {activeSecondaryTree && (
-                      <SafeGameIcon
-                        src={activeSecondaryTree.imageUrl}
-                        alt={activeSecondaryTree.name}
-                        fallbackLabel={activeSecondaryTree.name}
-                        sizeClass="w-8 h-8"
-                        className="rounded-full border-0"
-                      />
-                    )}
-                    <div>
-                      <div className="text-sm font-bold text-sky-600 dark:text-sky-400">
-                        {activeSecondaryTree?.name || 'Arbre Secondaire'}
-                      </div>
-                      <div className="text-[11px] text-slate-500 dark:text-slate-400">
-                        Branche secondaire (2 runes)
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="space-y-3 my-auto">
-                    {(activeSecondaryTree?.slots || []).slice(1, 4).map((slot, rowIdx) => (
-                      <div
-                        key={rowIdx}
-                        className={`flex items-center justify-around gap-2 ${
-                          rowIdx > 0 ? 'pt-2.5 border-t border-slate-200/70 dark:border-slate-800/80' : ''
+                {/* Sélecteur de niveau pour voir l'impact réel du niveau 1 au niveau 18 */}
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className="text-xs text-slate-500 dark:text-slate-400">Simuler au :</span>
+                  <div className="flex items-center gap-1 p-1 rounded-lg bg-slate-100 dark:bg-[#0B0E14] border border-slate-200 dark:border-slate-800">
+                    {[1, 6, 11, 18].map((lvl) => (
+                      <button
+                        key={lvl}
+                        type="button"
+                        onClick={() => setRuneSimLevel(lvl)}
+                        className={`px-2.5 py-1 text-xs font-mono font-semibold rounded-md transition-colors ${
+                          runeSimLevel === lvl
+                            ? 'bg-amber-600 dark:bg-amber-500 text-white dark:text-slate-950'
+                            : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
                         }`}
                       >
-                        {slot.runes.map((rune) => {
-                          const active = activeRuneIds.has(rune.id);
-                          return (
-                            <div
-                              key={rune.id}
-                              title={`${rune.name} — ${cleanText(rune.shortDesc)}`}
-                              className={`p-0.5 rounded-full transition-all ${
-                                active
-                                  ? 'ring-2 ring-sky-400 bg-sky-500/20 scale-105'
-                                  : 'opacity-35 grayscale hover:opacity-85 hover:grayscale-0'
-                              }`}
-                            >
-                              <SafeGameIcon
-                                src={rune.imageUrl}
-                                alt={rune.name}
-                                fallbackLabel={rune.name}
-                                sizeClass="w-9 h-9"
-                                className="rounded-full border-0"
-                              />
-                            </div>
-                          );
-                        })}
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className="pt-3 border-t border-slate-200 dark:border-slate-800 space-y-1.5 text-xs">
-                    {selectedSecondaryList.map((rune) => (
-                      <div key={rune.id} className="flex items-baseline justify-between gap-2">
-                        <span className="font-medium text-sky-600 dark:text-sky-400">
-                          · {rune.name}
-                        </span>
-                        {showingCurrent && !recSelectedIds.has(rune.id) && (
-                          <span className="text-[11px] text-amber-500 shrink-0">Hors méta</span>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Colonne 3 : Fragments de statistiques 3x3 sans débordement */}
-                <div className="lg:col-span-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0B0E14] p-4 flex flex-col justify-between gap-4">
-                  <div className="pb-2.5 border-b border-slate-200 dark:border-slate-800">
-                    <div className="text-sm font-bold text-slate-900 dark:text-white">
-                      Fragments (3×3)
-                    </div>
-                    <div className="text-[11px] text-slate-500 dark:text-slate-400">
-                      Statistiques bonus de début de partie
-                    </div>
-                  </div>
-
-                  <div className="space-y-3 my-auto">
-                    {recommendation.runes.shardRows.map((row, rIdx) => {
-                      const chosenIdx = activeShardIndices[rIdx] ?? row.selectedIndex;
-                      return (
-                        <div key={row.rowLabel} className="space-y-1">
-                          <div className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
-                            {row.rowLabel}
-                          </div>
-                          <div className="grid grid-cols-3 gap-1.5">
-                            {row.options.map((opt, cIdx) => {
-                              const active = cIdx === chosenIdx;
-                              const shortLbl = shardShortTokens[rIdx]?.[cIdx] || opt.slice(0, 7);
-                              return (
-                                <div
-                                  key={opt}
-                                  title={opt}
-                                  className={`py-1.5 px-1 rounded-md text-center text-[11px] font-mono tabular-nums border whitespace-nowrap overflow-hidden ${
-                                    active
-                                      ? showingCurrent
-                                        ? 'border-sky-400 bg-sky-500/15 text-sky-600 dark:text-sky-300 font-bold'
-                                        : 'border-amber-400 bg-amber-500/15 text-amber-700 dark:text-amber-300 font-bold'
-                                      : 'border-slate-200 dark:border-slate-800 text-slate-400 opacity-50'
-                                  }`}
-                                >
-                                  {shortLbl}
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  <div className="pt-3 border-t border-slate-200 dark:border-slate-800 space-y-1 text-xs text-slate-700 dark:text-slate-300">
-                    {activeShardLabels.map((lbl, idx) => (
-                      <div key={idx}>· {lbl}</div>
+                        Niv.{lvl}
+                      </button>
                     ))}
                   </div>
                 </div>
               </div>
 
-              <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-                {showingCurrent
-                  ? 'Comparaison directe avec la page conseillée : les runes entourées en bleu sur votre page actuelle ne correspondent pas à la recommandation optimale pour ce match-up.'
-                  : recommendation.runes.rationale}
-              </p>
-            </>
-          );
-        })()}
-      </section>
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+                {/* Tableau des statistiques comparées (Test vs Méta) */}
+                <div className="lg:col-span-5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] p-4 space-y-3">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-semibold text-slate-900 dark:text-white">
+                      Statistiques effectives ({playerChampion.name} Niv.{runeSimLevel})
+                    </span>
+                    <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                      Base + Runes + Fragments
+                    </span>
+                  </div>
+
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-500 dark:text-slate-400">
+                        <th className="py-1.5 text-left font-medium">Statistique</th>
+                        <th className="py-1.5 text-right font-medium">Page active</th>
+                        <th className="py-1.5 text-right font-medium">Méta</th>
+                        <th className="py-1.5 text-right font-medium">Écart</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-200/70 dark:divide-slate-800/70 font-mono tabular-nums">
+                      {activeComparison.statRows.map((row) => (
+                        <tr key={row.key}>
+                          <td className="py-2 font-sans text-slate-700 dark:text-slate-300">
+                            {row.label}
+                          </td>
+                          <td className="py-2 text-right font-semibold text-slate-900 dark:text-white">
+                            {row.customValue}
+                          </td>
+                          <td className="py-2 text-right text-slate-500 dark:text-slate-400">
+                            {row.metaValue}
+                          </td>
+                          <td
+                            className={`py-2 text-right font-semibold ${
+                              row.direction === 'up'
+                                ? 'text-emerald-600 dark:text-emerald-400'
+                                : row.direction === 'down'
+                                  ? 'text-rose-600 dark:text-rose-400'
+                                  : 'text-slate-400'
+                            }`}
+                          >
+                            {row.deltaLabel}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Mécaniques de jeu activées + Points forts / Compromis */}
+                <div className="lg:col-span-7 space-y-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="p-3.5 rounded-xl border border-emerald-500/25 bg-emerald-500/5 space-y-2 text-xs">
+                      <div className="font-semibold text-emerald-700 dark:text-emerald-400 flex items-center gap-1.5">
+                        <CheckCircle2 className="w-3.5 h-3.5" aria-hidden="true" />
+                        Avantages de cette configuration
+                      </div>
+                      {activeComparison.pros.length === 0 ? (
+                        <p className="text-slate-500 dark:text-slate-400">
+                          Modifiez une rune ci-dessus pour observer les avantages spécifiques.
+                        </p>
+                      ) : (
+                        <ul className="space-y-1 text-slate-700 dark:text-slate-300 leading-relaxed">
+                          {activeComparison.pros.map((pro, idx) => (
+                            <li key={idx}>· {pro}</li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+
+                    <div className="p-3.5 rounded-xl border border-amber-500/25 bg-amber-500/5 space-y-2 text-xs">
+                      <div className="font-semibold text-amber-700 dark:text-amber-400 flex items-center gap-1.5">
+                        <AlertTriangle className="w-3.5 h-3.5" aria-hidden="true" />
+                        Compromis &amp; points d’attention
+                      </div>
+                      {activeComparison.tradeoffs.length === 0 ? (
+                        <p className="text-emerald-700 dark:text-emerald-300">
+                          Aucun compromis critique détecté face à cette composition adverse.
+                        </p>
+                      ) : (
+                        <ul className="space-y-1 text-slate-700 dark:text-slate-300 leading-relaxed">
+                          {activeComparison.tradeoffs.map((t, idx) => (
+                            <li key={idx}>· {t}</li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] p-4 space-y-2.5">
+                    <div className="text-xs font-semibold text-slate-900 dark:text-white">
+                      Mécaniques de gameplay activées avec ce choix
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                      {activeComparison.mechanics.map((m, idx) => (
+                        <div
+                          key={`${m.source}-${idx}`}
+                          className="p-2.5 rounded-lg border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-[#121722] space-y-0.5"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-semibold text-slate-900 dark:text-white">
+                              {m.source}
+                            </span>
+                            <span className="text-[10px] font-medium text-amber-600 dark:text-amber-400">
+                              {m.category}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                            {m.effect}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Preuves de validation mathématique des runes */}
+                  {(() => {
+                    const checks = validateRuneConfiguration({
+                      champion: playerChampion,
+                      role,
+                      threats: recommendation.threatSummary,
+                      selection: displaySelection,
+                      stats: sandboxStats,
+                    });
+                    return (
+                      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] p-4 space-y-2.5">
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="font-semibold text-slate-900 dark:text-white">
+                            Contrôle &amp; preuves de validation des runes
+                          </span>
+                          <span className="text-[11px] font-mono tabular-nums text-emerald-600 dark:text-emerald-400">
+                            {checks.filter((c) => c.passed).length}/{checks.length} vérifiés
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                          {checks.map((chk) => (
+                            <div
+                              key={chk.label}
+                              className="p-2.5 rounded-lg border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-[#121722] space-y-1"
+                            >
+                              <div className="flex items-center gap-1.5 font-semibold text-slate-900 dark:text-white">
+                                {chk.passed ? (
+                                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" aria-hidden="true" />
+                                ) : (
+                                  <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0" aria-hidden="true" />
+                                )}
+                                <span className="truncate">{chk.label}</span>
+                              </div>
+                              <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-snug">
+                                {chk.detail}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+              </div>
+            </section>
+          </div>
+        );
+      })()}
 
       {/* Plan tactique IA Gemini (Pleine largeur) */}
       <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5 space-y-4">
@@ -1603,88 +2663,244 @@ export function BuildOptimizerView({
         )}
       </section>
 
-      {/* Modal Sélecteur Universel de Champion (173 champions + filtres par classe) */}
+      {/* Modal Sélecteur Universel de Champion (Portraits Champion Select + filtres FR) */}
       {pickerTarget && (
         <div
-          className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4"
+          className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-4"
           role="dialog"
           aria-modal="true"
           aria-label="Sélectionner un champion"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setPickerTarget(null);
+          }}
         >
-          <div className="w-full max-w-3xl rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] overflow-hidden shadow-2xl">
-            <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-4">
+          <div className="w-full max-w-4xl rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] overflow-hidden shadow-2xl">
+            <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
               <div>
-                <div className="font-semibold text-sm text-slate-900 dark:text-white">
+                <div className="font-semibold text-base text-slate-900 dark:text-white">
                   {pickerTarget.type === 'player'
                     ? 'Choisir votre champion'
                     : pickerTarget.type === 'duo'
                       ? 'Choisir votre partenaire de duo / allié clé'
                       : `Choisir l'adversaire (${ENEMY_SLOT_LABELS[pickerTarget.index ?? 0]})`}
                 </div>
-                <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-                  Liste complète : {filteredChampions.length} / {ddragon.champions.length} champions affichés
+                <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                  {filteredChampions.length} / {ddragon.champions.length} champions · Cliquez sur un portrait pour sélectionner
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={() => setPickerTarget(null)}
-                className="p-1.5 rounded-lg text-slate-500 hover:text-slate-900 dark:hover:text-white"
-                aria-label="Fermer"
-              >
-                <X className="w-4 h-4" />
-              </button>
+
+              <div className="flex items-center gap-2">
+                {pickerTarget.type === 'duo' && duoPartnerId && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      manualOverrideRef.current = true;
+                      setDuoPartnerId(null);
+                      setAiPlan(null);
+                      setPickerTarget(null);
+                    }}
+                    className="px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                  >
+                    Aucun partenaire (Solo)
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setPickerTarget(null)}
+                  className="p-2 rounded-lg text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                  aria-label="Fermer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
             </div>
 
-            <div className="p-4 border-b border-slate-200 dark:border-slate-800 space-y-3">
+            <div className="p-4 border-b border-slate-200 dark:border-slate-800 space-y-3 bg-slate-50/50 dark:bg-[#0E131D]">
               <div className="relative">
-                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" aria-hidden="true" />
                 <input
                   type="text"
                   autoFocus
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   placeholder="Rechercher parmi les 173 champions (ex: Tahm Kench, Lulu, Jinx, Zed...)"
-                  className="w-full pl-9 pr-4 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#0B0E14] text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+                  className="w-full pl-10 pr-9 py-2.5 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-[#0B0E14] text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
                 />
+                {searchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchQuery('')}
+                    aria-label="Effacer la recherche"
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 dark:hover:text-white"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                )}
               </div>
 
-              <div className="flex flex-wrap items-center gap-1 p-1 rounded-lg bg-slate-100 dark:bg-[#0B0E14] border border-slate-200 dark:border-slate-800">
-                {PICKER_TAGS.map((tag) => (
+              <div className="flex flex-wrap items-center gap-1 p-1 rounded-lg bg-slate-100 dark:bg-[#0B0E14] border border-slate-200 dark:border-slate-800 w-fit">
+                {PICKER_TAG_OPTIONS.map((tag) => (
                   <button
-                    key={tag}
+                    key={tag.id}
                     type="button"
-                    onClick={() => setPickerTag(tag)}
-                    className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
-                      pickerTag === tag
-                        ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-sm'
+                    onClick={() => setPickerTag(tag.id)}
+                    className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
+                      pickerTag === tag.id
+                        ? 'bg-amber-600 dark:bg-amber-500 text-white dark:text-slate-950 font-semibold'
                         : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
                     }`}
                   >
-                    {tag}
+                    {tag.label} ({pickerTagCounts[tag.id] || 0})
                   </button>
                 ))}
               </div>
             </div>
 
-            <div className="p-4 max-h-[420px] overflow-y-auto grid grid-cols-3 sm:grid-cols-6 gap-2.5">
-              {filteredChampions.map((champ) => (
+            {filteredChampions.length === 0 ? (
+              <div className="py-14 text-center space-y-3">
+                <p className="text-sm text-slate-500 dark:text-slate-400">
+                  Aucun champion trouvé pour « {searchQuery} ».
+                </p>
                 <button
-                  key={champ.id}
                   type="button"
-                  onClick={() => handleSelectChampion(champ.id)}
-                  className="flex flex-col items-center gap-1.5 p-2 rounded-lg border border-transparent hover:border-amber-500/60 hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors"
+                  onClick={() => {
+                    setSearchQuery('');
+                    setPickerTag('Tous');
+                  }}
+                  className="px-3.5 py-2 text-xs font-semibold rounded-lg bg-amber-600 dark:bg-amber-500 text-white dark:text-slate-950"
                 >
-                  <SafeGameIcon
-                    src={champ.imageUrl}
-                    alt={champ.name}
-                    fallbackLabel={champ.name}
-                    sizeClass="w-11 h-11"
-                  />
-                  <span className="text-xs text-slate-800 dark:text-slate-200 truncate w-full text-center">
-                    {champ.name}
-                  </span>
+                  Réinitialiser les filtres
                 </button>
-              ))}
+              </div>
+            ) : (
+              <div className="p-4 pr-3 max-h-[460px] overflow-y-auto thin-scrollbar grid grid-cols-3 sm:grid-cols-5 md:grid-cols-6 gap-3">
+                {filteredChampions.map((champ) => (
+                  <PickerPortraitTile
+                    key={champ.id}
+                    champion={champ}
+                    selected={currentPickerChampId === champ.id}
+                    onSelect={() => handleSelectChampion(champ.id)}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Modal Sélecteur d'Objet Data Dragon (Atelier Équipement) */}
+      {itemPickerSlotIdx !== null && (
+        <div
+          className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Choisir un objet Data Dragon"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setItemPickerSlotIdx(null);
+          }}
+        >
+          <div className="w-full max-w-4xl rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] overflow-hidden shadow-2xl">
+            <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className="font-semibold text-base text-slate-900 dark:text-white">
+                  Choisir un objet — Emplacement {itemPickerSlotIdx + 1}
+                </div>
+                <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                  {filteredCatalogItems.length} objets officiels Patch {ddragon.version} · Stats extraites en temps réel
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleAssignItemToSlot(itemPickerSlotIdx, null)}
+                  className="px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
+                >
+                  Vider l’emplacement
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setItemPickerSlotIdx(null)}
+                  aria-label="Fermer"
+                  className="p-2 rounded-lg text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            <div className="p-4 border-b border-slate-200 dark:border-slate-800 space-y-3 bg-slate-50/50 dark:bg-[#0E131D]">
+              <div className="relative">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" aria-hidden="true" />
+                <input
+                  type="text"
+                  autoFocus
+                  value={itemSearchQuery}
+                  onChange={(e) => setItemSearchQuery(e.target.value)}
+                  placeholder="Rechercher un objet (ex: Cœuracier, Randuin, Visage spirituel, Liandry...)"
+                  className="w-full pl-10 pr-9 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-[#0B0E14] text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+                />
+                {itemSearchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setItemSearchQuery('')}
+                    aria-label="Effacer"
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-1 p-1 rounded-lg bg-slate-100 dark:bg-[#0B0E14] border border-slate-200 dark:border-slate-800">
+                {ITEM_FILTER_OPTIONS.map((f) => (
+                  <button
+                    key={f.id}
+                    type="button"
+                    onClick={() => setItemFilterKey(f.id)}
+                    className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
+                      itemFilterKey === f.id
+                        ? 'bg-amber-600 dark:bg-amber-500 text-white dark:text-slate-950 font-semibold'
+                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                    }`}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="p-4 max-h-[440px] overflow-y-auto thin-scrollbar grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+              {filteredCatalogItems.slice(0, 90).map((it) => {
+                const tags = formatItemStatTags(it);
+                return (
+                  <button
+                    key={it.id}
+                    type="button"
+                    onClick={() => handleAssignItemToSlot(itemPickerSlotIdx, it)}
+                    className="flex items-start gap-3 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] hover:border-amber-500/70 text-left transition-colors"
+                  >
+                    <SafeGameIcon
+                      src={it.imageUrl}
+                      alt={it.name}
+                      fallbackLabel={it.name}
+                      sizeClass="w-10 h-10"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-baseline justify-between gap-2">
+                        <span className="text-xs font-semibold text-slate-900 dark:text-white truncate">
+                          {it.name}
+                        </span>
+                        <span className="text-[11px] font-mono tabular-nums text-amber-600 dark:text-amber-400 shrink-0">
+                          {it.gold.total} po
+                        </span>
+                      </div>
+                      <div className="text-[10px] font-mono tabular-nums text-slate-500 dark:text-slate-400 mt-0.5 truncate">
+                        {tags.length > 0 ? tags.join(' · ') : it.plaintext || 'Objet utilitaire'}
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
             </div>
           </div>
         </div>

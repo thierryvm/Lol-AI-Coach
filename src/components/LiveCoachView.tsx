@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import {
+  AlertTriangle,
   Brain,
   Check,
   ClipboardPaste,
@@ -15,6 +16,7 @@ import {
   Sparkles,
   Swords,
   Timer,
+  TrendingUp,
 } from 'lucide-react';
 import { parseLiveClientSnapshot } from '../engines/liveCoachEngine.ts';
 import type {
@@ -907,6 +909,50 @@ export function LiveCoachView({
           </div>
         </div>
       </section>
+
+      {/* Adaptation proactive pendant la partie (En difficulté / Avance) */}
+      {snapshot.comebackAdvice ? (
+        <section className="rounded-xl border border-rose-500/35 bg-rose-500/5 p-5 space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+            <h2 className="text-sm font-semibold text-rose-700 dark:text-rose-400 flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 shrink-0" aria-hidden="true" />
+              Plan d’urgence proactif — Adaptation en difficulté
+            </h2>
+            <span className="text-xs font-mono tabular-nums text-rose-600 dark:text-rose-300">
+              {snapshot.comebackAdvice.triggerReason}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-rose-500/20 text-xs leading-relaxed">
+            <div className="space-y-1">
+              <div className="font-semibold text-slate-900 dark:text-white">
+                Pivot équipement immédiat (Prochain rappel)
+              </div>
+              <p className="text-slate-700 dark:text-slate-200">
+                {snapshot.comebackAdvice.priorityItemHint}
+              </p>
+            </div>
+            <div className="space-y-1">
+              <div className="font-semibold text-slate-900 dark:text-white">
+                Ajustement gameplay &amp; macro
+              </div>
+              <p className="text-slate-700 dark:text-slate-200">
+                {snapshot.comebackAdvice.gameplayPivot}
+              </p>
+            </div>
+          </div>
+        </section>
+      ) : snapshot.gameState === 'AHEAD' ? (
+        <section className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 px-5 py-3.5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 text-xs">
+          <div className="font-semibold text-emerald-700 dark:text-emerald-400 flex items-center gap-2">
+            <TrendingUp className="w-4 h-4 shrink-0" aria-hidden="true" />
+            Dynamique favorable (En avance)
+          </div>
+          <p className="text-slate-700 dark:text-slate-300">
+            Convertissez votre avance économique : dépensez votre or avant les objectifs neutres et posez la vision profonde pour verrouiller la rivière.
+          </p>
+        </section>
+      ) : null}
 
       {/* Statistiques actuelles du champion */}
       {snapshot.activeStats && (

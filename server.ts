@@ -6,6 +6,7 @@ import { parseLiveClientSnapshot } from './src/engines/liveCoachEngine.ts';
 import type { LiveClientAllGameData, LiveCoachSnapshot, RiotPlatform, Role } from './src/engines/types.ts';
 import {
   generateBuildCoachingRationale,
+  generateCareerGlobalSynthesis,
   generateLiveCoachingCall,
   generatePostGameCoaching,
 } from './server/aiCoachService.ts';
@@ -86,8 +87,9 @@ async function startServer() {
       const tagLine = String(req.query.tagLine || 'EUW').trim();
       const region = (String(req.query.region || 'EUW1').toUpperCase() as RiotPlatform) || 'EUW1';
       const force = req.query.force === '1';
+      const count = req.query.count ? Number(req.query.count) : 15;
 
-      const profile = await syncRiotPlayerProfile(gameName, tagLine, region, force);
+      const profile = await syncRiotPlayerProfile(gameName, tagLine, region, force, count);
       res.json(profile);
     } catch (err) {
       const status = (err as Error & { status?: number }).status || 500;
@@ -229,6 +231,27 @@ async function startServer() {
     } catch (err) {
       res.status(500).json({
         error: err instanceof Error ? err.message : 'Erreur lors du coaching temps réel Gemini.',
+      });
+    }
+  });
+
+  app.post('/api/coach/career-synthesis', async (req, res) => {
+    try {
+      const { riotId, region, dataset } = req.body || {};
+      if (!dataset || !dataset.gamesAnalyzed) {
+        return res.status(400).json({
+          error: 'Aucun historique de matchs disponible pour générer la synthèse globale.',
+        });
+      }
+      const result = await generateCareerGlobalSynthesis({
+        riotId: String(riotId || 'Joueur'),
+        region: String(region || 'EUW1'),
+        dataset,
+      });
+      return res.json(result);
+    } catch (err) {
+      return res.status(500).json({
+        error: err instanceof Error ? err.message : 'Erreur lors de la synthèse globale Gemini.',
       });
     }
   });

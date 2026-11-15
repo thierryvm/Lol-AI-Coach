@@ -54,6 +54,10 @@ const HIGH_SUSTAIN_CHAMPIONS = new Set([
   'Mordekaiser',
   'Maokai',
   'Volibear',
+  'Viego',
+  'Yone',
+  'Yasuo',
+  'Rhaast',
 ]);
 
 const HYBRID_OR_AP_BRUISER = new Set([
@@ -160,6 +164,33 @@ export function classifyChampionProfile(champ: ChampionSummary): ChampionDamageP
 
   const archetype = tags.join(' / ');
 
+  const keyThreats: string[] = [];
+  if (tankinessScore >= 68) keyThreats.push('Frontline / Tank');
+  if (sustainScore >= 70) keyThreats.push('Soin / Vol de vie');
+  if (burstScore >= 75) keyThreats.push('Burst létal');
+  if (ccScore >= 70) keyThreats.push('Contrôle (CC)');
+  if (tags.includes('Marksman')) keyThreats.push('DPS soutenu');
+  if (keyThreats.length === 0) {
+    keyThreats.push(primaryDamage === 'Magique' ? 'Dégâts magiques' : 'Escarmouche');
+  }
+
+  let recommendedCounter = 'Vision & placement sûr';
+  if (sustainScore >= 70 && primaryDamage === 'Physique') {
+    recommendedCounter = 'Anti-soin (Armure ronce / Exécuteur) + Armure';
+  } else if (sustainScore >= 70) {
+    recommendedCounter = 'Anti-soin (Orbe / Exécuteur) + Tenue en combat';
+  } else if (burstScore >= 75 && primaryDamage === 'Physique') {
+    recommendedCounter = 'Armure rapide / Stase (Zhonya) · Garder un peel';
+  } else if (burstScore >= 75 && primaryDamage === 'Magique') {
+    recommendedCounter = 'Résistance magique (Kaénique / Mercures) · Éviter facecheck';
+  } else if (ccScore >= 70) {
+    recommendedCounter = 'Sandales de Mercure / Ténacité + Purge';
+  } else if (tags.includes('Marksman')) {
+    recommendedCounter = 'Coques en acier / Randuin · Focus ou zone';
+  } else if (tankinessScore >= 68) {
+    recommendedCounter = 'Pénétration % ou dégâts en % PV max';
+  }
+
   return {
     championId: id,
     championName: name,
@@ -171,5 +202,7 @@ export function classifyChampionProfile(champ: ChampionSummary): ChampionDamageP
     ccScore,
     primaryDamage,
     archetype,
+    keyThreats: keyThreats.slice(0, 3),
+    recommendedCounter,
   };
 }

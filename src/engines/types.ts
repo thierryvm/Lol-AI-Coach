@@ -149,6 +149,8 @@ export interface ChampionDamageProfile {
   ccScore: number; // 0-100
   primaryDamage: 'Physique' | 'Magique' | 'Hybride';
   archetype: string;
+  keyThreats?: string[];
+  recommendedCounter?: string;
 }
 
 export interface EnemyThreatSummary {
@@ -179,6 +181,7 @@ export interface BuildComparisonMetrics {
 }
 
 export type GameModeContext = 'CLASSIC' | 'ARAM' | 'SWIFTPLAY' | 'OTHER';
+export type GameScenario = 'balanced' | 'ahead' | 'behind';
 
 export interface BannedChampionInfo {
   championId: number;
@@ -229,6 +232,38 @@ export interface DetectedRunePage {
   shardLabels: string[];
 }
 
+export interface ChampionCareerStat {
+  championName: string;
+  games: number;
+  wins: number;
+  winRate: number;
+  avgKills: number;
+  avgDeaths: number;
+  avgAssists: number;
+  kdaRatio: number;
+  avgCsPerMin: number;
+  avgVisionPerMin: number;
+}
+
+export interface CareerTrend {
+  recentGames: number;
+  earlierGames: number;
+  winRateDelta: number;
+  deathsDelta: number;
+  csPerMinDelta: number;
+  visionDelta: number;
+}
+
+export interface ProactiveAlert {
+  id: string;
+  priority: 'Haute' | 'Moyenne' | 'Positif';
+  area: 'Survie' | 'Farming' | 'Vision' | 'Objectifs' | 'Champion Pool';
+  title: string;
+  detail: string;
+  recommendation: string;
+  championTarget?: string;
+}
+
 export interface PlayerTendencies {
   avgCsPerMin: number;
   avgDeaths: number;
@@ -237,6 +272,78 @@ export interface PlayerTendencies {
   preObjectiveDeathRate: number; // 0..1
   winRate: number;
   gamesAnalyzed: number;
+  championStats?: ChampionCareerStat[];
+  trend?: CareerTrend | null;
+  proactiveAlerts?: ProactiveAlert[];
+}
+
+export interface SavedPlayerProfile {
+  id: string;
+  label: string;
+  riotId: string;
+  region: RiotPlatform;
+  role: Role;
+}
+
+export interface CareerSynthesisDataset {
+  gamesAnalyzed: number;
+  wins: number;
+  losses: number;
+  winRate: number;
+  avgDeaths: number;
+  avgCsPerMin: number;
+  avgVisionPerMin: number;
+  avgGoldDiffAt15: number | null;
+  avgCsDiffAt15: number | null;
+  isolatedDeathPct: number;
+  preObjectiveDeathPct: number;
+  phaseDeaths: {
+    early0To12m: number;
+    mid12To24m: number;
+    late24mPlus: number;
+  };
+  zoneTotals: Array<{
+    zone: string;
+    deaths: number;
+    isolatedDeaths: number;
+    preObjectiveDeaths: number;
+    kills: number;
+  }>;
+  championStats: ChampionCareerStat[];
+  trend: CareerTrend | null;
+  matchDigests: Array<{
+    date: string;
+    champion: string;
+    role: string;
+    win: boolean;
+    kda: string;
+    csPerMin: number;
+    visionPerMin: number;
+    goldDiffAt15: number | null;
+    isolatedDeaths: number;
+    preObjectiveDeaths: number;
+    topDeathZone: string | null;
+  }>;
+}
+
+export interface CareerAiSynthesis {
+  schemaVersion?: number;
+  generatedAt: string;
+  gamesAnalyzed: number;
+  executiveSummary: string;
+  recurringPositioningErrors: Array<{
+    zoneOrPattern: string;
+    frequencyNote: string;
+    correction: string;
+  }>;
+  gameplayAdjustments: Array<{
+    area: string;
+    currentHabit: string;
+    targetAdjustment: string;
+    expectedImpact: string;
+  }>;
+  championPoolAdvice: string;
+  threeGameActionPlan: string[];
 }
 
 export interface MatchParticipantSummary {
@@ -558,5 +665,11 @@ export interface LiveCoachSnapshot {
     keystoneName?: string;
     selectedRuneIds: number[];
     statRuneIds: number[];
+  } | null;
+  gameState?: 'AHEAD' | 'EVEN' | 'BEHIND';
+  comebackAdvice?: {
+    triggerReason: string;
+    priorityItemHint: string;
+    gameplayPivot: string;
   } | null;
 }

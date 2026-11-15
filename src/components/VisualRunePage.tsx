@@ -1,5 +1,6 @@
 import { useMemo, useState, type ReactNode } from 'react';
-import { LayoutGrid, List, Pencil } from 'lucide-react';
+import { ChevronDown, LayoutGrid, List, Pencil, RotateCcw } from 'lucide-react';
+import { buildDefaultSelectionForTrees, type RunePageSelection } from '../engines/runeEngine.ts';
 import type { RuneSlotItem, RuneTree } from '../engines/types.ts';
 import { SafeGameIcon } from './SafeGameIcon.tsx';
 
@@ -17,6 +18,10 @@ export interface VisualRunePageProps {
   pageTitle?: string;
   sourceLabel?: string;
   championName?: string;
+  /** Mode interactif : permet de modifier arbres, runes et fragments à la volée */
+  editable?: boolean;
+  onChangeSelection?: (next: RunePageSelection) => void;
+  onResetToMeta?: () => void;
   /** Contrôles supplémentaires dans l'en-tête (ex: Conseillée vs Équipée) */
   headerActions?: ReactNode;
   /** Explication stratégique sous la page de runes */
@@ -383,12 +388,16 @@ export function VisualRunePage({
   pageTitle,
   sourceLabel,
   championName,
+  editable = false,
+  onChangeSelection,
+  onResetToMeta,
   headerActions,
   footerNote,
 }: VisualRunePageProps) {
   // Mode d'affichage identique au client LoL : "client" (liste fidèle) par défaut ou "grid" (grille complète)
   const [viewStyle, setViewStyle] = useState<'client' | 'grid'>('client');
   const [showDetailedDesc, setShowDetailedDesc] = useState(true);
+  const [openEditorSlot, setOpenEditorSlot] = useState<string | null>(null);
   const [inspectedItem, setInspectedItem] = useState<{
     name: string;
     desc: string;
@@ -411,7 +420,7 @@ export function VisualRunePage({
   const secondaryTheme = getTreeTheme(secondaryTree);
   const activeSet = useMemo(() => new Set(selectedRuneIds), [selectedRuneIds]);
 
-  const effectiveKeystoneId = keystoneId || selectedRuneIds[0] || null;
+  const effectiveKeystoneId = keystoneId || selectedRuneIds[0] || primaryTree?.slots?.[0]?.runes?.[0]?.id || null;
   const keystoneRune = useMemo(
     () => primaryTree?.slots?.[0]?.runes.find((r) => r.id === effectiveKeystoneId) || null,
     [primaryTree, effectiveKeystoneId],
@@ -422,7 +431,7 @@ export function VisualRunePage({
     () =>
       (primaryTree?.slots || [])
         .slice(1, 4)
-        .map((slot) => slot.runes.find((r) => activeSet.has(r.id)))
+        .map((slot) => slot.runes.find((r) => activeSet.has(r.id)) || slot.runes[0])
         .filter((r): r is RuneSlotItem => Boolean(r)),
     [primaryTree, activeSet],
   );
@@ -449,6 +458,86 @@ export function VisualRunePage({
   );
 
   if (!primaryTree) return null;
+
+  const currentSelection: RunePageSelection = {
+    primaryTreeId: primaryTree.id,
+    secondaryTreeId: secondaryTree?.id || runeTrees.find((t) => t.id !== primaryTree.id)?.id || primaryTree.id,
+    keystoneId: effectiveKeystoneId || primaryTree.slots?.[0]?.runes?.[0]?.id || 0,
+    primaryMinorIds: selectedPrimaryMinors.map((r) => r.id),
+    secondaryMinorIds: selectedSecondaryMinors.map((r) => r.id),
+    shardIndices,
+  };
+
+  const emitSelection = (next: RunePageSelection) => {
+    if (!editable || !onChangeSelection) return;
+    onChangeSelection(next);
+  };
+
+  const handleSelectPrimaryTree = (newTreeId: number) => {
+    if (!editable) return;
+    const nextSecId =
+      newTreeId === currentSelection.secondaryTreeId
+        ? currentSelection.primaryTreeId
+        : currentSelection.secondaryTreeId;
+    emitSelection(buildDefaultSelectionForTrees(runeTrees, newTreeId, nextSecId, currentSelection));
+    setOpenEditorSlot(null);
+  };
+
+  const handleSelectSecondaryTree = (newTreeId: number) => {
+    if (!editable || newTreeId === currentSelection.primaryTreeId) return;
+    emitSelection(
+      buildDefaultSelectionForTrees(runeTrees, currentSelection.primaryTreeId, newTreeId, currentSelection),
+    );
+    setOpenEditorSlot(null);
+  };
+
+  const handleSelectKeystone = (rune: RuneSlotItem) => {
+    inspectRune(rune);
+    if (!editable) return;
+    emitSelection({ ...currentSelection, keystoneId: rune.id });
+    setOpenEditorSlot(null);
+  };
+
+  const handleSelectPrimaryMinor = (slotIdx: number, rune: RuneSlotItem) => {
+    inspectRune(rune);
+    if (!editable) return;
+    const nextMinors = [...currentSelection.primaryMinorIds];
+    nextMinors[slotIdx] = rune.id;
+    emitSelection({ ...currentSelection, primaryMinorIds: nextMinors });
+    setOpenEditorSlot(null);
+  };
+
+  const handleSelectSecondaryMinor = (slotRowIdx: number, rune: RuneSlotItem) => {
+    inspectRune(rune);
+    if (!editable || !secondaryTree) return;
+    // Trouver à quelle rangée (1..3) appartient chacune des runes secondaires actuelles
+    const rowOfRune = (rId: number): number => {
+      for (let i = 1; i <= 3; i++) {
+        if (secondaryTree.slots[i]?.runes.some((r) => r.id === rId)) return i;
+      }
+      return -1;
+    };
+    const filtered = currentSelection.secondaryMinorIds.filter((id) => rowOfRune(id) !== slotRowIdx);
+    const nextSec = [...filtered, rune.id].slice(-2);
+    emitSelection({ ...currentSelection, secondaryMinorIds: nextSec });
+  };
+
+  const handleSelectShard = (rowIdx: number, colIdx: number, opt: ShardOption) => {
+    setInspectedItem({
+      name: `${SHARD_GRID[rowIdx].rowLabel} · ${opt.clientLabel}`,
+      desc: 'Bonus actif dès le niveau 1 sur votre champion.',
+      iconUrl: opt.iconUrl,
+    });
+    if (!editable) return;
+    const nextShards: [number, number, number] = [...currentSelection.shardIndices] as [
+      number,
+      number,
+      number,
+    ];
+    nextShards[rowIdx] = colIdx;
+    emitSelection({ ...currentSelection, shardIndices: nextShards });
+    setOpenEditorSlot(null);
+  };
 
   const inspectRune = (rune: RuneSlotItem) => {
     setInspectedItem({
@@ -492,8 +581,94 @@ export function VisualRunePage({
           </div>
         </div>
 
-        {headerActions && <div className="shrink-0">{headerActions}</div>}
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
+          {editable && onResetToMeta && (
+            <button
+              type="button"
+              onClick={() => {
+                onResetToMeta();
+                setOpenEditorSlot(null);
+              }}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-[#C8AA6E]/45 bg-[#0B1525] text-[#F0E6D2] hover:bg-[#C8AA6E]/20 transition-colors whitespace-nowrap"
+            >
+              <RotateCcw className="w-3.5 h-3.5 text-[#C8AA6E]" aria-hidden="true" />
+              Réinitialiser Méta
+            </button>
+          )}
+          {headerActions}
+        </div>
       </div>
+
+      {/* Sélecteur rapide des 5 arbres (façon barre client LoL en mode interactif) */}
+      {editable && (
+        <div className="px-5 py-2.5 border-b border-[#C8AA6E]/15 bg-[#060C16]/75 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2.5 text-[11px]">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[#A09B8C] font-medium">Branche principale :</span>
+            <div className="flex items-center gap-1.5">
+              {runeTrees.map((t) => {
+                const active = t.id === primaryTree.id;
+                const theme = getTreeTheme(t);
+                return (
+                  <button
+                    key={`p-tree-${t.id}`}
+                    type="button"
+                    onClick={() => handleSelectPrimaryTree(t.id)}
+                    title={`Choisir ${t.name} comme arbre principal`}
+                    className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md border transition-all ${
+                      active
+                        ? `${theme.borderClass} bg-white/10 text-[#F0E6D2] font-semibold`
+                        : 'border-transparent text-[#A09B8C] hover:text-[#F0E6D2] hover:bg-white/5 opacity-70 hover:opacity-100'
+                    }`}
+                  >
+                    <SafeGameIcon
+                      src={t.imageUrl}
+                      alt={t.name}
+                      fallbackLabel={t.name}
+                      sizeClass="w-4 h-4"
+                      className="rounded-full border-0"
+                    />
+                    <span className="hidden md:inline">{t.name}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[#A09B8C] font-medium">Secondaire :</span>
+            <div className="flex items-center gap-1.5">
+              {runeTrees
+                .filter((t) => t.id !== primaryTree.id)
+                .map((t) => {
+                  const active = t.id === secondaryTree?.id;
+                  const theme = getTreeTheme(t);
+                  return (
+                    <button
+                      key={`s-tree-${t.id}`}
+                      type="button"
+                      onClick={() => handleSelectSecondaryTree(t.id)}
+                      title={`Choisir ${t.name} comme arbre secondaire`}
+                      className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md border transition-all ${
+                        active
+                          ? `${theme.borderClass} bg-white/10 text-[#F0E6D2] font-semibold`
+                          : 'border-transparent text-[#A09B8C] hover:text-[#F0E6D2] hover:bg-white/5 opacity-70 hover:opacity-100'
+                      }`}
+                    >
+                      <SafeGameIcon
+                        src={t.imageUrl}
+                        alt={t.name}
+                        fallbackLabel={t.name}
+                        sizeClass="w-4 h-4"
+                        className="rounded-full border-0"
+                      />
+                      <span className="hidden md:inline">{t.name}</span>
+                    </button>
+                  );
+                })}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Corps principal : Vue Client LoL fidèle OU Vue Grille complète */}
       <div className="p-5 sm:p-6">
@@ -540,41 +715,86 @@ export function VisualRunePage({
 
                 {/* Rune Fondamentale (Keystone) */}
                 {keystoneRune && (
-                  <button
-                    type="button"
-                    onClick={() => inspectRune(keystoneRune)}
-                    onMouseEnter={() => inspectRune(keystoneRune)}
-                    className="relative z-10 w-full flex items-start gap-3.5 text-left group rounded-lg py-1 transition-colors hover:bg-white/[0.03] focus:outline-none"
-                  >
-                    <div
-                      className={`w-14 h-14 rounded-full bg-[#08101C] flex items-center justify-center shrink-0 ring-2 ${primaryTheme.ringClass} ${primaryTheme.glowShadow} group-hover:scale-105 transition-transform`}
+                  <div className="space-y-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        inspectRune(keystoneRune);
+                        if (editable) {
+                          setOpenEditorSlot((cur) => (cur === 'keystone' ? null : 'keystone'));
+                        }
+                      }}
+                      onMouseEnter={() => inspectRune(keystoneRune)}
+                      className="relative z-10 w-full flex items-start gap-3.5 text-left group rounded-lg py-1 transition-colors hover:bg-white/[0.04] focus:outline-none"
                     >
-                      <SafeGameIcon
-                        src={keystoneRune.imageUrl}
-                        alt={keystoneRune.name}
-                        fallbackLabel={keystoneRune.name}
-                        sizeClass="w-12 h-12"
-                        className="rounded-full border-0"
-                      />
-                    </div>
-                    <div className="min-w-0 pt-0.5">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className={`text-sm font-bold uppercase tracking-wide ${primaryTheme.textClass}`}>
-                          {keystoneRune.name}
-                        </span>
-                        {compareRuneIds && !compareRuneIds.has(keystoneRune.id) && (
-                          <span className="text-[10px] font-semibold text-sky-400">
-                            · Différente de la méta
-                          </span>
+                      <div
+                        className={`w-14 h-14 rounded-full bg-[#08101C] flex items-center justify-center shrink-0 ring-2 ${primaryTheme.ringClass} ${primaryTheme.glowShadow} group-hover:scale-105 transition-transform`}
+                      >
+                        <SafeGameIcon
+                          src={keystoneRune.imageUrl}
+                          alt={keystoneRune.name}
+                          fallbackLabel={keystoneRune.name}
+                          sizeClass="w-12 h-12"
+                          className="rounded-full border-0"
+                        />
+                      </div>
+                      <div className="min-w-0 flex-1 pt-0.5">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className={`text-sm font-bold uppercase tracking-wide ${primaryTheme.textClass}`}>
+                              {keystoneRune.name}
+                            </span>
+                            {compareRuneIds && !compareRuneIds.has(keystoneRune.id) && (
+                              <span className="text-[10px] font-semibold text-sky-400">
+                                · Différente méta
+                              </span>
+                            )}
+                          </div>
+                          {editable && (
+                            <span className="inline-flex items-center gap-0.5 text-[10px] text-[#C8AA6E] opacity-80 group-hover:opacity-100">
+                              Modifier <ChevronDown className="w-3 h-3" />
+                            </span>
+                          )}
+                        </div>
+                        {showDetailedDesc && (
+                          <p className="text-[11px] text-[#C8C3B4] leading-relaxed mt-0.5 line-clamp-3">
+                            {cleanRuneDesc(keystoneRune.shortDesc)}
+                          </p>
                         )}
                       </div>
-                      {showDetailedDesc && (
-                        <p className="text-[11px] text-[#C8C3B4] leading-relaxed mt-0.5 line-clamp-3">
-                          {cleanRuneDesc(keystoneRune.shortDesc)}
-                        </p>
-                      )}
-                    </div>
-                  </button>
+                    </button>
+
+                    {editable && openEditorSlot === 'keystone' && primaryTree.slots?.[0] && (
+                      <div className="relative z-20 ml-14 p-2 rounded-lg border border-[#C8AA6E]/40 bg-[#060D18]/95 flex flex-wrap items-center gap-2">
+                        {primaryTree.slots[0].runes.map((cand) => {
+                          const active = cand.id === keystoneRune.id;
+                          return (
+                            <button
+                              key={cand.id}
+                              type="button"
+                              onMouseEnter={() => inspectRune(cand)}
+                              onClick={() => handleSelectKeystone(cand)}
+                              title={cand.name}
+                              className={`flex items-center gap-1.5 px-2 py-1 rounded-md border text-[11px] transition-all ${
+                                active
+                                  ? `${primaryTheme.borderClass} bg-white/10 text-[#F0E6D2] font-semibold`
+                                  : 'border-slate-700/70 text-[#A09B8C] hover:text-[#F0E6D2] hover:border-[#C8AA6E]/50'
+                              }`}
+                            >
+                              <SafeGameIcon
+                                src={cand.imageUrl}
+                                alt={cand.name}
+                                fallbackLabel={cand.name}
+                                sizeClass="w-6 h-6"
+                                className="rounded-full border-0"
+                              />
+                              <span>{cand.name}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
                 )}
 
                 <div className="pl-[68px]">
@@ -583,47 +803,90 @@ export function VisualRunePage({
 
                 {/* 3 Runes mineures sélectionnées */}
                 <div className="space-y-3.5">
-                  {selectedPrimaryMinors.map((rune) => {
+                  {selectedPrimaryMinors.map((rune, slotIdx) => {
                     const differs = compareRuneIds && !compareRuneIds.has(rune.id);
+                    const editorKey = `p-minor-${slotIdx}`;
+                    const slotRunes = primaryTree.slots?.[slotIdx + 1]?.runes || [];
                     return (
-                      <button
-                        key={rune.id}
-                        type="button"
-                        onClick={() => inspectRune(rune)}
-                        onMouseEnter={() => inspectRune(rune)}
-                        className="relative z-10 w-full flex items-start gap-4 pl-2 text-left group rounded-lg py-1 transition-colors hover:bg-white/[0.03] focus:outline-none"
-                      >
-                        <div
-                          className={`w-10 h-10 rounded-full bg-[#08101C] flex items-center justify-center shrink-0 ring-2 ${
-                            differs ? 'ring-sky-400' : 'ring-[#C8AA6E]/80'
-                          } group-hover:scale-105 transition-transform`}
+                      <div key={rune.id} className="space-y-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            inspectRune(rune);
+                            if (editable) {
+                              setOpenEditorSlot((cur) => (cur === editorKey ? null : editorKey));
+                            }
+                          }}
+                          onMouseEnter={() => inspectRune(rune)}
+                          className="relative z-10 w-full flex items-start gap-4 pl-2 text-left group rounded-lg py-1 transition-colors hover:bg-white/[0.04] focus:outline-none"
                         >
-                          <SafeGameIcon
-                            src={rune.imageUrl}
-                            alt={rune.name}
-                            fallbackLabel={rune.name}
-                            sizeClass="w-9 h-9"
-                            className="rounded-full border-0"
-                          />
-                        </div>
-                        <div className="min-w-0">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="text-xs font-bold uppercase tracking-wide text-[#F0E6D2]">
-                              {rune.name}
-                            </span>
-                            {differs && (
-                              <span className="text-[10px] font-semibold text-sky-400">
-                                · Hors méta
-                              </span>
+                          <div
+                            className={`w-10 h-10 rounded-full bg-[#08101C] flex items-center justify-center shrink-0 ring-2 ${
+                              differs ? 'ring-sky-400' : 'ring-[#C8AA6E]/80'
+                            } group-hover:scale-105 transition-transform`}
+                          >
+                            <SafeGameIcon
+                              src={rune.imageUrl}
+                              alt={rune.name}
+                              fallbackLabel={rune.name}
+                              sizeClass="w-9 h-9"
+                              className="rounded-full border-0"
+                            />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="text-xs font-bold uppercase tracking-wide text-[#F0E6D2]">
+                                  {rune.name}
+                                </span>
+                                {differs && (
+                                  <span className="text-[10px] font-semibold text-sky-400">
+                                    · Hors méta
+                                  </span>
+                                )}
+                              </div>
+                              {editable && (
+                                <ChevronDown className="w-3 h-3 text-[#C8AA6E]/75 opacity-70 group-hover:opacity-100 shrink-0" />
+                              )}
+                            </div>
+                            {showDetailedDesc && (
+                              <p className="text-[11px] text-[#A09B8C] leading-snug mt-0.5 line-clamp-2">
+                                {cleanRuneDesc(rune.shortDesc)}
+                              </p>
                             )}
                           </div>
-                          {showDetailedDesc && (
-                            <p className="text-[11px] text-[#A09B8C] leading-snug mt-0.5 line-clamp-2">
-                              {cleanRuneDesc(rune.shortDesc)}
-                            </p>
-                          )}
-                        </div>
-                      </button>
+                        </button>
+
+                        {editable && openEditorSlot === editorKey && slotRunes.length > 0 && (
+                          <div className="relative z-20 ml-12 p-2 rounded-lg border border-[#C8AA6E]/40 bg-[#060D18]/95 flex flex-wrap items-center gap-1.5">
+                            {slotRunes.map((cand) => {
+                              const active = cand.id === rune.id;
+                              return (
+                                <button
+                                  key={cand.id}
+                                  type="button"
+                                  onMouseEnter={() => inspectRune(cand)}
+                                  onClick={() => handleSelectPrimaryMinor(slotIdx, cand)}
+                                  className={`flex items-center gap-1.5 px-2 py-1 rounded-md border text-[11px] transition-all ${
+                                    active
+                                      ? 'border-[#C8AA6E] bg-[#C8AA6E]/20 text-[#F0E6D2] font-semibold'
+                                      : 'border-slate-700/70 text-[#A09B8C] hover:text-[#F0E6D2] hover:border-[#C8AA6E]/50'
+                                  }`}
+                                >
+                                  <SafeGameIcon
+                                    src={cand.imageUrl}
+                                    alt={cand.name}
+                                    fallbackLabel={cand.name}
+                                    sizeClass="w-5 h-5"
+                                    className="rounded-full border-0"
+                                  />
+                                  <span>{cand.name}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
                     );
                   })}
                 </div>
@@ -650,15 +913,65 @@ export function VisualRunePage({
                         className="rounded-full border-0"
                       />
                     </div>
-                    <div className="pt-0.5 min-w-0">
-                      <div className="text-sm font-bold uppercase tracking-wider text-[#F0E6D2]">
-                        {secondaryTree.name}
+                    <div className="pt-0.5 min-w-0 flex-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-sm font-bold uppercase tracking-wider text-[#F0E6D2]">
+                          {secondaryTree.name}
+                        </div>
+                        {editable && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setOpenEditorSlot((cur) => (cur === 'sec-all' ? null : 'sec-all'))
+                            }
+                            className="text-[10px] font-semibold text-[#C8AA6E] hover:underline"
+                          >
+                            {openEditorSlot === 'sec-all' ? 'Fermer' : 'Changer (2 runes)'}
+                          </button>
+                        )}
                       </div>
                       <p className="text-xs text-[#A09B8C] leading-snug mt-0.5">
                         {secondaryTheme.subtitle}
                       </p>
                     </div>
                   </div>
+
+                  {editable && openEditorSlot === 'sec-all' && (
+                    <div className="relative z-20 ml-4 p-2.5 rounded-lg border border-[#C8AA6E]/40 bg-[#060D18]/95 space-y-2">
+                      <div className="text-[10px] text-[#A09B8C]">
+                        Choisissez 2 runes sur 2 rangées différentes :
+                      </div>
+                      {(secondaryTree.slots || []).slice(1, 4).map((slot, rowIdx) => (
+                        <div key={rowIdx} className="flex flex-wrap gap-1.5">
+                          {slot.runes.map((cand) => {
+                            const active = activeSet.has(cand.id);
+                            return (
+                              <button
+                                key={cand.id}
+                                type="button"
+                                onMouseEnter={() => inspectRune(cand)}
+                                onClick={() => handleSelectSecondaryMinor(rowIdx + 1, cand)}
+                                className={`flex items-center gap-1 px-2 py-1 rounded-md border text-[11px] transition-all ${
+                                  active
+                                    ? `${secondaryTheme.borderClass} bg-white/10 text-[#F0E6D2] font-semibold`
+                                    : 'border-slate-700/70 text-[#A09B8C] hover:text-[#F0E6D2]'
+                                }`}
+                              >
+                                <SafeGameIcon
+                                  src={cand.imageUrl}
+                                  alt={cand.name}
+                                  fallbackLabel={cand.name}
+                                  sizeClass="w-4 h-4"
+                                  className="rounded-full border-0"
+                                />
+                                <span>{cand.name}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      ))}
+                    </div>
+                  )}
 
                   <div className="space-y-3.5 pt-2">
                     {selectedSecondaryMinors.map((rune) => {
@@ -667,9 +980,14 @@ export function VisualRunePage({
                         <button
                           key={rune.id}
                           type="button"
-                          onClick={() => inspectRune(rune)}
+                          onClick={() => {
+                            inspectRune(rune);
+                            if (editable) {
+                              setOpenEditorSlot((cur) => (cur === 'sec-all' ? null : 'sec-all'));
+                            }
+                          }}
                           onMouseEnter={() => inspectRune(rune)}
-                          className="relative z-10 w-full flex items-start gap-4 pl-2 text-left group rounded-lg py-1 transition-colors hover:bg-white/[0.03] focus:outline-none"
+                          className="relative z-10 w-full flex items-start gap-4 pl-2 text-left group rounded-lg py-1 transition-colors hover:bg-white/[0.04] focus:outline-none"
                         >
                           <div
                             className={`w-10 h-10 rounded-full bg-[#08101C] flex items-center justify-center shrink-0 ring-2 ${
@@ -684,15 +1002,20 @@ export function VisualRunePage({
                               className="rounded-full border-0"
                             />
                           </div>
-                          <div className="min-w-0">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <span className="text-xs font-bold uppercase tracking-wide text-[#F0E6D2]">
-                                {rune.name}
-                              </span>
-                              {differs && (
-                                <span className="text-[10px] font-semibold text-sky-400">
-                                  · Hors méta
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="text-xs font-bold uppercase tracking-wide text-[#F0E6D2]">
+                                  {rune.name}
                                 </span>
+                                {differs && (
+                                  <span className="text-[10px] font-semibold text-sky-400">
+                                    · Hors méta
+                                  </span>
+                                )}
+                              </div>
+                              {editable && (
+                                <ChevronDown className="w-3 h-3 text-[#C8AA6E]/75 opacity-70 group-hover:opacity-100 shrink-0" />
                               )}
                             </div>
                             {showDetailedDesc && (
@@ -708,35 +1031,76 @@ export function VisualRunePage({
                 </div>
               )}
 
-              {/* Fragments de statistiques façon Client LoL (icônes rondes dorées + texte aligné) */}
+              {/* Fragments de statistiques façon Client LoL (icônes rondes dorées + texte aligné + édition au clic) */}
               <div className="pt-4 border-t border-[#C8AA6E]/20 space-y-2.5 pl-3">
-                {selectedShards.map((shard, idx) => (
-                  <button
-                    key={`${shard.id}-${idx}`}
-                    type="button"
-                    onClick={() =>
-                      setInspectedItem({
-                        name: `Fragment ${SHARD_GRID[idx].rowLabel} : ${shard.clientLabel}`,
-                        desc: `Bonus actif dès le niveau 1 sur votre champion.`,
-                        iconUrl: shard.iconUrl,
-                      })
-                    }
-                    className="w-full flex items-center gap-3.5 text-left rounded-md py-1 hover:bg-white/[0.03] transition-colors focus:outline-none"
-                  >
-                    <div className="w-7 h-7 rounded-full bg-[#08101C] border border-[#C8AA6E]/80 flex items-center justify-center shrink-0">
-                      <SafeGameIcon
-                        src={shard.iconUrl}
-                        alt={shard.clientLabel}
-                        fallbackLabel={shard.shortLabel}
-                        sizeClass="w-4 h-4"
-                        className="rounded-full border-0"
-                      />
+                {selectedShards.map((shard, idx) => {
+                  const shardEditorKey = `shard-${idx}`;
+                  return (
+                    <div key={`${shard.id}-${idx}`} className="space-y-1.5">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setInspectedItem({
+                            name: `Fragment ${SHARD_GRID[idx].rowLabel} : ${shard.clientLabel}`,
+                            desc: 'Bonus actif dès le niveau 1 sur votre champion.',
+                            iconUrl: shard.iconUrl,
+                          });
+                          if (editable) {
+                            setOpenEditorSlot((cur) => (cur === shardEditorKey ? null : shardEditorKey));
+                          }
+                        }}
+                        className="w-full flex items-center justify-between gap-2 text-left rounded-md py-1 hover:bg-white/[0.04] transition-colors focus:outline-none group"
+                      >
+                        <div className="flex items-center gap-3.5 min-w-0">
+                          <div className="w-7 h-7 rounded-full bg-[#08101C] border border-[#C8AA6E]/80 flex items-center justify-center shrink-0">
+                            <SafeGameIcon
+                              src={shard.iconUrl}
+                              alt={shard.clientLabel}
+                              fallbackLabel={shard.shortLabel}
+                              sizeClass="w-4 h-4"
+                              className="rounded-full border-0"
+                            />
+                          </div>
+                          <span className="text-xs text-[#C8C3B4] font-medium truncate">
+                            {shard.clientLabel}
+                          </span>
+                        </div>
+                        {editable && (
+                          <ChevronDown className="w-3 h-3 text-[#C8AA6E]/75 opacity-70 group-hover:opacity-100 shrink-0" />
+                        )}
+                      </button>
+
+                      {editable && openEditorSlot === shardEditorKey && (
+                        <div className="ml-10 p-1.5 rounded-lg border border-[#C8AA6E]/40 bg-[#060D18]/95 flex flex-wrap gap-1.5">
+                          {SHARD_GRID[idx].options.map((opt, colIdx) => {
+                            const active = colIdx === (shardIndices[idx] ?? 0);
+                            return (
+                              <button
+                                key={`${opt.id}-${colIdx}`}
+                                type="button"
+                                onClick={() => handleSelectShard(idx, colIdx, opt)}
+                                className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md border text-[11px] transition-all ${
+                                  active
+                                    ? 'border-[#C8AA6E] bg-[#C8AA6E]/20 text-[#F0E6D2] font-semibold'
+                                    : 'border-slate-700/70 text-[#A09B8C] hover:text-[#F0E6D2]'
+                                }`}
+                              >
+                                <SafeGameIcon
+                                  src={opt.iconUrl}
+                                  alt={opt.clientLabel}
+                                  fallbackLabel={opt.shortLabel}
+                                  sizeClass="w-4 h-4"
+                                  className="rounded-full border-0"
+                                />
+                                <span>{opt.shortLabel}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
-                    <span className="text-xs text-[#C8C3B4] font-medium">
-                      {shard.clientLabel}
-                    </span>
-                  </button>
-                ))}
+                  );
+                })}
               </div>
             </div>
 
@@ -819,12 +1183,12 @@ export function VisualRunePage({
                               key={rune.id}
                               type="button"
                               onMouseEnter={() => inspectRune(rune)}
-                              onClick={() => inspectRune(rune)}
+                              onClick={() => handleSelectKeystone(rune)}
                               title={`${rune.name} — ${cleanRuneDesc(rune.shortDesc)}`}
                               className={`p-0.5 rounded-full bg-[#060C16] transition-all focus:outline-none ${
                                 active
                                   ? `ring-2 ${differs ? 'ring-sky-400' : primaryTheme.ringClass} ${primaryTheme.glowShadow} scale-110`
-                                  : 'opacity-30 grayscale hover:opacity-85 hover:grayscale-0 border border-slate-700/70'
+                                  : `opacity-35 grayscale hover:opacity-90 hover:grayscale-0 border border-slate-700/70 ${editable ? 'cursor-pointer hover:scale-105' : ''}`
                               }`}
                             >
                               <SafeGameIcon
@@ -851,12 +1215,12 @@ export function VisualRunePage({
                             key={rune.id}
                             type="button"
                             onMouseEnter={() => inspectRune(rune)}
-                            onClick={() => inspectRune(rune)}
+                            onClick={() => handleSelectPrimaryMinor(rowIdx, rune)}
                             title={`${rune.name} — ${cleanRuneDesc(rune.shortDesc)}`}
                             className={`p-0.5 rounded-full bg-[#060C16] transition-all focus:outline-none ${
                               active
                                 ? `ring-2 ${differs ? 'ring-sky-400' : 'ring-[#C8AA6E]'} ${primaryTheme.glowShadow} scale-105`
-                                : 'opacity-30 grayscale hover:opacity-85 hover:grayscale-0 border border-slate-700/60'
+                                : `opacity-35 grayscale hover:opacity-90 hover:grayscale-0 border border-slate-700/60 ${editable ? 'cursor-pointer hover:scale-105' : ''}`
                             }`}
                           >
                             <SafeGameIcon
@@ -910,12 +1274,12 @@ export function VisualRunePage({
                             key={rune.id}
                             type="button"
                             onMouseEnter={() => inspectRune(rune)}
-                            onClick={() => inspectRune(rune)}
+                            onClick={() => handleSelectSecondaryMinor(rowIdx + 1, rune)}
                             title={`${rune.name} — ${cleanRuneDesc(rune.shortDesc)}`}
                             className={`p-0.5 rounded-full bg-[#060C16] transition-all focus:outline-none ${
                               active
                                 ? `ring-2 ${differs ? 'ring-sky-400' : secondaryTheme.ringClass} scale-105`
-                                : 'opacity-30 grayscale hover:opacity-85 hover:grayscale-0 border border-slate-700/60'
+                                : `opacity-35 grayscale hover:opacity-90 hover:grayscale-0 border border-slate-700/60 ${editable ? 'cursor-pointer hover:scale-105' : ''}`
                             }`}
                           >
                             <SafeGameIcon
@@ -963,6 +1327,7 @@ export function VisualRunePage({
                               <button
                                 key={`${row.rowLabel}-${opt.id}-${cIdx}`}
                                 type="button"
+                                onClick={() => handleSelectShard(rIdx, cIdx, opt)}
                                 onMouseEnter={() =>
                                   setInspectedItem({
                                     name: `${row.rowLabel} · ${opt.clientLabel}`,
@@ -974,7 +1339,7 @@ export function VisualRunePage({
                                 className={`w-9 h-9 rounded-full flex items-center justify-center border transition-all ${
                                   active
                                     ? 'border-[#C8AA6E] bg-[#C8AA6E]/20 ring-2 ring-[#C8AA6E]/60 scale-105'
-                                    : 'border-slate-700 bg-[#060C16] opacity-35 grayscale hover:opacity-85 hover:grayscale-0'
+                                    : `border-slate-700 bg-[#060C16] opacity-35 grayscale hover:opacity-90 hover:grayscale-0 ${editable ? 'cursor-pointer hover:scale-105' : ''}`
                                 }`}
                               >
                                 <SafeGameIcon

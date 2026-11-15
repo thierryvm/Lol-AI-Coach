@@ -185,6 +185,82 @@ export function parseLiveClientSnapshot(
       }
     : null;
 
+  const allyKillsTotal = allies.reduce((a, p) => a + (p.scores?.kills ?? 0), 0);
+  const enemyKillsTotal = enemies.reduce((a, p) => a + (p.scores?.kills ?? 0), 0);
+
+  const topFedEnemy = [...enemyPlayers].sort(
+    (a, b) => b.kills * 2 + b.level - (a.kills * 2 + a.level),
+  )[0];
+
+  const isBehind =
+    deaths >= kills + 2 ||
+    enemyKillsTotal >= allyKillsTotal + 4 ||
+    (Boolean(topFedEnemy) && (topFedEnemy.kills >= 4 || topFedEnemy.level >= level + 2)) ||
+    (gameTimeMin >= 8 && csPaceDelta <= -2.0 && preferredRole !== 'SUPPORT');
+
+  const isAhead =
+    !isBehind &&
+    kills + assists >= deaths + 4 &&
+    allyKillsTotal >= enemyKillsTotal + 2;
+
+  const gameState: LiveCoachSnapshot['gameState'] = isBehind
+    ? 'BEHIND'
+    : isAhead
+      ? 'AHEAD'
+      : 'EVEN';
+
+  let comebackAdvice: LiveCoachSnapshot['comebackAdvice'] = null;
+  if (gameState === 'BEHIND') {
+    const fedItemsText = (topFedEnemy?.items || [])
+      .map((it) => it.displayName.toLowerCase())
+      .join(' ');
+    const fedLooksAp = Boolean(
+      fedItemsText.match(/rabadon|liandry|ombre|lud|bâton|malign|flamme|zhonya|abyssal|nashor|void|crypt/),
+    );
+    const fedLooksAd = Boolean(
+      fedItemsText.match(/infini|kraken|youmuu|éclipse|dusk|collect|hydra|soif|mortal|dominik|trinit|stérak|gantelet/),
+    );
+    const fedLooksHeal =
+      Boolean(fedItemsText.match(/soif|bork|roi déchu|eclipse|visage|ravenous|bloodthirst|sucker/)) ||
+      ['Aatrox', 'Vladimir', 'Warwick', 'Briar', 'Soraka', 'Sylas', 'Swain', 'Yone', 'Viego', 'DrMundo'].includes(
+        topFedEnemy?.championName || '',
+      );
+
+    const reasons: string[] = [];
+    if (deaths >= kills + 2) reasons.push(`KDA personnel en déficit (${kills}/${deaths}/${assists})`);
+    if (enemyKillsTotal >= allyKillsTotal + 4) {
+      reasons.push(`Équipe en retard (${allyKillsTotal} vs ${enemyKillsTotal} éliminations)`);
+    }
+    if (topFedEnemy && (topFedEnemy.kills >= 4 || topFedEnemy.level >= level + 2)) {
+      reasons.push(
+        `${topFedEnemy.championName} menace principale (${topFedEnemy.kills}/${topFedEnemy.deaths}, Niv.${topFedEnemy.level})`,
+      );
+    }
+    if (gameTimeMin >= 8 && csPaceDelta <= -2.0 && preferredRole !== 'SUPPORT') {
+      reasons.push(`Retard de farm (${csPerMin} CS/min)`);
+    }
+
+    let priorityItemHint =
+      'Privilégiez un composant défensif économique (Armure d’étoffe / Manteau de RM / Ceinture du géant) et les bottes adaptées avant de viser un 3e objet coûteux.';
+    if (fedLooksAp && !fedLooksAd) {
+      priorityItemHint = `Contre ${topFedEnemy?.championName || 'le carry AP'} : investissez rapidement dans Sandales de Mercure / Manteau de Spectre → Kaénique de Rookern ou Visage spirituel (ou Voile de la banshee / Gueule de Malmortius selon votre rôle).`;
+    } else if (fedLooksAd) {
+      priorityItemHint = `Contre ${topFedEnemy?.championName || 'le carry AD'} : priorisez Coques en acier / Cotte de mailles → Présage de Randuin, Vœu du chevalier ou Sablier de Zhonya (800–1200 po d’impact immédiat).`;
+    }
+    if (fedLooksHeal) {
+      priorityItemHint += ' Ajoutez un anti-soin à 800 po (Armure ronce / Orbe de l’oubli / Marque du bourreau) au prochain rappel.';
+    }
+
+    comebackAdvice = {
+      triggerReason: reasons.join(' · ') || 'Pression adverse élevée détectée sur la carte.',
+      priorityItemHint,
+      gameplayPivot:
+        preferredRole === 'SUPPORT'
+          ? `Restez collé à votre allié le plus fort pour absorber l'engage de ${topFedEnemy?.championName || 'la menace adverse'}, jouez la vision défensive dans votre jungle et ne contestez aucun objectif sans supériorité numérique.`
+          : `Congelez ou récupérez les vagues sûres près de vos T2, évitez les duels 1v1 contre ${topFedEnemy?.championName || 'le joueur en avance'} et forcez des combats 3v2 autour des tours/primes.`,
+    };
+  }
+
   return {
     source,
     receivedAt: new Date().toISOString(),
@@ -198,8 +274,8 @@ export function parseLiveClientSnapshot(
     csPerMin,
     targetCsPerMin,
     csPaceDelta,
-    allyKills: allies.reduce((a, p) => a + (p.scores?.kills ?? 0), 0),
-    enemyKills: enemies.reduce((a, p) => a + (p.scores?.kills ?? 0), 0),
+    allyKills: allyKillsTotal,
+    enemyKills: enemyKillsTotal,
     dragonTimerSec,
     baronTimerSec,
     alerts,
@@ -211,5 +287,7 @@ export function parseLiveClientSnapshot(
       enemyTeam: enemies.map((e) => e.championName),
     },
     fullRunesSummary,
+    gameState,
+    comebackAdvice,
   };
 }
