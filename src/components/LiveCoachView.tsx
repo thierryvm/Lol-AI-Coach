@@ -18,6 +18,7 @@ import {
   Timer,
   TrendingUp,
 } from 'lucide-react';
+import { postCoachJson } from '../engines/aiConfig.ts';
 import { parseLiveClientSnapshot } from '../engines/liveCoachEngine.ts';
 import type {
   ChampionSummary,
@@ -437,16 +438,14 @@ export function LiveCoachView({
     setAiLoading(true);
     setAiError(null);
     try {
-      const res = await fetch('/api/coach/live-advice', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ snapshot }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Erreur Gemini.');
+      const data = await postCoachJson<{
+        immediateCall: string;
+        recallAdvice: string;
+        dangerWatch: string;
+      }>('/api/coach/live-advice', { snapshot });
       setAiAdvice(data);
     } catch (err) {
-      setAiError(err instanceof Error ? err.message : 'Erreur Gemini.');
+      setAiError(err instanceof Error ? err.message : 'Erreur IA.');
     } finally {
       setAiLoading(false);
     }

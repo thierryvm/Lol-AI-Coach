@@ -10,7 +10,10 @@ import {
   ExternalLink,
   FlaskConical,
   Gauge,
+  Globe,
+  Info,
   Layers,
+  Loader2,
   Pencil,
   Plus,
   Radar,
@@ -25,13 +28,19 @@ import {
   Users,
   X,
 } from 'lucide-react';
+import { postCoachJson } from '../engines/aiConfig.ts';
 import { computeBuildRecommendation } from '../engines/buildEngine.ts';
+import { computeStatAtLevel, isJunglerChampion } from '../engines/championEngine.ts';
 import {
   computeFullChampionBuildStats,
+  computePerItemImpactMatrix,
+  extractRawDataDragonItemDetails,
   formatItemStatTags,
   parseExactItemStats,
   runCombinatorialBuildAndRuneSearch,
+  simulateCombatDamageAgainstTarget,
   validateRuneConfiguration,
+  type CombatTargetConfig,
 } from '../engines/buildSimulator.ts';
 import {
   buildDefaultSelectionForTrees,
@@ -59,6 +68,7 @@ import {
   type DetectedMatchComposition,
   UNIVERSAL_STATE_CLIPBOARD_CMD,
 } from '../utils/liveBridge.ts';
+import { PopularBuildSearch } from './PopularBuildSearch.tsx';
 import { SafeGameIcon } from './SafeGameIcon.tsx';
 import { VisualRunePage } from './VisualRunePage.tsx';
 
@@ -83,6 +93,7 @@ const PICKER_TAG_OPTIONS: Array<{ id: string; label: string }> = [
   { id: 'Tank', label: 'Tanks' },
   { id: 'Marksman', label: 'Tireurs' },
   { id: 'Support', label: 'Supports' },
+  { id: 'Jungler', label: 'Junglers' },
 ];
 
 const SCENARIO_OPTIONS: Array<{ id: GameScenario; label: string; hint: string }> = [
@@ -376,6 +387,47 @@ export function BuildOptimizerView({
   const [itemPickerSlotIdx, setItemPickerSlotIdx] = useState<number | null>(null);
   const [itemSearchQuery, setItemSearchQuery] = useState('');
   const [itemFilterKey, setItemFilterKey] = useState<ItemFilterKey>('all');
+
+  // Simulateur d'impact par objet (Data Dragon brut) & dégâts infligés en temps réel
+  const [combatDurationSec, setCombatDurationSec] = useState<number>(6);
+  const [combatSpellCasts, setCombatSpellCasts] = useState<number>(2);
+  const [targetArmorTier, setTargetArmorTier] = useState<'base' | 'standard' | 'tank' | 'custom'>('standard');
+  const [selectedEnemyTargetId, setSelectedEnemyTargetId] = useState<string>('Aatrox');
+  const [customTargetStats, setCustomTargetStats] = useState<{ hp: number; armor: number; mr: number }>({
+    hp: 2100,
+    armor: 110,
+    mr: 75,
+  });
+  const [inspectedItemSlotIdx, setInspectedItemSlotIdx] = useState<number | null>(null);
+
+  // Explication IA Gemini des passifs uniques d'objets et modification des formules du champion
+  type PassiveExplainAnchor =
+    | 'recommended-core'
+    | 'recommended-sit'
+    | 'recommended-web'
+    | 'atelier'
+    | 'simulator';
+  interface PassiveAiExplanation {
+    passiveTitle: string;
+    coreMechanism: string;
+    formulaModifications: string[];
+    liveNumericProof: string;
+    executionTip: string;
+  }
+  const [activePassiveExplain, setActivePassiveExplain] = useState<{
+    item: ItemData;
+    anchor: PassiveExplainAnchor;
+  } | null>(null);
+  const [passiveExplainCache, setPassiveExplainCache] = useState<Record<string, PassiveAiExplanation>>({});
+  const [passiveExplainLoadingKey, setPassiveExplainLoadingKey] = useState<string | null>(null);
+  const [passiveExplainError, setPassiveExplainError] = useState<string | null>(null);
+
+  // Objets populaires trouvés via Recherche de Builds (Google Search U.GG / OP.GG)
+  const [popularWebItems, setPopularWebItems] = useState<ItemData[]>([]);
+  const [popularWebMeta, setPopularWebMeta] = useState<{
+    summary: string;
+    sources: Array<{ title: string; uri: string }>;
+  } | null>(null);
 
   const manualOverrideRef = useRef(false);
 
@@ -772,6 +824,120 @@ export function BuildOptimizerView({
     ],
   );
 
+  const activeCombatTarget = useMemo<CombatTargetConfig>(() => {
+    if (targetArmorTier === 'custom') {
+      return {
+        id: 'custom',
+        name: 'Mannequin personnalisé',
+        hp: customTargetStats.hp,
+        armor: customTargetStats.armor,
+        mr: customTargetStats.mr,
+      };
+    }
+    const matchedEnemy =
+      enemyChampions.find((e) => e.id === selectedEnemyTargetId) || enemyChampions[0] || null;
+    if (!matchedEnemy) {
+      return {
+        id: 'dummy',
+        name: 'Cible standard',
+        hp: 2100,
+        armor: 100,
+        mr: 70,
+      };
+    }
+    const bonusHp = targetArmorTier === 'tank' ? 950 : targetArmorTier === 'standard' ? 350 : 0;
+    const bonusArmor = targetArmorTier === 'tank' ? 85 : targetArmorTier === 'standard' ? 35 : 0;
+    const bonusMr = targetArmorTier === 'tank' ? 65 : targetArmorTier === 'standard' ? 25 : 0;
+    return {
+      id: matchedEnemy.id,
+      name: `${matchedEnemy.name} (Niv.${runeSimLevel})`,
+      hp: Math.round(
+        computeStatAtLevel(matchedEnemy.stats.hp, matchedEnemy.stats.hpperlevel, runeSimLevel) +
+          bonusHp,
+      ),
+      armor: Math.round(
+        computeStatAtLevel(matchedEnemy.stats.armor, matchedEnemy.stats.armorperlevel, runeSimLevel) +
+          bonusArmor,
+      ),
+      mr: Math.round(
+        computeStatAtLevel(
+          matchedEnemy.stats.spellblock,
+          matchedEnemy.stats.spellblockperlevel,
+          runeSimLevel,
+        ) + bonusMr,
+      ),
+    };
+  }, [targetArmorTier, customTargetStats, enemyChampions, selectedEnemyTargetId, runeSimLevel]);
+
+  const combatDamageResult = useMemo(
+    () =>
+      simulateCombatDamageAgainstTarget({
+        champion: playerChampion,
+        role,
+        level: runeSimLevel,
+        items: sandboxActiveItems,
+        runeSelection: activeSandboxSelection,
+        target: activeCombatTarget,
+        durationSec: combatDurationSec,
+        spellCasts: combatSpellCasts,
+        heartsteelStacksHp,
+        threats: recommendation.threatSummary,
+      }),
+    [
+      playerChampion,
+      role,
+      runeSimLevel,
+      sandboxActiveItems,
+      activeSandboxSelection,
+      activeCombatTarget,
+      combatDurationSec,
+      combatSpellCasts,
+      heartsteelStacksHp,
+      recommendation.threatSummary,
+    ],
+  );
+
+  const perItemImpactRows = useMemo(
+    () =>
+      computePerItemImpactMatrix({
+        champion: playerChampion,
+        role,
+        level: runeSimLevel,
+        slots: sandboxSlots,
+        runeSelection: activeSandboxSelection,
+        target: activeCombatTarget,
+        durationSec: combatDurationSec,
+        spellCasts: combatSpellCasts,
+        heartsteelStacksHp,
+        threats: recommendation.threatSummary,
+      }),
+    [
+      playerChampion,
+      role,
+      runeSimLevel,
+      sandboxSlots,
+      activeSandboxSelection,
+      activeCombatTarget,
+      combatDurationSec,
+      combatSpellCasts,
+      heartsteelStacksHp,
+      recommendation.threatSummary,
+    ],
+  );
+
+  const activeInspectedItemRow = useMemo(() => {
+    if (perItemImpactRows.length === 0) return null;
+    if (inspectedItemSlotIdx !== null) {
+      const exact = perItemImpactRows.find((r) => r.slotIndex === inspectedItemSlotIdx);
+      if (exact) return exact;
+    }
+    const duskOrCore =
+      perItemImpactRows.find((r) => r.item.id === '2510') ||
+      perItemImpactRows.find((r) => r.slotIndex > 0) ||
+      perItemImpactRows[0];
+    return duskOrCore || null;
+  }, [perItemImpactRows, inspectedItemSlotIdx]);
+
   const runeComparison = useMemo(
     () =>
       compareRunePages({
@@ -867,6 +1033,255 @@ export function BuildOptimizerView({
     });
   };
 
+  const handleApplyPopularBuildItems = (items: ItemData[]) => {
+    const padded = Array.from({ length: 6 }, (_, i) => items[i]?.id || null);
+    setCustomBuildItemIds(padded);
+  };
+
+  const hasUniquePassiveInfo = (item: ItemData): boolean => {
+    const raw = extractRawDataDragonItemDetails(item);
+    return raw.passives.length > 0 || Boolean(raw.scalingNote);
+  };
+
+  const buildPassiveExplainKey = (item: ItemData): string =>
+    [
+      item.id,
+      playerChampion.id,
+      role,
+      runeSimLevel,
+      sandboxStats.totals.hp,
+      sandboxStats.totals.ad,
+      sandboxStats.totals.ap,
+      sandboxStats.totals.armor,
+      sandboxStats.totals.mr,
+      activeCombatTarget.id,
+      activeCombatTarget.armor,
+      activeCombatTarget.mr,
+      combatDurationSec,
+      combatSpellCasts,
+      heartsteelStacksHp,
+    ].join(':');
+
+  const requestPassiveExplanation = async (item: ItemData, force = false) => {
+    const cacheKey = buildPassiveExplainKey(item);
+    if (!force && passiveExplainCache[cacheKey]) {
+      setPassiveExplainError(null);
+      return;
+    }
+
+    const rawDetails = extractRawDataDragonItemDetails(item);
+    const matchingRow = perItemImpactRows.find((r) => r.item.id === item.id) || null;
+    const baseHp = Math.round(
+      computeStatAtLevel(playerChampion.stats.hp, playerChampion.stats.hpperlevel, runeSimLevel),
+    );
+    const baseAd = Math.round(
+      computeStatAtLevel(
+        playerChampion.stats.attackdamage,
+        playerChampion.stats.attackdamageperlevel,
+        runeSimLevel,
+      ),
+    );
+
+    setPassiveExplainError(null);
+    setPassiveExplainLoadingKey(cacheKey);
+    try {
+      const json = await postCoachJson<PassiveAiExplanation>('/api/coach/item-passive-formula', {
+        championName: playerChampion.name,
+        championId: playerChampion.id,
+        championTags: playerChampion.tags,
+        role,
+        level: runeSimLevel,
+        itemId: item.id,
+        itemName: item.name,
+        itemCost: item.gold.total,
+        rawPassives: rawDetails.passives,
+        scalingNote: rawDetails.scalingNote,
+        championStats: {
+          hp: sandboxStats.totals.hp,
+          bonusHp: Math.max(0, sandboxStats.totals.hp - baseHp),
+          baseAd,
+          totalAd: sandboxStats.totals.ad,
+          totalAp: sandboxStats.totals.ap,
+          totalArmor: sandboxStats.totals.armor,
+          totalMr: sandboxStats.totals.mr,
+          attackSpeed: Number(sandboxStats.totals.attackSpeed.toFixed(3)),
+          abilityHaste: sandboxStats.totals.abilityHaste,
+        },
+        targetStats: {
+          name: activeCombatTarget.name,
+          hp: activeCombatTarget.hp,
+          armor: activeCombatTarget.armor,
+          mr: activeCombatTarget.mr,
+          effectiveArmor: combatDamageResult.effectiveArmor,
+          effectiveMr: combatDamageResult.effectiveMr,
+        },
+        combatContext: {
+          durationSec: combatDamageResult.durationSec,
+          spellCasts: combatDamageResult.spellCasts,
+          totalMitigatedDamage: combatDamageResult.totalMitigatedDamage,
+          realDps: combatDamageResult.realDps,
+          deltaTotalDamage: matchingRow ? matchingRow.deltaTotalDamage : null,
+          deltaRealDps: matchingRow ? matchingRow.deltaRealDps : null,
+          deltaCombatHealing: matchingRow ? matchingRow.deltaCombatHealing : null,
+        },
+      });
+      setPassiveExplainCache((prev) => ({
+        ...prev,
+        [cacheKey]: json,
+      }));
+    } catch (err) {
+      setPassiveExplainError(
+        err instanceof Error
+          ? err.message
+          : 'Impossible de générer l’analyse Gemini du passif.',
+      );
+    } finally {
+      setPassiveExplainLoadingKey((curr) => (curr === cacheKey ? null : curr));
+    }
+  };
+
+  const handleTogglePassiveExplanation = (
+    item: ItemData,
+    anchor: PassiveExplainAnchor,
+    slotIdx?: number,
+  ) => {
+    if (anchor === 'simulator' && typeof slotIdx === 'number') {
+      setInspectedItemSlotIdx(slotIdx);
+    }
+    const isSameOpen =
+      activePassiveExplain?.item.id === item.id && activePassiveExplain?.anchor === anchor;
+    if (isSameOpen) {
+      setActivePassiveExplain(null);
+      setPassiveExplainError(null);
+      return;
+    }
+    setActivePassiveExplain({ item, anchor });
+    void requestPassiveExplanation(item, false);
+  };
+
+  const renderPassiveAiPanel = (item: ItemData) => {
+    const cacheKey = buildPassiveExplainKey(item);
+    const explanation = passiveExplainCache[cacheKey];
+    const isLoading = passiveExplainLoadingKey === cacheKey;
+
+    return (
+      <div className="rounded-xl border border-amber-500/40 bg-amber-50/70 dark:bg-[#0D121C] p-4 space-y-3">
+        <div className="flex items-start justify-between gap-3 pb-2.5 border-b border-amber-500/25">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <SafeGameIcon
+              src={item.imageUrl}
+              alt={item.name}
+              fallbackLabel={item.name}
+              sizeClass="w-8 h-8"
+            />
+            <div className="min-w-0">
+              <div className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1.5 flex-wrap">
+                <Sparkles className="w-3.5 h-3.5 text-amber-500 shrink-0" aria-hidden="true" />
+                <span className="truncate">
+                  Impact IA du passif : {explanation?.passiveTitle || item.name}
+                </span>
+              </div>
+              <div className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                {playerChampion.name} Niv.{runeSimLevel} · {sandboxStats.totals.hp} PV · {sandboxStats.totals.ap} AP · vs {activeCombatTarget.name}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => void requestPassiveExplanation(item, true)}
+              disabled={isLoading}
+              title="Recalculer avec Gemini"
+              className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-slate-300 dark:border-slate-700 text-[11px] font-medium text-slate-700 dark:text-slate-200 hover:border-amber-500 hover:text-amber-600 dark:hover:text-amber-400 disabled:opacity-50 transition-colors"
+            >
+              <RefreshCw className={`w-3 h-3 ${isLoading ? 'animate-spin' : ''}`} aria-hidden="true" />
+              <span>Actualiser</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActivePassiveExplain(null)}
+              aria-label="Fermer l’explication du passif"
+              className="p-1 rounded-md text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white transition-colors"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+
+        {isLoading && !explanation && (
+          <div className="flex items-center gap-2.5 py-2 text-xs text-slate-600 dark:text-slate-300">
+            <Loader2 className="w-4 h-4 animate-spin text-amber-500 shrink-0" aria-hidden="true" />
+            <span>
+              Analyse Gemini des formules de {item.name} sur le kit de {playerChampion.name} en cours...
+            </span>
+          </div>
+        )}
+
+        {passiveExplainError && (
+          <div className="rounded-lg border border-rose-500/35 bg-rose-500/10 px-3 py-2.5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 text-xs text-rose-700 dark:text-rose-300">
+            <span>{passiveExplainError}</span>
+            <button
+              type="button"
+              onClick={() => void requestPassiveExplanation(item, true)}
+              className="px-2.5 py-1 rounded-md bg-rose-600 text-white text-[11px] font-semibold hover:bg-rose-500 shrink-0"
+            >
+              Réessayer
+            </button>
+          </div>
+        )}
+
+        {explanation && (
+          <div className="space-y-3 text-xs">
+            <p className="text-slate-700 dark:text-slate-200 leading-relaxed">
+              {explanation.coreMechanism}
+            </p>
+
+            {explanation.formulaModifications?.length > 0 && (
+              <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-3 space-y-1.5">
+                <div className="text-[11px] font-semibold uppercase tracking-wider text-amber-600 dark:text-amber-400">
+                  Modifications des formules du champion
+                </div>
+                <ul className="space-y-1.5">
+                  {explanation.formulaModifications.map((step, idx) => (
+                    <li
+                      key={idx}
+                      className="flex items-start gap-2 text-[11px] font-mono tabular-nums text-slate-700 dark:text-slate-200 leading-relaxed"
+                    >
+                      <span className="text-amber-600 dark:text-amber-400 font-bold shrink-0">
+                        {idx + 1}.
+                      </span>
+                      <span>{step}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-3 space-y-1">
+                <div className="text-[11px] font-semibold text-sky-600 dark:text-sky-400">
+                  Preuve chiffrée en direct
+                </div>
+                <p className="text-[11px] font-mono tabular-nums text-slate-700 dark:text-slate-300 leading-relaxed">
+                  {explanation.liveNumericProof}
+                </p>
+              </div>
+              <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-3 space-y-1">
+                <div className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
+                  Optimisation en combat
+                </div>
+                <p className="text-[11px] text-slate-700 dark:text-slate-300 leading-relaxed">
+                  {explanation.executionTip}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const detectedAsSelection = useMemo<RunePageSelection | null>(() => {
     if (!detectedRunePage?.primaryTreeId) return null;
     const pTreeId = detectedRunePage.primaryTreeId;
@@ -902,10 +1317,13 @@ export function BuildOptimizerView({
   }, [detectedRunePage, ddragon.runeTrees]);
 
   const pickerTagCounts = useMemo(() => {
-    const counts: Record<string, number> = { Tous: ddragon.champions.length };
+    const counts: Record<string, number> = { Tous: ddragon.champions.length, Jungler: 0 };
     for (const c of ddragon.champions) {
       for (const t of c.tags) {
         counts[t] = (counts[t] || 0) + 1;
+      }
+      if (isJunglerChampion(c.id)) {
+        counts.Jungler += 1;
       }
     }
     return counts;
@@ -933,11 +1351,14 @@ export function BuildOptimizerView({
   const filteredChampions = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return ddragon.champions.filter((c) => {
-      const matchesTag = pickerTag === 'Tous' || c.tags.includes(pickerTag);
+      const matchesTag =
+        pickerTag === 'Tous' ||
+        (pickerTag === 'Jungler' ? isJunglerChampion(c.id) : c.tags.includes(pickerTag));
       const matchesQuery =
         !q ||
         c.name.toLowerCase().includes(q) ||
         c.id.toLowerCase().includes(q) ||
+        (isJunglerChampion(c.id) && 'jungler jungle'.includes(q)) ||
         c.tags.some((t) => t.toLowerCase().includes(q));
       return matchesTag && matchesQuery;
     });
@@ -967,13 +1388,13 @@ export function BuildOptimizerView({
     setAiLoading(true);
     setAiError(null);
     try {
-      const res = await fetch('/api/coach/build-rationale', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ recommendation, tendencies }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Erreur serveur');
+      const data = await postCoachJson<{
+        headline?: string;
+        earlyGamePlan?: string;
+        midGameSpike?: string;
+        teamfightPositioning?: string;
+        keyReminders?: string[];
+      }>('/api/coach/build-rationale', { recommendation, tendencies });
       setAiPlan(data);
     } catch (err) {
       setAiError(err instanceof Error ? err.message : 'Impossible de joindre le coach IA.');
@@ -1591,34 +2012,65 @@ export function BuildOptimizerView({
             )}
 
             <div className="divide-y divide-slate-200 dark:divide-slate-800 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
-              {[recommendation.boots, ...recommendation.coreItems].map((rec) => (
-                <div
-                  key={`${rec.slotType}-${rec.item.id}`}
-                  className="p-3.5 flex items-start gap-3.5 bg-white dark:bg-[#121722]"
-                >
-                  <SafeGameIcon
-                    key={`rec-item-${rec.item.id}`}
-                    src={rec.item.imageUrl}
-                    alt={rec.item.name}
-                    fallbackLabel={rec.item.name}
-                    sizeClass="w-11 h-11"
-                  />
-                  <div className="flex-1 min-w-0">
-                    <div className="flex flex-wrap items-baseline justify-between gap-2">
-                      <div className="font-semibold text-sm text-slate-900 dark:text-white">
-                        {rec.item.name}
+              {[recommendation.boots, ...recommendation.coreItems].map((rec) => {
+                const showPassiveInfo = hasUniquePassiveInfo(rec.item);
+                const isPassiveActive =
+                  activePassiveExplain?.item.id === rec.item.id &&
+                  activePassiveExplain?.anchor === 'recommended-core';
+
+                return (
+                  <div
+                    key={`${rec.slotType}-${rec.item.id}`}
+                    className="p-3.5 flex items-start gap-3.5 bg-white dark:bg-[#121722]"
+                  >
+                    <SafeGameIcon
+                      key={`rec-item-${rec.item.id}`}
+                      src={rec.item.imageUrl}
+                      alt={rec.item.name}
+                      fallbackLabel={rec.item.name}
+                      sizeClass="w-11 h-11"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className="font-semibold text-sm text-slate-900 dark:text-white truncate">
+                            {rec.item.name}
+                          </span>
+                          {showPassiveInfo && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleTogglePassiveExplanation(rec.item, 'recommended-core')
+                              }
+                              aria-expanded={isPassiveActive}
+                              aria-label={`Analyser l’impact du passif de ${rec.item.name} sur les formules de ${playerChampion.name}`}
+                              title="Expliquer par IA comment ce passif modifie les formules du champion"
+                              className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md border text-[10px] font-semibold transition-colors shrink-0 ${
+                                isPassiveActive
+                                  ? 'border-amber-500/60 bg-amber-500/15 text-amber-600 dark:text-amber-400'
+                                  : 'border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:border-amber-500/50 hover:text-amber-600 dark:hover:text-amber-400'
+                              }`}
+                            >
+                              <Info className="w-3 h-3" aria-hidden="true" />
+                              <span>Passif IA</span>
+                            </button>
+                          )}
+                        </div>
+                        <div className="text-xs font-mono tabular-nums text-amber-600 dark:text-amber-400">
+                          {rec.slotType} · {rec.item.gold.total} po
+                        </div>
                       </div>
-                      <div className="text-xs font-mono tabular-nums text-amber-600 dark:text-amber-400">
-                        {rec.slotType} · {rec.item.gold.total} po
-                      </div>
+                      <p className="text-xs text-slate-600 dark:text-slate-300 mt-1 leading-relaxed">
+                        {rec.reasons.join(' ')}
+                      </p>
                     </div>
-                    <p className="text-xs text-slate-600 dark:text-slate-300 mt-1 leading-relaxed">
-                      {rec.reasons.join(' ')}
-                    </p>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
+
+            {activePassiveExplain?.anchor === 'recommended-core' &&
+              renderPassiveAiPanel(activePassiveExplain.item)}
 
             {recommendation.situationalItems.length > 0 && (
               <div className="space-y-2.5">
@@ -1626,48 +2078,184 @@ export function BuildOptimizerView({
                   Options situationnelles (4e / 5e emplacement)
                 </h3>
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  {recommendation.situationalItems.map((rec) => (
-                    <div
-                      key={rec.item.id}
-                      className="p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] space-y-2 flex flex-col justify-between"
-                    >
-                      <div className="space-y-2">
-                        <div className="flex items-center gap-2.5">
-                          <SafeGameIcon
-                            key={`sit-item-${rec.item.id}`}
-                            src={rec.item.imageUrl}
-                            alt={rec.item.name}
-                            fallbackLabel={rec.item.name}
-                            sizeClass="w-9 h-9"
-                          />
-                          <div className="min-w-0">
-                            <div className="text-xs font-semibold text-slate-900 dark:text-white truncate">
-                              {rec.item.name}
+                  {recommendation.situationalItems.map((rec) => {
+                    const showPassiveInfo = hasUniquePassiveInfo(rec.item);
+                    const isPassiveActive =
+                      activePassiveExplain?.item.id === rec.item.id &&
+                      activePassiveExplain?.anchor === 'recommended-sit';
+
+                    return (
+                      <div
+                        key={rec.item.id}
+                        className="p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] space-y-2 flex flex-col justify-between"
+                      >
+                        <div className="space-y-2">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <SafeGameIcon
+                                key={`sit-item-${rec.item.id}`}
+                                src={rec.item.imageUrl}
+                                alt={rec.item.name}
+                                fallbackLabel={rec.item.name}
+                                sizeClass="w-9 h-9"
+                              />
+                              <div className="min-w-0">
+                                <div className="text-xs font-semibold text-slate-900 dark:text-white truncate">
+                                  {rec.item.name}
+                                </div>
+                                <div className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                                  {rec.item.gold.total} po
+                                </div>
+                              </div>
                             </div>
-                            <div className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
-                              {rec.item.gold.total} po
+                            {showPassiveInfo && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleTogglePassiveExplanation(rec.item, 'recommended-sit')
+                                }
+                                aria-expanded={isPassiveActive}
+                                aria-label={`Analyser l’impact du passif de ${rec.item.name} sur les formules de ${playerChampion.name}`}
+                                title="Expliquer par IA comment ce passif modifie les formules du champion"
+                                className={`p-1 rounded-md border transition-colors shrink-0 ${
+                                  isPassiveActive
+                                    ? 'border-amber-500/60 bg-amber-500/15 text-amber-600 dark:text-amber-400'
+                                    : 'border-slate-200 dark:border-slate-700 text-slate-400 hover:border-amber-500/50 hover:text-amber-600 dark:hover:text-amber-400'
+                                }`}
+                              >
+                                <Info className="w-3.5 h-3.5" aria-hidden="true" />
+                              </button>
+                            )}
+                          </div>
+                          <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                            {rec.reasons[0]}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleQuickTestItem(rec.item)}
+                          className="w-full px-2.5 py-1.5 text-[11px] font-semibold rounded-md border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:border-amber-500 hover:text-amber-600 dark:hover:text-amber-400 transition-colors"
+                        >
+                          Tester dans l’atelier
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+                {activePassiveExplain?.anchor === 'recommended-sit' &&
+                  renderPassiveAiPanel(activePassiveExplain.item)}
+              </div>
+            )}
+
+            {popularWebItems.length > 0 && (
+              <div className="space-y-2.5 pt-3 border-t border-slate-200 dark:border-slate-800">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h3 className="text-sm font-semibold text-slate-900 dark:text-white flex items-center gap-2">
+                    <Globe className="w-4 h-4 text-sky-500 shrink-0" aria-hidden="true" />
+                    <span>Items populaires suggérés (U.GG / OP.GG)</span>
+                  </h3>
+                  <button
+                    type="button"
+                    onClick={() => handleApplyPopularBuildItems(popularWebItems.slice(0, 6))}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-semibold rounded-md border border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-300 hover:bg-sky-500/20 transition-colors"
+                  >
+                    <Download className="w-3 h-3" aria-hidden="true" />
+                    Charger la sélection Web dans l’atelier
+                  </button>
+                </div>
+
+                {popularWebMeta?.summary && (
+                  <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                    {popularWebMeta.summary}
+                  </p>
+                )}
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  {popularWebItems.slice(0, 6).map((webItem) => {
+                    const showPassiveInfo = hasUniquePassiveInfo(webItem);
+                    const isPassiveActive =
+                      activePassiveExplain?.item.id === webItem.id &&
+                      activePassiveExplain?.anchor === 'recommended-web';
+                    const isAlreadyInAtelier = customBuildItemIds?.includes(webItem.id) ?? false;
+
+                    return (
+                      <div
+                        key={`web-rec-${webItem.id}`}
+                        className="p-3 rounded-xl border border-sky-500/30 bg-sky-500/5 space-y-2 flex flex-col justify-between"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <SafeGameIcon
+                              src={webItem.imageUrl}
+                              alt={webItem.name}
+                              fallbackLabel={webItem.name}
+                              sizeClass="w-9 h-9"
+                            />
+                            <div className="min-w-0">
+                              <div className="text-xs font-semibold text-slate-900 dark:text-white truncate">
+                                {webItem.name}
+                              </div>
+                              <div className="text-[11px] font-mono tabular-nums text-sky-700 dark:text-sky-300">
+                                {webItem.gold.total} po · Méta Web
+                              </div>
                             </div>
                           </div>
+                          {showPassiveInfo && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleTogglePassiveExplanation(webItem, 'recommended-web')
+                              }
+                              aria-expanded={isPassiveActive}
+                              aria-label={`Analyser l’impact du passif de ${webItem.name} sur les formules de ${playerChampion.name}`}
+                              title="Expliquer par IA comment ce passif modifie les formules du champion"
+                              className={`p-1 rounded-md border transition-colors shrink-0 ${
+                                isPassiveActive
+                                  ? 'border-amber-500/60 bg-amber-500/15 text-amber-600 dark:text-amber-400'
+                                  : 'border-slate-200 dark:border-slate-700 text-slate-400 hover:border-amber-500/50 hover:text-amber-600 dark:hover:text-amber-400'
+                              }`}
+                            >
+                              <Info className="w-3.5 h-3.5" aria-hidden="true" />
+                            </button>
+                          )}
                         </div>
-                        <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
-                          {rec.reasons[0]}
-                        </p>
+                        <button
+                          type="button"
+                          onClick={() => handleQuickTestItem(webItem)}
+                          className={`w-full px-2.5 py-1.5 text-[11px] font-semibold rounded-md border transition-colors ${
+                            isAlreadyInAtelier
+                              ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+                              : 'border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:border-sky-500 hover:text-sky-600 dark:hover:text-sky-300'
+                          }`}
+                        >
+                          {isAlreadyInAtelier ? 'Ajouté à l’atelier ✓' : 'Tester dans l’atelier'}
+                        </button>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => handleQuickTestItem(rec.item)}
-                        className="w-full px-2.5 py-1.5 text-[11px] font-semibold rounded-md border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:border-amber-500 hover:text-amber-600 dark:hover:text-amber-400 transition-colors"
-                      >
-                        Tester dans l’atelier
-                      </button>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
+
+                {activePassiveExplain?.anchor === 'recommended-web' &&
+                  renderPassiveAiPanel(activePassiveExplain.item)}
               </div>
             )}
           </section>
         </div>
       </div>
+
+      {/* Recherche de Builds Populaires en direct (Google Search Grounding : U.GG / OP.GG / Lolalytics) */}
+      <PopularBuildSearch
+        champion={playerChampion}
+        role={role}
+        gameMode={gameMode}
+        patchVersion={ddragon.version}
+        onApplyBuild={handleApplyPopularBuildItems}
+        onQuickTestItem={handleQuickTestItem}
+        onSuggestionsUpdated={(items, meta) => {
+          setPopularWebItems(items);
+          setPopularWebMeta(meta);
+        }}
+      />
 
       {/* Atelier Équipement Interactif + Statistiques Exactes & Deltas en Temps Réel */}
       <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5 space-y-5">
@@ -1736,6 +2324,12 @@ export function BuildOptimizerView({
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
           {sandboxSlots.map((item, slotIdx) => {
             const tags = item ? formatItemStatTags(item) : [];
+            const showPassiveInfo = item ? hasUniquePassiveInfo(item) : false;
+            const isPassiveActive =
+              Boolean(item) &&
+              activePassiveExplain?.item.id === item?.id &&
+              activePassiveExplain?.anchor === 'atelier';
+
             return (
               <div
                 key={`sandbox-slot-${slotIdx}-${item?.id || 'empty'}`}
@@ -1744,15 +2338,33 @@ export function BuildOptimizerView({
                 <div className="flex items-center justify-between gap-1 text-[10px] text-slate-400">
                   <span className="font-mono tabular-nums uppercase">Emplacement {slotIdx + 1}</span>
                   {item && (
-                    <button
-                      type="button"
-                      onClick={() => handleAssignItemToSlot(slotIdx, null)}
-                      title="Vider cet emplacement"
-                      aria-label={`Retirer ${item.name}`}
-                      className="text-slate-400 hover:text-rose-500 transition-colors"
-                    >
-                      <Trash2 className="w-3 h-3" />
-                    </button>
+                    <div className="flex items-center gap-1.5">
+                      {showPassiveInfo && (
+                        <button
+                          type="button"
+                          onClick={() => handleTogglePassiveExplanation(item, 'atelier')}
+                          aria-expanded={isPassiveActive}
+                          aria-label={`Analyser l’impact du passif de ${item.name} sur les formules de ${playerChampion.name}`}
+                          title="Expliquer par IA comment ce passif modifie les formules du champion"
+                          className={`p-0.5 rounded transition-colors ${
+                            isPassiveActive
+                              ? 'text-amber-600 dark:text-amber-400 bg-amber-500/15'
+                              : 'text-slate-400 hover:text-amber-500'
+                          }`}
+                        >
+                          <Info className="w-3.5 h-3.5" aria-hidden="true" />
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => handleAssignItemToSlot(slotIdx, null)}
+                        title="Vider cet emplacement"
+                        aria-label={`Retirer ${item.name}`}
+                        className="text-slate-400 hover:text-rose-500 transition-colors"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                    </div>
                   )}
                 </div>
 
@@ -1806,6 +2418,9 @@ export function BuildOptimizerView({
             );
           })}
         </div>
+
+        {activePassiveExplain?.anchor === 'atelier' &&
+          renderPassiveAiPanel(activePassiveExplain.item)}
 
         {/* Bandeau de synthèse combat & rentabilité Or avec Delta en temps réel */}
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
@@ -2155,6 +2770,537 @@ export function BuildOptimizerView({
             </div>
           </div>
         )}
+      </section>
+
+      {/* Simulateur d'Impact par Objet (Data Dragon Brut) & Dégâts Infligés en Temps Réel */}
+      <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5 space-y-5">
+        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 pb-4 border-b border-slate-200 dark:border-slate-800">
+          <div className="space-y-1">
+            <h2 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+              <Radar className="w-4 h-4 text-amber-500 shrink-0" aria-hidden="true" />
+              <span>Simulateur d’Impact par Objet &amp; Dégâts Infligés en Temps Réel</span>
+            </h2>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              Isole l’apport marginal exact (Avec − Sans) de chacun de vos objets équipés sur les statistiques finales, les passifs uniques (ex. Aube et crépuscule / Aube de Haut-Lacère) et les dégâts réels infligés à la cible.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <div className="flex items-center gap-1 p-1 rounded-lg bg-slate-100 dark:bg-[#0B0E14] border border-slate-200 dark:border-slate-800 text-xs">
+              <span className="px-2 text-[11px] text-slate-500 dark:text-slate-400 whitespace-nowrap">
+                Échange :
+              </span>
+              {[3, 6, 10].map((sec) => (
+                <button
+                  key={sec}
+                  type="button"
+                  onClick={() => setCombatDurationSec(sec)}
+                  className={`px-2.5 py-1 rounded font-mono tabular-nums transition-colors whitespace-nowrap shrink-0 ${
+                    combatDurationSec === sec
+                      ? 'bg-amber-600 dark:bg-amber-500 text-white dark:text-slate-950 font-semibold'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  {sec}s
+                </button>
+              ))}
+            </div>
+
+            <div className="flex items-center gap-1 p-1 rounded-lg bg-slate-100 dark:bg-[#0B0E14] border border-slate-200 dark:border-slate-800 text-xs">
+              <span className="px-2 text-[11px] text-slate-500 dark:text-slate-400 whitespace-nowrap">
+                Sorts lancés :
+              </span>
+              {[0, 1, 2, 3, 4].map((casts) => (
+                <button
+                  key={casts}
+                  type="button"
+                  onClick={() => setCombatSpellCasts(casts)}
+                  className={`px-2 py-1 rounded font-mono tabular-nums transition-colors whitespace-nowrap shrink-0 ${
+                    combatSpellCasts === casts
+                      ? 'bg-amber-600 dark:bg-amber-500 text-white dark:text-slate-950 font-semibold'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  {casts}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Barre de sélection de cible (Adversaires réels Data Dragon ou Mannequin manuel) */}
+        <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 pb-4 border-b border-slate-200 dark:border-slate-800">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-medium text-slate-600 dark:text-slate-300 mr-1">
+              Cible simulée :
+            </span>
+            {enemyChampions.map((enemy) => {
+              const isSelected = targetArmorTier !== 'custom' && activeCombatTarget.id === enemy.id;
+              return (
+                <button
+                  key={enemy.id}
+                  type="button"
+                  onClick={() => {
+                    setSelectedEnemyTargetId(enemy.id);
+                    if (targetArmorTier === 'custom') setTargetArmorTier('standard');
+                  }}
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs transition-colors whitespace-nowrap shrink-0 ${
+                    isSelected
+                      ? 'border-amber-500 bg-amber-500/10 text-amber-700 dark:text-amber-300 font-semibold'
+                      : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] text-slate-700 dark:text-slate-300 hover:border-amber-500/50'
+                  }`}
+                >
+                  <SafeGameIcon
+                    src={enemy.imageUrl}
+                    alt={enemy.name}
+                    fallbackLabel={enemy.name}
+                    sizeClass="w-5 h-5"
+                  />
+                  <span>{enemy.name}</span>
+                </button>
+              );
+            })}
+
+            <button
+              type="button"
+              onClick={() => setTargetArmorTier('custom')}
+              className={`px-2.5 py-1.5 rounded-lg border text-xs transition-colors whitespace-nowrap shrink-0 ${
+                targetArmorTier === 'custom'
+                  ? 'border-amber-500 bg-amber-500/10 text-amber-700 dark:text-amber-300 font-semibold'
+                  : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] text-slate-600 dark:text-slate-400 hover:border-amber-500/50'
+              }`}
+            >
+              Mannequin libre
+            </button>
+          </div>
+
+          {targetArmorTier !== 'custom' ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center gap-1 p-1 rounded-lg bg-slate-100 dark:bg-[#0B0E14] border border-slate-200 dark:border-slate-800 text-[11px]">
+                {(
+                  [
+                    { id: 'base', label: 'Base pure' },
+                    { id: 'standard', label: 'Stuff Standard' },
+                    { id: 'tank', label: 'Stuff Tank' },
+                  ] as const
+                ).map((tier) => (
+                  <button
+                    key={tier.id}
+                    type="button"
+                    onClick={() => setTargetArmorTier(tier.id)}
+                    className={`px-2.5 py-1 rounded transition-colors whitespace-nowrap shrink-0 ${
+                      targetArmorTier === tier.id
+                        ? 'bg-slate-900 dark:bg-slate-200 text-white dark:text-slate-950 font-semibold'
+                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                    }`}
+                  >
+                    {tier.label}
+                  </button>
+                ))}
+              </div>
+              <span className="text-xs font-mono tabular-nums text-slate-600 dark:text-slate-300">
+                {activeCombatTarget.hp} PV · {activeCombatTarget.armor} Arm. · {activeCombatTarget.mr} RM
+              </span>
+            </div>
+          ) : (
+            <div className="flex flex-wrap items-center gap-4 text-xs font-mono tabular-nums">
+              <label className="flex items-center gap-2 text-slate-700 dark:text-slate-300">
+                <span className="font-sans text-[11px] text-slate-500">PV</span>
+                <input
+                  type="range"
+                  min={1000}
+                  max={5000}
+                  step={100}
+                  value={customTargetStats.hp}
+                  onChange={(e) =>
+                    setCustomTargetStats((prev) => ({ ...prev, hp: Number(e.target.value) }))
+                  }
+                  className="w-24 accent-amber-500"
+                />
+                <span>{customTargetStats.hp}</span>
+              </label>
+              <label className="flex items-center gap-2 text-slate-700 dark:text-slate-300">
+                <span className="font-sans text-[11px] text-slate-500">Armure</span>
+                <input
+                  type="range"
+                  min={30}
+                  max={300}
+                  step={5}
+                  value={customTargetStats.armor}
+                  onChange={(e) =>
+                    setCustomTargetStats((prev) => ({ ...prev, armor: Number(e.target.value) }))
+                  }
+                  className="w-20 accent-amber-500"
+                />
+                <span>{customTargetStats.armor}</span>
+              </label>
+              <label className="flex items-center gap-2 text-slate-700 dark:text-slate-300">
+                <span className="font-sans text-[11px] text-slate-500">RM</span>
+                <input
+                  type="range"
+                  min={30}
+                  max={250}
+                  step={5}
+                  value={customTargetStats.mr}
+                  onChange={(e) =>
+                    setCustomTargetStats((prev) => ({ ...prev, mr: Number(e.target.value) }))
+                  }
+                  className="w-20 accent-amber-500"
+                />
+                <span>{customTargetStats.mr}</span>
+              </label>
+            </div>
+          )}
+        </div>
+
+        {/* Synthèse temps réel des dégâts infligés sur la cible */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] px-4 py-3">
+            <div className="text-[11px] text-slate-500 dark:text-slate-400">
+              Dégâts réels sur {combatDamageResult.durationSec}s
+            </div>
+            <div className="mt-1 text-xl font-bold font-mono tabular-nums text-slate-900 dark:text-white">
+              {combatDamageResult.totalMitigatedDamage}
+            </div>
+            <div className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400 mt-0.5">
+              {combatDamageResult.totalRawDamage} bruts · -{combatDamageResult.physicalMitigationPct}% Phys / -{combatDamageResult.magicMitigationPct}% Mag
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] px-4 py-3">
+            <div className="text-[11px] text-slate-500 dark:text-slate-400">
+              DPS réel sur {combatDamageResult.target.name}
+            </div>
+            <div className="mt-1 text-xl font-bold font-mono tabular-nums text-amber-600 dark:text-amber-400">
+              {combatDamageResult.realDps} /s
+            </div>
+            <div className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400 mt-0.5">
+              {combatDamageResult.autoAttacksCount} AA · {combatDamageResult.spellbladeProcsCount} Lame enchantée · {combatDamageResult.extraDoubleOnHitProcs} Double On-Hit
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] px-4 py-3">
+            <div className="text-[11px] text-slate-500 dark:text-slate-400">
+              PV cible retirés (TTK estimé)
+            </div>
+            <div className="mt-1 flex items-baseline justify-between font-mono tabular-nums">
+              <span className="text-xl font-bold text-slate-900 dark:text-white">
+                {combatDamageResult.targetHpPctRemoved}%
+              </span>
+              <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">
+                ~{combatDamageResult.estimatedTtkSec}s
+              </span>
+            </div>
+            <div className="mt-2 h-1.5 w-full rounded bg-slate-200 dark:bg-slate-800 overflow-hidden">
+              <div
+                className="h-full bg-amber-500"
+                style={{ width: `${combatDamageResult.targetHpPctRemoved}%` }}
+              />
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] px-4 py-3">
+            <div className="text-[11px] text-slate-500 dark:text-slate-400">
+              Soin généré en duel ({combatDamageResult.durationSec}s)
+            </div>
+            <div className="mt-1 text-xl font-bold font-mono tabular-nums text-emerald-600 dark:text-emerald-400">
+              +{combatDamageResult.combatHealingTotal} PV
+            </div>
+            <div className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400 mt-0.5">
+              Aube · Désespoir · Kit {sandboxStats.totals.healShieldReceivedPct > 0 ? `(×1.25 Visage)` : ''}
+            </div>
+          </div>
+        </div>
+
+        {/* Décomposition des sources de dégâts (mitigés vs bruts) */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+          <div className="lg:col-span-7 overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] text-slate-500 dark:text-slate-400">
+                  <th className="py-2.5 px-3 text-left font-medium">Objet équipé</th>
+                  <th className="py-2.5 px-2 text-right font-medium">Rent.</th>
+                  <th className="py-2.5 px-2 text-right font-medium">Δ Stats clés</th>
+                  <th className="py-2.5 px-2 text-right font-medium">Δ EHP</th>
+                  <th className="py-2.5 px-2 text-right font-medium">Δ Dégâts</th>
+                  <th className="py-2.5 px-3 text-right font-medium">Δ DPS / Soin</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200/70 dark:divide-slate-800/70 font-mono tabular-nums">
+                {perItemImpactRows.map((row) => {
+                  const isActive = activeInspectedItemRow?.slotIndex === row.slotIndex;
+                  const statParts: string[] = [];
+                  if (row.deltaHp) statParts.push(`+${row.deltaHp} PV`);
+                  if (row.deltaAd) statParts.push(`+${row.deltaAd} AD`);
+                  if (row.deltaAp) statParts.push(`+${row.deltaAp} AP`);
+                  if (row.deltaArmor) statParts.push(`+${row.deltaArmor} Arm`);
+                  if (row.deltaMr) statParts.push(`+${row.deltaMr} RM`);
+                  if (row.deltaAh) statParts.push(`+${row.deltaAh} Hâte`);
+                  if (row.deltaAs > 0) statParts.push(`+${row.deltaAs.toFixed(2)} AS`);
+                  const totalEhpDelta = Math.round((row.deltaPhysicalEhp + row.deltaMagicEhp) / 2);
+
+                  return (
+                    <tr
+                      key={`impact-slot-${row.slotIndex}-${row.item.id}`}
+                      onClick={() => setInspectedItemSlotIdx(row.slotIndex)}
+                      className={`cursor-pointer transition-colors ${
+                        isActive
+                          ? 'bg-amber-500/10 dark:bg-amber-500/10'
+                          : 'hover:bg-slate-50 dark:hover:bg-slate-800/30'
+                      }`}
+                    >
+                      <td className="py-2.5 px-3 font-sans">
+                        <div className="flex items-center gap-2.5">
+                          <SafeGameIcon
+                            src={row.item.imageUrl}
+                            alt={row.item.name}
+                            fallbackLabel={row.item.name}
+                            sizeClass="w-7 h-7"
+                          />
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-semibold text-slate-900 dark:text-white truncate max-w-[140px]">
+                                {row.item.name}
+                              </span>
+                              {(row.rawDetails.passives.length > 0 || Boolean(row.rawDetails.scalingNote)) && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleTogglePassiveExplanation(
+                                      row.item,
+                                      'simulator',
+                                      row.slotIndex,
+                                    );
+                                  }}
+                                  aria-expanded={
+                                    activePassiveExplain?.item.id === row.item.id &&
+                                    activePassiveExplain?.anchor === 'simulator'
+                                  }
+                                  aria-label={`Analyser l’impact du passif de ${row.item.name} sur les formules de ${playerChampion.name}`}
+                                  title="Expliquer par IA comment ce passif modifie les formules du champion"
+                                  className={`p-0.5 rounded border transition-colors shrink-0 ${
+                                    activePassiveExplain?.item.id === row.item.id &&
+                                    activePassiveExplain?.anchor === 'simulator'
+                                      ? 'border-amber-500/60 bg-amber-500/15 text-amber-600 dark:text-amber-400'
+                                      : 'border-slate-200 dark:border-slate-700 text-slate-400 hover:border-amber-500/50 hover:text-amber-600 dark:hover:text-amber-400'
+                                  }`}
+                                >
+                                  <Info className="w-3 h-3" aria-hidden="true" />
+                                </button>
+                              )}
+                            </div>
+                            <div className="text-[10px] font-mono text-slate-500 dark:text-slate-400">
+                              Slot {row.slotIndex + 1} · {row.item.gold.total} po
+                            </div>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="py-2.5 px-2 text-right text-slate-700 dark:text-slate-300">
+                        {row.goldEfficiencySelfPct}%
+                      </td>
+                      <td className="py-2.5 px-2 text-right font-sans text-[11px] text-slate-600 dark:text-slate-300 max-w-[155px]">
+                        {statParts.slice(0, 3).join(' · ') || 'Passif unique'}
+                      </td>
+                      <td className="py-2.5 px-2 text-right text-sky-600 dark:text-sky-400">
+                        {totalEhpDelta > 0 ? `+${totalEhpDelta}` : totalEhpDelta}
+                      </td>
+                      <td className="py-2.5 px-2 text-right font-semibold text-amber-600 dark:text-amber-400">
+                        {row.deltaTotalDamage >= 0 ? `+${row.deltaTotalDamage}` : row.deltaTotalDamage}
+                        {row.damageSharePct > 0 && (
+                          <span className="block text-[10px] font-normal text-slate-500">
+                            {row.damageSharePct}% total
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-2.5 px-3 text-right">
+                        <div className="text-slate-900 dark:text-white">
+                          {row.deltaRealDps >= 0 ? `+${row.deltaRealDps}` : row.deltaRealDps}/s
+                        </div>
+                        {row.deltaCombatHealing > 0 && (
+                          <div className="text-[10px] text-emerald-600 dark:text-emerald-400">
+                            +{row.deltaCombatHealing} PV
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Panneau Droit : Données Brutes Data Dragon de l'objet sélectionné + Sources de dégâts */}
+          <div className="lg:col-span-5 space-y-4">
+            {activeInspectedItemRow && (
+              <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] p-4 space-y-3">
+                <div className="flex items-center justify-between gap-2 pb-2.5 border-b border-slate-200 dark:border-slate-800">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <SafeGameIcon
+                      src={activeInspectedItemRow.item.imageUrl}
+                      alt={activeInspectedItemRow.item.name}
+                      fallbackLabel={activeInspectedItemRow.item.name}
+                      sizeClass="w-9 h-9"
+                    />
+                    <div className="min-w-0">
+                      <div className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                        {activeInspectedItemRow.rawDetails.name}
+                      </div>
+                      <div className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                        Data Dragon ID #{activeInspectedItemRow.rawDetails.itemId} · {activeInspectedItemRow.rawDetails.goldTotal} po
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {(activeInspectedItemRow.rawDetails.passives.length > 0 ||
+                      Boolean(activeInspectedItemRow.rawDetails.scalingNote)) && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          handleTogglePassiveExplanation(
+                            activeInspectedItemRow.item,
+                            'simulator',
+                            activeInspectedItemRow.slotIndex,
+                          )
+                        }
+                        aria-expanded={
+                          activePassiveExplain?.item.id === activeInspectedItemRow.item.id &&
+                          activePassiveExplain?.anchor === 'simulator'
+                        }
+                        className={`inline-flex items-center gap-1 px-2 py-1 rounded-md border text-[11px] font-semibold transition-colors ${
+                          activePassiveExplain?.item.id === activeInspectedItemRow.item.id &&
+                          activePassiveExplain?.anchor === 'simulator'
+                            ? 'border-amber-500/60 bg-amber-500/15 text-amber-600 dark:text-amber-400'
+                            : 'border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:border-amber-500 hover:text-amber-600 dark:hover:text-amber-400'
+                        }`}
+                      >
+                        <Info className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span>
+                          {activePassiveExplain?.item.id === activeInspectedItemRow.item.id &&
+                          activePassiveExplain?.anchor === 'simulator'
+                            ? 'Masquer IA'
+                            : 'Formule IA'}
+                        </span>
+                      </button>
+                    )}
+                    <span className="text-[11px] font-mono tabular-nums font-semibold text-amber-600 dark:text-amber-400">
+                      +{activeInspectedItemRow.deltaTotalDamage} dégâts
+                    </span>
+                  </div>
+                </div>
+
+                {/* Stats brutes Data Dragon */}
+                {activeInspectedItemRow.rawDetails.rawStatsEntries.length > 0 && (
+                  <div className="space-y-1">
+                    <div className="text-[11px] font-semibold text-slate-700 dark:text-slate-300">
+                      Valeurs brutes Data Dragon (`item.stats`)
+                    </div>
+                    <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] font-mono tabular-nums text-slate-600 dark:text-slate-400">
+                      {activeInspectedItemRow.rawDetails.rawStatsEntries.map((st) => (
+                        <span key={st.key}>
+                          {st.label} : <strong className="text-slate-900 dark:text-slate-200">{st.value}</strong>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Lignes parsées <stats> */}
+                {activeInspectedItemRow.rawDetails.parsedStatsLines.length > 0 && (
+                  <div className="text-[11px] text-slate-600 dark:text-slate-300">
+                    <span className="font-semibold text-slate-700 dark:text-slate-200">Stats fiche : </span>
+                    {activeInspectedItemRow.rawDetails.parsedStatsLines.join(' · ')}
+                  </div>
+                )}
+
+                {/* Passifs bruts Data Dragon */}
+                {activeInspectedItemRow.rawDetails.passives.length > 0 && (
+                  <div className="space-y-1.5 pt-1 border-t border-slate-200/70 dark:border-slate-800">
+                    <div className="text-[11px] font-semibold text-slate-700 dark:text-slate-300">
+                      Passifs / Actifs bruts Data Dragon
+                    </div>
+                    {activeInspectedItemRow.rawDetails.passives.map((pas, idx) => (
+                      <div key={idx} className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                        <strong className="text-slate-900 dark:text-white">
+                          {pas.isActive ? '[Actif] ' : ''}
+                          {pas.name} :
+                        </strong>{' '}
+                        {pas.text}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Formule de scaling Riot exacte (notamment là où Data Dragon laisse 0) */}
+                {activeInspectedItemRow.rawDetails.scalingNote && (
+                  <div className="pt-2 border-t border-slate-200/70 dark:border-slate-800 text-[11px] text-amber-700 dark:text-amber-300 leading-relaxed">
+                    <strong>Formule simulée en temps réel : </strong>
+                    {activeInspectedItemRow.rawDetails.scalingNote}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {activePassiveExplain?.anchor === 'simulator' &&
+              renderPassiveAiPanel(activePassiveExplain.item)}
+
+            {/* Répartition exacte des dégâts infligés par canal */}
+            <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] p-4 space-y-2.5 text-xs">
+              <div className="font-semibold text-slate-900 dark:text-white">
+                Décomposition des {combatDamageResult.totalMitigatedDamage} dégâts réels
+              </div>
+              <div className="divide-y divide-slate-200/70 dark:divide-slate-800 font-mono tabular-nums">
+                <div className="py-1.5 flex items-center justify-between gap-2">
+                  <span className="font-sans text-slate-600 dark:text-slate-300">
+                    Auto-attaques ({combatDamageResult.autoAttacksCount} coups · Physique)
+                  </span>
+                  <span className="font-semibold text-orange-600 dark:text-orange-400">
+                    {combatDamageResult.physicalAutoMitigated} ({combatDamageResult.physicalAutoRaw} bruts)
+                  </span>
+                </div>
+                <div className="py-1.5 flex items-center justify-between gap-2">
+                  <span className="font-sans text-slate-600 dark:text-slate-300">
+                    Effets à l’impact de base (Kit + Objets)
+                  </span>
+                  <span className="font-semibold text-sky-600 dark:text-sky-400">
+                    {combatDamageResult.baseOnHitMitigated} ({combatDamageResult.baseOnHitRaw} bruts)
+                  </span>
+                </div>
+                {combatDamageResult.doubleOnHitBonusMitigated > 0 && (
+                  <div className="py-1.5 flex items-center justify-between gap-2">
+                    <span className="font-sans text-amber-700 dark:text-amber-300 font-medium">
+                      Bonus Double On-Hit ({combatDamageResult.extraDoubleOnHitProcs} procs bonus)
+                    </span>
+                    <span className="font-semibold text-amber-600 dark:text-amber-400">
+                      +{combatDamageResult.doubleOnHitBonusMitigated} (+{combatDamageResult.doubleOnHitBonusRaw} bruts)
+                    </span>
+                  </div>
+                )}
+                {combatDamageResult.itemPassivesBreakdown.map((pas) => (
+                  <div key={pas.itemId} className="py-1.5 space-y-0.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-sans text-slate-700 dark:text-slate-200 font-medium">
+                        {pas.itemName} · {pas.effectName}
+                      </span>
+                      <span
+                        className={`font-semibold ${
+                          pas.damageType === 'Physique'
+                            ? 'text-orange-600 dark:text-orange-400'
+                            : 'text-sky-600 dark:text-sky-400'
+                        }`}
+                      >
+                        {pas.mitigatedDamage} ({pas.rawDamage} bruts)
+                      </span>
+                    </div>
+                    <div className="font-sans text-[10px] text-slate-500 dark:text-slate-400">
+                      {pas.formulaNote}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
       </section>
 
       {/* Calculateur Multi-Combinaisons (Test réel de centaines de combinaisons Objets x Runes) */}
@@ -2738,21 +3884,27 @@ export function BuildOptimizerView({
                 )}
               </div>
 
-              <div className="flex flex-wrap items-center gap-1 p-1 rounded-lg bg-slate-100 dark:bg-[#0B0E14] border border-slate-200 dark:border-slate-800 w-fit">
-                {PICKER_TAG_OPTIONS.map((tag) => (
-                  <button
-                    key={tag.id}
-                    type="button"
-                    onClick={() => setPickerTag(tag.id)}
-                    className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
-                      pickerTag === tag.id
-                        ? 'bg-amber-600 dark:bg-amber-500 text-white dark:text-slate-950 font-semibold'
-                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-                    }`}
-                  >
-                    {tag.label} ({pickerTagCounts[tag.id] || 0})
-                  </button>
-                ))}
+              <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-1 p-1 rounded-lg bg-slate-100 dark:bg-[#0B0E14] border border-slate-200 dark:border-slate-800">
+                {PICKER_TAG_OPTIONS.map((tag) => {
+                  const active = pickerTag === tag.id;
+                  return (
+                    <button
+                      key={tag.id}
+                      type="button"
+                      onClick={() => setPickerTag(tag.id)}
+                      className={`flex items-center justify-center gap-1 px-2 py-1.5 text-xs rounded-md transition-colors whitespace-nowrap ${
+                        active
+                          ? 'bg-amber-600 dark:bg-amber-500 text-white dark:text-slate-950 font-semibold'
+                          : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white font-medium'
+                      }`}
+                    >
+                      <span>{tag.label}</span>
+                      <span className={`font-mono tabular-nums text-[10px] ${active ? 'opacity-90' : 'opacity-70'}`}>
+                        {pickerTagCounts[tag.id] || 0}
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
 

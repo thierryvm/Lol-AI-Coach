@@ -4,6 +4,7 @@ import {
   classifyChampionProfile,
   computeAttackSpeedAtLevel,
   computeStatAtLevel,
+  isJunglerChampion,
 } from '../engines/championEngine.ts';
 import type { ChampionDetail, ChampionSummary } from '../engines/types.ts';
 import { SafeGameIcon } from './SafeGameIcon.tsx';
@@ -23,6 +24,7 @@ const TAG_OPTIONS: Array<{ id: string; label: string }> = [
   { id: 'Tank', label: 'Tanks' },
   { id: 'Marksman', label: 'Tireurs' },
   { id: 'Support', label: 'Supports' },
+  { id: 'Jungler', label: 'Junglers' },
 ];
 
 type SortKey = 'name' | 'hp' | 'ad' | 'range';
@@ -68,10 +70,12 @@ function ChampionSplashBackdrop({
 function ChampionPortraitTile({
   champion,
   selected,
+  isFreeRotation,
   onSelect,
 }: {
   champion: ChampionSummary;
   selected: boolean;
+  isFreeRotation?: boolean;
   onSelect: () => void;
 }) {
   const [imgStage, setImgStage] = useState<'loading' | 'square' | 'fallback'>('loading');
@@ -112,12 +116,19 @@ function ChampionPortraitTile({
         className="absolute inset-0 bg-gradient-to-t from-black/95 via-black/30 to-transparent"
       />
 
+      {isFreeRotation && (
+        <span className="absolute top-2 left-2 z-10 px-1.5 py-0.5 rounded bg-emerald-600/90 text-[10px] font-bold uppercase tracking-wider text-white border border-emerald-300/40 shadow">
+          Gratuit
+        </span>
+      )}
+
       <div className="absolute inset-x-0 bottom-0 px-2.5 pb-2.5 pt-5">
         <div className="text-xs font-semibold text-white truncate leading-tight">
           {champion.name}
         </div>
         <div className="text-[10px] text-slate-300 truncate mt-0.5">
           {champion.tags.slice(0, 2).join(' · ')}
+          {isJunglerChampion(champion.id) ? ' · Jungler' : ''}
         </div>
       </div>
     </button>
@@ -134,6 +145,8 @@ export function ChampionEncyclopediaView({
   const [tagFilter, setTagFilter] = useState('Tous');
   const [damageFilter, setDamageFilter] = useState<DamageFilter>('Tous');
   const [sortBy, setSortBy] = useState<SortKey>('name');
+  const [onlyFreeRotation, setOnlyFreeRotation] = useState(false);
+  const [freeRotationKeys, setFreeRotationKeys] = useState<Set<number>>(new Set());
   const [selectedId, setSelectedId] = useState<string>(
     recentChampionIds[0] || champions[0]?.id || 'TahmKench',
   );
@@ -142,11 +155,29 @@ export function ChampionEncyclopediaView({
   const [detail, setDetail] = useState<ChampionDetail | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
 
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/riot/rotation')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: { available?: boolean; freeChampionIds?: number[] } | null) => {
+        if (!cancelled && data?.available && Array.isArray(data.freeChampionIds)) {
+          setFreeRotationKeys(new Set(data.freeChampionIds.map(Number)));
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const tagCounts = useMemo(() => {
-    const counts: Record<string, number> = { Tous: champions.length };
+    const counts: Record<string, number> = { Tous: champions.length, Jungler: 0 };
     for (const c of champions) {
       for (const t of c.tags) {
         counts[t] = (counts[t] || 0) + 1;
+      }
+      if (isJunglerChampion(c.id)) {
+        counts.Jungler += 1;
       }
     }
     return counts;
@@ -169,16 +200,22 @@ export function ChampionEncyclopediaView({
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     const list = champions.filter((c) => {
-      const matchesTag = tagFilter === 'Tous' || c.tags.includes(tagFilter);
+      const matchesTag =
+        tagFilter === 'Tous' ||
+        (tagFilter === 'Jungler' ? isJunglerChampion(c.id) : c.tags.includes(tagFilter));
       const matchesText =
         !q ||
         c.name.toLowerCase().includes(q) ||
         c.id.toLowerCase().includes(q) ||
-        c.title.toLowerCase().includes(q);
+        c.title.toLowerCase().includes(q) ||
+        (isJunglerChampion(c.id) && ('jungler'.includes(q) || 'jungle'.includes(q)));
       if (!matchesTag || !matchesText) return false;
       if (damageFilter !== 'Tous') {
         const dmg = classifyChampionProfile(c).primaryDamage;
         if (dmg !== damageFilter) return false;
+      }
+      if (onlyFreeRotation && freeRotationKeys.size > 0) {
+        if (!freeRotationKeys.has(Number(c.key))) return false;
       }
       return true;
     });
@@ -189,7 +226,7 @@ export function ChampionEncyclopediaView({
       if (sortBy === 'range') return b.stats.attackrange - a.stats.attackrange;
       return a.name.localeCompare(b.name, 'fr');
     });
-  }, [champions, search, tagFilter, damageFilter, sortBy]);
+  }, [champions, search, tagFilter, damageFilter, sortBy, onlyFreeRotation, freeRotationKeys]);
 
   // Synchronise automatiquement la sélection si le champion actif est exclu par un filtre
   useEffect(() => {
@@ -266,42 +303,94 @@ export function ChampionEncyclopediaView({
     ];
   }, [activeChamp, level]);
 
+  const hasActiveFilters =
+    Boolean(search.trim()) || tagFilter !== 'Tous' || damageFilter !== 'Tous' || onlyFreeRotation;
+
+  const resetAllFilters = () => {
+    setSearch('');
+    setTagFilter('Tous');
+    setDamageFilter('Tous');
+    setOnlyFreeRotation(false);
+  };
+
   return (
-    <div className="space-y-6">
-      {/* En-tête de recherche, raccourcis récents & filtres combinés */}
-      <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5 space-y-4">
-        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
-          <div>
-            <h1 className="text-xl font-bold text-slate-900 dark:text-white">
-              Encyclopédie des Champions ({filtered.length} / {champions.length})
+    <div className="space-y-5">
+      {/* En-tête ergonomique : Ligne 1 (Titre + Récents), Ligne 2 (Recherche + Filtres), Ligne 3 (8 Rôles/Classes alignés) */}
+      <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-4 sm:p-5 space-y-3.5">
+        {/* Ligne 1 : Titre + Raccourcis récents sur la même ligne propre */}
+        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            <h1 className="text-lg sm:text-xl font-bold text-slate-900 dark:text-white">
+              Encyclopédie des Champions
             </h1>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              Data Dragon Officiel · Patch {patchVersion} · Formules de croissance Riot niveaux 1–18
-            </p>
+            <span className="px-2 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/30 text-xs font-mono tabular-nums font-semibold text-amber-600 dark:text-amber-400">
+              {filtered.length} / {champions.length}
+            </span>
+            <span className="text-xs text-slate-500 dark:text-slate-400">
+              Patch {patchVersion} · Croissance Riot 1–18
+            </span>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2.5">
-            <div className="relative w-full sm:w-64">
-              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" aria-hidden="true" />
-              <input
-                type="text"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Rechercher un champion..."
-                className="w-full pl-9 pr-8 py-2 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B0E14] text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
-              />
-              {search && (
+          {recentChampions.length > 0 && (
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
+              <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400 whitespace-nowrap shrink-0 mr-0.5">
+                Récents :
+              </span>
+              {recentChampions.slice(0, 5).map((rc) => (
                 <button
+                  key={rc.id}
                   type="button"
-                  onClick={() => setSearch('')}
-                  aria-label="Effacer la recherche"
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200"
+                  onClick={() => {
+                    resetAllFilters();
+                    setSelectedId(rc.id);
+                  }}
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs whitespace-nowrap shrink-0 transition-colors ${
+                    selectedId === rc.id
+                      ? 'border-amber-500 bg-amber-500/15 text-amber-700 dark:text-amber-300 font-semibold'
+                      : 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#0B0E14] text-slate-700 dark:text-slate-300 hover:border-amber-500/60'
+                  }`}
                 >
-                  <X className="w-3.5 h-3.5" />
+                  <SafeGameIcon
+                    src={rc.imageUrl}
+                    alt={rc.name}
+                    fallbackLabel={rc.name}
+                    sizeClass="w-4 h-4"
+                    className="rounded-full border-0"
+                  />
+                  <span>{rc.name}</span>
                 </button>
-              )}
+              ))}
             </div>
+          )}
+        </div>
 
+        {/* Ligne 2 : Barre de recherche large + filtres secondaires */}
+        <div className="flex flex-col sm:flex-row sm:items-center gap-2.5">
+          <div className="relative flex-1 min-w-0">
+            <Search
+              className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2"
+              aria-hidden="true"
+            />
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Rechercher un champion, un titre ou « jungler »..."
+              className="w-full pl-9 pr-8 py-2 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B0E14] text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+            />
+            {search && (
+              <button
+                type="button"
+                onClick={() => setSearch('')}
+                aria-label="Effacer la recherche"
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
             <select
               value={damageFilter}
               onChange={(e) => setDamageFilter(e.target.value as DamageFilter)}
@@ -325,68 +414,82 @@ export function ChampionEncyclopediaView({
               <option value="ad">Tri : Dégâts d’attaque</option>
               <option value="range">Tri : Portée d’attaque</option>
             </select>
+
+            {freeRotationKeys.size > 0 && (
+              <button
+                type="button"
+                onClick={() => setOnlyFreeRotation((prev) => !prev)}
+                className={`px-3 py-2 text-xs font-semibold rounded-lg border transition-colors whitespace-nowrap shrink-0 ${
+                  onlyFreeRotation
+                    ? 'border-emerald-500 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                    : 'border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B0E14] text-slate-700 dark:text-slate-300 hover:border-emerald-500/60'
+                }`}
+              >
+                Rotation gratuite ({freeRotationKeys.size})
+              </button>
+            )}
+
+            {hasActiveFilters && (
+              <button
+                type="button"
+                onClick={resetAllFilters}
+                className="inline-flex items-center gap-1 px-2.5 py-2 text-xs font-medium rounded-lg border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-amber-500/60 hover:text-amber-600 dark:hover:text-amber-400 transition-colors whitespace-nowrap shrink-0"
+              >
+                <X className="w-3.5 h-3.5" aria-hidden="true" />
+                Réinitialiser
+              </button>
+            )}
           </div>
         </div>
 
-        {/* Onglets de classes avec compteurs + raccourcis récents */}
-        <div className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-3">
-          <div className="flex flex-wrap items-center gap-1 p-1 rounded-lg bg-slate-100 dark:bg-[#0B0E14] border border-slate-200 dark:border-slate-800 w-fit">
-            {TAG_OPTIONS.map((tag) => (
+        {/* Ligne 3 : Grille uniforme des 8 catégories (1 seule ligne alignée sur desktop, 4x2 sur mobile/tablette) */}
+        <div
+          role="tablist"
+          aria-label="Filtrer par classe ou poste"
+          className="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-8 gap-1.5 p-1 rounded-lg bg-slate-100 dark:bg-[#0B0E14] border border-slate-200 dark:border-slate-800"
+        >
+          {TAG_OPTIONS.map((tag) => {
+            const active = tagFilter === tag.id;
+            return (
               <button
                 key={tag.id}
                 type="button"
+                role="tab"
+                aria-selected={active}
                 onClick={() => setTagFilter(tag.id)}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
-                  tagFilter === tag.id
-                    ? 'bg-amber-600 dark:bg-amber-500 text-white dark:text-slate-950 font-semibold'
-                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                className={`flex items-center justify-center gap-1.5 px-2.5 py-1.5 text-xs rounded-md transition-colors whitespace-nowrap ${
+                  active
+                    ? 'bg-amber-600 dark:bg-amber-500 text-white dark:text-slate-950 font-semibold shadow-sm'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-white/60 dark:hover:bg-slate-800/60 font-medium'
                 }`}
               >
-                {tag.label} ({tagCounts[tag.id] || 0})
-              </button>
-            ))}
-          </div>
-
-          {recentChampions.length > 0 && (
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
-                Joués récemment :
-              </span>
-              {recentChampions.map((rc) => (
-                <button
-                  key={rc.id}
-                  type="button"
-                  onClick={() => {
-                    setTagFilter('Tous');
-                    setDamageFilter('Tous');
-                    setSearch('');
-                    setSelectedId(rc.id);
-                  }}
-                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs transition-colors ${
-                    selectedId === rc.id
-                      ? 'border-amber-500 bg-amber-500/10 text-amber-600 dark:text-amber-300 font-semibold'
-                      : 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#0B0E14] text-slate-700 dark:text-slate-300 hover:border-amber-500/60'
+                <span>{tag.label}</span>
+                <span
+                  className={`font-mono tabular-nums text-[11px] ${
+                    active ? 'opacity-90' : 'opacity-70'
                   }`}
                 >
-                  <SafeGameIcon
-                    src={rc.imageUrl}
-                    alt={rc.name}
-                    fallbackLabel={rc.name}
-                    sizeClass="w-4 h-4"
-                    className="rounded-full border-0"
-                  />
-                  <span>{rc.name}</span>
-                </button>
-              ))}
-            </div>
-          )}
+                  {tagCounts[tag.id] || 0}
+                </span>
+              </button>
+            );
+          })}
         </div>
       </section>
 
-      {/* Grille Portraits (Gauche) + Inspecteur Splash & Sorts (Droite) */}
+      {/* Grille Portraits sticky (Gauche) + Inspecteur Splash & Sorts (Droite) */}
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
         {/* Roster portraits façon Champion Select */}
-        <div className="xl:col-span-5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-2.5">
+        <div className="xl:col-span-5 xl:sticky xl:top-20 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-2.5 space-y-2">
+          <div className="flex items-center justify-between px-2 pt-1 text-[11px] text-slate-500 dark:text-slate-400">
+            <span>
+              Sélection : <strong className="text-slate-800 dark:text-slate-200">{activeChamp?.name}</strong>
+            </span>
+            <span className="font-mono tabular-nums">
+              {filtered.length} affiché{filtered.length > 1 ? 's' : ''}
+            </span>
+          </div>
+
           {filtered.length === 0 ? (
             <div className="py-16 text-center space-y-3">
               <p className="text-sm text-slate-500 dark:text-slate-400">
@@ -394,23 +497,20 @@ export function ChampionEncyclopediaView({
               </p>
               <button
                 type="button"
-                onClick={() => {
-                  setSearch('');
-                  setTagFilter('Tous');
-                  setDamageFilter('Tous');
-                }}
+                onClick={resetAllFilters}
                 className="px-3.5 py-2 text-xs font-semibold rounded-lg bg-amber-600 dark:bg-amber-500 text-white dark:text-slate-950"
               >
                 Réinitialiser les filtres
               </button>
             </div>
           ) : (
-            <div className="max-h-[760px] overflow-y-auto thin-scrollbar p-2.5 pr-3 grid grid-cols-3 sm:grid-cols-4 gap-3.5">
+            <div className="max-h-[680px] xl:max-h-[calc(100vh-13rem)] overflow-y-auto thin-scrollbar p-1.5 pr-2.5 grid grid-cols-3 sm:grid-cols-4 gap-3">
               {filtered.map((c) => (
                 <ChampionPortraitTile
                   key={c.id}
                   champion={c}
                   selected={c.id === activeChamp?.id}
+                  isFreeRotation={freeRotationKeys.has(Number(c.key))}
                   onSelect={() => setSelectedId(c.id)}
                 />
               ))}

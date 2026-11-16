@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import {
   Activity,
   BookOpen,
+  Compass,
+  HelpCircle,
   History,
   LayoutDashboard,
   Menu,
@@ -16,9 +18,15 @@ import {
 import { BuildOptimizerView } from './components/BuildOptimizerView.tsx';
 import { ChampionEncyclopediaView } from './components/ChampionEncyclopediaView.tsx';
 import { DashboardView } from './components/DashboardView.tsx';
+import { GuideView } from './components/GuideView.tsx';
 import { LiveCoachView } from './components/LiveCoachView.tsx';
 import { PostGameView } from './components/PostGameView.tsx';
 import { SettingsView } from './components/SettingsView.tsx';
+import {
+  getProviderDefinition,
+  loadSavedAiSelection,
+  type AiUserSelection,
+} from './engines/aiConfig.ts';
 import { computePlayerTendencies } from './engines/postGameEngine.ts';
 import type {
   CareerAiSynthesis,
@@ -30,7 +38,14 @@ import type {
   SavedPlayerProfile,
 } from './engines/types.ts';
 
-type NavTab = 'dashboard' | 'builds' | 'postgame' | 'live' | 'champions' | 'settings';
+type NavTab =
+  | 'dashboard'
+  | 'builds'
+  | 'postgame'
+  | 'live'
+  | 'champions'
+  | 'guide'
+  | 'settings';
 
 const STORAGE_KEY = 'lol_ai_coach_prefs_v1';
 const PROFILES_STORAGE_KEY = 'lol_ai_coach_profiles_v1';
@@ -62,6 +77,7 @@ const NAV_ITEMS: Array<{ id: NavTab; label: string; icon: typeof LayoutDashboard
   { id: 'postgame', label: 'Analyse Post-Game', icon: History },
   { id: 'live', label: 'Coach Temps Réel', icon: Activity },
   { id: 'champions', label: 'Champions', icon: BookOpen },
+  { id: 'guide', label: 'Guide interactif', icon: Compass },
   { id: 'settings', label: 'Paramètres', icon: Settings },
 ];
 
@@ -276,6 +292,9 @@ export default function App() {
     riotKeyLength: 0,
     geminiConfigured: false,
   });
+  const [activeAiSelection, setActiveAiSelection] = useState<AiUserSelection>(() =>
+    loadSavedAiSelection(),
+  );
 
   const [riotIdInput, setRiotIdInput] = useState(initialPrefs.riotId);
   const [region, setRegion] = useState<RiotPlatform>(initialPrefs.region);
@@ -632,6 +651,12 @@ export default function App() {
                 {statusMeta.riotConfigured ? 'Clé détectée' : 'Mode référence + Import'}
               </span>
             </div>
+            <div className="truncate">
+              IA active :{' '}
+              <span className="font-mono text-amber-600 dark:text-amber-400">
+                {getProviderDefinition(activeAiSelection.provider).shortName} · {activeAiSelection.model}
+              </span>
+            </div>
           </div>
 
           <button
@@ -793,6 +818,20 @@ export default function App() {
               />
               <span>Synchroniser</span>
             </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('guide')}
+              title="Ouvrir le guide d’utilisation interactif"
+              aria-label="Ouvrir le guide d’utilisation interactif"
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-colors whitespace-nowrap shrink-0 ${
+                activeTab === 'guide'
+                  ? 'border-amber-500/60 bg-amber-500/15 text-amber-600 dark:text-amber-400'
+                  : 'border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:border-amber-500 hover:text-amber-600 dark:hover:text-amber-400'
+              }`}
+            >
+              <HelpCircle className="w-3.5 h-3.5" aria-hidden="true" />
+              <span className="hidden sm:inline">Guide</span>
+            </button>
           </form>
         </header>
 
@@ -895,6 +934,21 @@ export default function App() {
                 />
               )}
 
+              {activeTab === 'guide' && (
+                <GuideView
+                  riotId={riotIdInput}
+                  region={region}
+                  patchVersion={ddragon.version}
+                  riotConfigured={statusMeta.riotConfigured}
+                  riotKeyStartsWithRgapi={statusMeta.riotKeyStartsWithRgapi}
+                  riotKeyLength={statusMeta.riotKeyLength}
+                  geminiConfigured={statusMeta.geminiConfigured}
+                  archivedMatchesCount={profile?.matches.length || 0}
+                  savedProfilesCount={savedProfiles.length}
+                  onNavigate={(tab) => setActiveTab(tab)}
+                />
+              )}
+
               {activeTab === 'settings' && (
                 <SettingsView
                   defaultRiotId={riotIdInput}
@@ -916,6 +970,7 @@ export default function App() {
                     setActiveTab('dashboard');
                   }}
                   onRefreshDataDragon={() => loadBootstrap(true)}
+                  onAiSelectionChange={(sel) => setActiveAiSelection(sel)}
                 />
               )}
             </>

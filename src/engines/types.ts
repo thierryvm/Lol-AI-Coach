@@ -372,6 +372,28 @@ export interface MatchParticipantSummary {
   champLevel: number;
 }
 
+export interface MapParticipantSnapshot {
+  participantId: number;
+  championName: string;
+  teamId: number;
+  teamPosition: string;
+  x: number;
+  y: number;
+  isPlayer: boolean;
+  isAlly: boolean;
+  isKiller: boolean;
+  isAssister: boolean;
+}
+
+export interface MapDamageSource {
+  sourceName: string;
+  isEnemyChampion: boolean;
+  physicalDamage: number;
+  magicDamage: number;
+  trueDamage: number;
+  totalDamage: number;
+}
+
 export interface MapCoordinateEvent {
   timestampMs: number;
   minute: number;
@@ -382,6 +404,10 @@ export interface MapCoordinateEvent {
   isolated: boolean;
   nearObjectiveWindow: boolean;
   killerChampion?: string;
+  assistingChampions?: string[];
+  damageBreakdown?: MapDamageSource[];
+  participantSnapshots?: MapParticipantSnapshot[];
+  snapshotDeltaSec?: number;
   contextNote: string;
 }
 

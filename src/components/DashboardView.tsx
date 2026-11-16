@@ -25,6 +25,7 @@ import {
   TrendingUp,
   X,
 } from 'lucide-react';
+import { postCoachJson } from '../engines/aiConfig.ts';
 import { buildCareerSynthesisDataset } from '../engines/postGameEngine.ts';
 import type {
   CareerAiSynthesis,
@@ -309,19 +310,11 @@ export function DashboardView({
     setAiLoading(true);
     setAiError(null);
     try {
-      const res = await fetch('/api/coach/career-synthesis', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          riotId: profile.riotId,
-          region: profile.region,
-          dataset: careerDataset,
-        }),
+      const data = await postCoachJson<CareerAiSynthesis>('/api/coach/career-synthesis', {
+        riotId: profile.riotId,
+        region: profile.region,
+        dataset: careerDataset,
       });
-      const data = (await res.json()) as CareerAiSynthesis & { error?: string };
-      if (!res.ok) {
-        throw new Error(data.error || 'Impossible de générer la synthèse globale IA.');
-      }
       onSaveCareerSynthesis?.(data);
     } catch (err) {
       setAiError(

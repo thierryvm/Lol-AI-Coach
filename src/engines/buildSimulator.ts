@@ -1469,3 +1469,719 @@ function scoreItemForStyle(
 
   return score;
 }
+
+// ============================================================================
+// Simulateur brut Data Dragon, Impact Marginal par Objet & Dégâts en Temps Réel
+// ============================================================================
+
+export interface RawDDragonPassiveBlock {
+  name: string;
+  text: string;
+  isActive: boolean;
+}
+
+export interface RawDataDragonItemDetails {
+  itemId: string;
+  name: string;
+  goldTotal: number;
+  rawStatsEntries: Array<{ key: string; label: string; value: number }>;
+  parsedStatsLines: string[];
+  passives: RawDDragonPassiveBlock[];
+  scalingNote: string | null;
+  tags: string[];
+}
+
+export interface CombatTargetConfig {
+  id: string;
+  name: string;
+  hp: number;
+  armor: number;
+  mr: number;
+}
+
+export interface CombatItemProcBreakdown {
+  itemId: string;
+  itemName: string;
+  effectName: string;
+  damageType: 'Physique' | 'Magique';
+  procsCount: number;
+  rawDamage: number;
+  mitigatedDamage: number;
+  healingDone: number;
+  formulaNote: string;
+}
+
+export interface RealTimeCombatDamageResult {
+  durationSec: number;
+  spellCasts: number;
+  target: CombatTargetConfig;
+  effectiveArmor: number;
+  effectiveMr: number;
+  physicalMitigationPct: number;
+  magicMitigationPct: number;
+  autoAttacksCount: number;
+  spellbladeProcsCount: number;
+  extraDoubleOnHitProcs: number;
+  physicalAutoRaw: number;
+  physicalAutoMitigated: number;
+  baseOnHitRaw: number;
+  baseOnHitMitigated: number;
+  doubleOnHitBonusRaw: number;
+  doubleOnHitBonusMitigated: number;
+  spellbladeRaw: number;
+  spellbladeMitigated: number;
+  itemPassivesBreakdown: CombatItemProcBreakdown[];
+  totalRawDamage: number;
+  totalMitigatedDamage: number;
+  realDps: number;
+  targetHpPctRemoved: number;
+  estimatedTtkSec: number;
+  combatHealingTotal: number;
+  hasDoubleOnHit: boolean;
+}
+
+export interface PerItemImpactRow {
+  slotIndex: number;
+  item: ItemData;
+  rawDetails: RawDataDragonItemDetails;
+  goldEfficiencySelfPct: number;
+  deltaHp: number;
+  deltaAd: number;
+  deltaAp: number;
+  deltaArmor: number;
+  deltaMr: number;
+  deltaAs: number;
+  deltaAh: number;
+  deltaPhysicalEhp: number;
+  deltaMagicEhp: number;
+  deltaTotalDamage: number;
+  deltaRealDps: number;
+  deltaCombatHealing: number;
+  damageSharePct: number;
+}
+
+const DDRAGON_STAT_KEY_LABELS: Record<string, string> = {
+  FlatHPPoolMod: 'PV',
+  FlatMPPoolMod: 'Mana',
+  FlatPhysicalDamageMod: "Dégâts d'attaque",
+  FlatMagicDamageMod: 'Puissance',
+  FlatArmorMod: 'Armure',
+  FlatSpellBlockMod: 'Résistance magique',
+  PercentAttackSpeedMod: "Vitesse d'attaque (ratio)",
+  FlatCritChanceMod: 'Chances de critique (ratio)',
+  FlatMovementSpeedMod: 'Vitesse de déplacement (plat)',
+  PercentMovementSpeedMod: 'Vitesse de déplacement (ratio)',
+  PercentLifeStealMod: 'Vol de vie (ratio)',
+};
+
+const KNOWN_SCALING_NOTES_BY_ITEM_ID: Record<string, string> = {
+  '2510':
+    "Aube et crépuscule (parfois appelée Aube de Haut-Lacère) : Lame enchantée = 75% AD de base + 10% AP en dégâts magiques, soin de 10% AP + 3% PV bonus, et déclenche une 2e application des effets à l'impact (ex. Goût acquis de Tahm Kench) après chaque sort (CD 1.5s).",
+  '3084':
+    "Consommation colossale : inflige 70 + 6% des PV max en dégâts physiques après 3s à portée et octroie 10% des dégâts infligés en PV max permanents.",
+  '2502':
+    "Affliction : toutes les 4s en combat, inflige ~30 + 3% PV max en dégâts magiques AoE autour de vous et soigne de 250% des dégâts infligés.",
+  '3065':
+    "Vitalité intarissable : multiplie par ×1.25 tous les soins et boucliers reçus (Aube et crépuscule, Désespoir infini, Poigne, sorts).",
+  '3075':
+    "Épines : renvoie des dégâts magiques (20 + 15% Armure bonus) à chaque attaque subie et applique 40% Hémorragie pendant 3s.",
+  '6665':
+    "Vigueur de Néantin : après 5s en combat, augmente votre Armure bonus et votre RM bonus de +30% jusqu'à la fin du combat.",
+  '3047':
+    "Placage : réduit de 10% les dégâts de toutes les attaques de base subies (valeur non visible dans l'Armure brute).",
+  '3124':
+    "Frappe furieuse : octroie +30 dégâts magiques à l'impact, jusqu'à +32% AS cumulée et double l'impact toutes les 3 attaques.",
+  '3153':
+    "Brume ravagée : inflige un % des PV actuels de la cible (8% mêlée / 5% distance) en dégâts physiques à l'impact.",
+  '6653':
+    "Tourment : brûle la cible de 2% de ses PV max par seconde en dégâts magiques pendant 3s sur chaque sort.",
+};
+
+/**
+ * Extrait fidèlement les données brutes de Data Dragon pour un objet :
+ * dictionnaire item.stats, lignes <stats>, blocs <passive>/<active> et formules de scaling réelles.
+ */
+export function extractRawDataDragonItemDetails(item: ItemData): RawDataDragonItemDetails {
+  const rawStatsEntries = Object.entries(item.stats || {})
+    .filter(([, val]) => typeof val === 'number' && val !== 0)
+    .map(([key, value]) => ({
+      key,
+      label: DDRAGON_STAT_KEY_LABELS[key] || key,
+      value: Number(value),
+    }));
+
+  const statsMatch = item.description.match(/<stats>([\s\S]*?)<\/stats>/i);
+  const parsedStatsLines = statsMatch
+    ? decodeHtmlText(statsMatch[1])
+        .split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean)
+    : [];
+
+  // Extraire le corps après </stats> pour isoler passifs et actifs Data Dragon
+  const bodyAfterStats = item.description.replace(/<stats>[\s\S]*?<\/stats>/i, '');
+  const passives: RawDDragonPassiveBlock[] = [];
+
+  const blockRegex = /<(passive|active)>([\s\S]*?)<\/\1>([\s\S]*?)(?=<(?:passive|active)>|$)/gi;
+  let match: RegExpExecArray | null;
+  while ((match = blockRegex.exec(bodyAfterStats)) !== null) {
+    const isActive = match[1].toLowerCase() === 'active';
+    const title = decodeHtmlText(match[2]).replace(/\s+/g, ' ').trim();
+    const text = decodeHtmlText(match[3]).replace(/\n+/g, ' ').replace(/\s+/g, ' ').trim();
+    if (title || text) {
+      passives.push({
+        name: title || (isActive ? 'Actif unique' : 'Passif unique'),
+        text: text || item.plaintext || 'Effet passif actif en combat.',
+        isActive,
+      });
+    }
+  }
+
+  if (passives.length === 0) {
+    const fallbackText = decodeHtmlText(bodyAfterStats).replace(/\n+/g, ' ').trim();
+    if (fallbackText && fallbackText !== item.plaintext) {
+      passives.push({
+        name: 'Effet Data Dragon',
+        text: fallbackText,
+        isActive: false,
+      });
+    }
+  }
+
+  return {
+    itemId: item.id,
+    name: item.name,
+    goldTotal: item.gold.total,
+    rawStatsEntries,
+    parsedStatsLines,
+    passives,
+    scalingNote: KNOWN_SCALING_NOTES_BY_ITEM_ID[item.id] || null,
+    tags: item.tags || [],
+  };
+}
+
+/**
+ * Simule en temps réel les dégâts infligés (bruts & mitigés par Armure/RM adverses),
+ * incluant les effets à l'impact, Double On-Hit (Aube et crépuscule / Guinsoo),
+ * Lame enchantée et procs passifs uniques sur une fenêtre de combat configurable.
+ */
+export function simulateCombatDamageAgainstTarget(params: {
+  champion: ChampionSummary;
+  role: Role;
+  level: number;
+  items: ItemData[];
+  runeSelection: RunePageSelection;
+  target: CombatTargetConfig;
+  durationSec?: number;
+  spellCasts?: number;
+  heartsteelStacksHp?: number;
+  threats?: EnemyThreatSummary;
+}): RealTimeCombatDamageResult {
+  const {
+    champion,
+    role,
+    level,
+    items,
+    runeSelection,
+    target,
+    durationSec = 6,
+    spellCasts = 2,
+    heartsteelStacksHp = 0,
+    threats,
+  } = params;
+
+  const clampedDuration = Math.max(1, Math.min(20, durationSec));
+  const clampedSpells = Math.max(0, Math.min(8, spellCasts));
+  const clampedLvl = Math.max(1, Math.min(18, level));
+
+  const stats = computeFullChampionBuildStats({
+    champion,
+    role,
+    level: clampedLvl,
+    items,
+    runeSelection,
+    threats,
+    heartsteelStacksHp,
+  });
+
+  const baseAd = computeStatAtLevel(
+    champion.stats.attackdamage,
+    champion.stats.attackdamageperlevel,
+    clampedLvl,
+  );
+  const baseArmor = computeStatAtLevel(
+    champion.stats.armor,
+    champion.stats.armorperlevel,
+    clampedLvl,
+  );
+  const baseHp = Math.round(
+    computeStatAtLevel(champion.stats.hp, champion.stats.hpperlevel, clampedLvl),
+  );
+  const bonusHp = Math.max(0, stats.totals.hp - baseHp);
+  const bonusArmor = Math.max(0, stats.totals.armor - baseArmor);
+
+  const ids = new Set(items.map((it) => it.id));
+  const namesLow = items.map((it) => it.name.toLowerCase());
+  const hasItem = (id: string, keyword?: string) =>
+    ids.has(id) || (keyword ? namesLow.some((n) => n.includes(keyword)) : false);
+
+  const hasDuskAndDawn = hasItem('2510', 'aube et crépuscule');
+  const hasGuinsoo = hasItem('3124', 'guinsoo');
+  const hasHeartsteel = hasItem('3084', 'cœuracier');
+  const hasUnendingDespair = hasItem('2502', 'désespoir infini');
+  const hasSpiritVisage = hasItem('3065', 'visage spirituel');
+  const hasThornmail = hasItem('3075', 'cotte épineuse');
+  const hasNashor = hasItem('3115', 'nashor');
+  const hasWitsEnd = hasItem('3091', 'bout du rouleau');
+  const hasBork = hasItem('3153', 'roi déchu');
+  const hasLiandry = hasItem('6653', 'liandry');
+  const hasLichBane = hasItem('3100', 'fléau de liche');
+  const hasTrinity = hasItem('3078', 'trinité');
+  const hasIceborn = hasItem('6662', 'gantelet givrant');
+  const hasSunfire = hasItem('3068', 'égide solaire') || hasItem('6664', 'égide rayonnante');
+
+  // Mitigations réelles de la cible selon Pén. Armure, Létalité, Pén. Magique
+  const effectiveArmor = Number(
+    Math.max(
+      0,
+      target.armor * (1 - stats.totals.armorPenPct / 100) - stats.totals.lethality,
+    ).toFixed(1),
+  );
+  const effectiveMr = Number(
+    Math.max(
+      0,
+      target.mr * (1 - stats.totals.magicPenPct / 100) - stats.totals.magicPenFlat,
+    ).toFixed(1),
+  );
+  const physMult = 100 / (100 + effectiveArmor);
+  const magMult = 100 / (100 + effectiveMr);
+
+  const autoAttacksCount = Math.max(1, Math.round(stats.totals.attackSpeed * clampedDuration));
+  const critMultiplier =
+    1 + (stats.totals.critChancePct / 100) * ((stats.totals.critDamagePct - 100) / 100);
+
+  // 1. Dégâts physiques des auto-attaques
+  const physicalAutoRaw = Math.round(stats.totals.ad * critMultiplier * autoAttacksCount);
+  const physicalAutoMitigated = Math.round(physicalAutoRaw * physMult);
+
+  // 2. Effets à l'impact par attaque (Champion + Objets)
+  let champOnHitMagic = 0;
+  if (champion.id === 'TahmKench') {
+    champOnHitMagic = Math.round(
+      6 + clampedLvl * 2.5 + bonusHp * (0.04 + stats.totals.ap / 5000),
+    );
+  } else if (champion.id === 'Teemo') {
+    champOnHitMagic = Math.round(14 + clampedLvl * 3.2 + stats.totals.ap * 0.3);
+  } else if (champion.id === 'Kayle') {
+    champOnHitMagic = Math.round(15 + clampedLvl * 2 + stats.totals.ap * 0.2);
+  } else if (champion.id === 'Gwen') {
+    champOnHitMagic = Math.round(25 + stats.totals.ap * 0.08);
+  } else if (champion.id === 'Warwick') {
+    champOnHitMagic = Math.round(
+      12 + clampedLvl * 2 + Math.max(0, stats.totals.ad - baseAd) * 0.15 + stats.totals.ap * 0.1,
+    );
+  } else if (champion.id === 'Viego') {
+    champOnHitMagic = Math.round(target.hp * 0.03 + 25);
+  }
+
+  let itemOnHitMagic = 0;
+  if (hasGuinsoo) itemOnHitMagic += 30;
+  if (hasNashor) itemOnHitMagic += Math.round(15 + stats.totals.ap * 0.15);
+  if (hasWitsEnd) itemOnHitMagic += 45;
+  const borkPhysOnHit = hasBork ? Math.round(target.hp * 0.055) : 0; // Moyenne ~5.5% PV max sur PV actuels décroissants
+
+  const onHitMagicPerAttack = champOnHitMagic + itemOnHitMagic;
+  const maxSpellbladeWindowProcs = Math.max(1, Math.floor(clampedDuration / 1.5));
+  const spellbladeProcsCount =
+    clampedSpells > 0 && (hasDuskAndDawn || hasLichBane || hasTrinity || hasIceborn)
+      ? Math.min(clampedSpells, autoAttacksCount, maxSpellbladeWindowProcs)
+      : 0;
+
+  const extraDuskOnHits = hasDuskAndDawn
+    ? Math.min(clampedSpells, autoAttacksCount, maxSpellbladeWindowProcs)
+    : 0;
+  const extraGuinsooOnHits = hasGuinsoo ? Math.floor(autoAttacksCount / 3) : 0;
+  const extraDoubleOnHitProcs = extraDuskOnHits + extraGuinsooOnHits;
+
+  const baseOnHitRaw = Math.round((onHitMagicPerAttack + borkPhysOnHit) * autoAttacksCount);
+  const baseOnHitMitigated = Math.round(
+    onHitMagicPerAttack * autoAttacksCount * magMult + borkPhysOnHit * autoAttacksCount * physMult,
+  );
+
+  const doubleOnHitBonusRaw = Math.round(
+    (onHitMagicPerAttack + borkPhysOnHit) * extraDoubleOnHitProcs,
+  );
+  const doubleOnHitBonusMitigated = Math.round(
+    onHitMagicPerAttack * extraDoubleOnHitProcs * magMult +
+      borkPhysOnHit * extraDoubleOnHitProcs * physMult,
+  );
+
+  // 3. Lame enchantée & Passifs uniques par objet
+  const healAmp = hasSpiritVisage ? 1.25 : 1.0;
+  let spellbladeRaw = 0;
+  let spellbladeMitigated = 0;
+  let combatHealingTotal = 0;
+  const itemPassivesBreakdown: CombatItemProcBreakdown[] = [];
+
+  if (hasDuskAndDawn) {
+    const perProcDmg = Math.round(0.75 * baseAd + 0.1 * stats.totals.ap);
+    const perProcHeal = Math.round(
+      (0.1 * stats.totals.ap + 0.03 * bonusHp) * healAmp,
+    );
+    spellbladeRaw = perProcDmg * spellbladeProcsCount;
+    spellbladeMitigated = Math.round(spellbladeRaw * magMult);
+    const healSum = perProcHeal * spellbladeProcsCount;
+    combatHealingTotal += healSum;
+    itemPassivesBreakdown.push({
+      itemId: '2510',
+      itemName: 'Aube et crépuscule',
+      effectName: 'Lame enchantée + Double On-Hit',
+      damageType: 'Magique',
+      procsCount: spellbladeProcsCount,
+      rawDamage: spellbladeRaw + doubleOnHitBonusRaw,
+      mitigatedDamage: spellbladeMitigated + doubleOnHitBonusMitigated,
+      healingDone: healSum,
+      formulaNote: `${spellbladeProcsCount}× Lame (${perProcDmg} bruts) + ${extraDuskOnHits}× On-Hit bonus (${onHitMagicPerAttack + borkPhysOnHit}/proc) · Soin ${perProcHeal} PV/proc`,
+    });
+  } else if (hasLichBane && spellbladeProcsCount > 0) {
+    const perProc = Math.round(0.75 * baseAd + 0.45 * stats.totals.ap);
+    spellbladeRaw = perProc * spellbladeProcsCount;
+    spellbladeMitigated = Math.round(spellbladeRaw * magMult);
+    itemPassivesBreakdown.push({
+      itemId: '3100',
+      itemName: 'Fléau de liche',
+      effectName: 'Lame enchantée AP',
+      damageType: 'Magique',
+      procsCount: spellbladeProcsCount,
+      rawDamage: spellbladeRaw,
+      mitigatedDamage: spellbladeMitigated,
+      healingDone: 0,
+      formulaNote: `${spellbladeProcsCount}× (${perProc} bruts = 75% AD base + 45% AP)`,
+    });
+  } else if (hasTrinity && spellbladeProcsCount > 0) {
+    const perProc = Math.round(2.0 * baseAd);
+    spellbladeRaw = perProc * spellbladeProcsCount;
+    spellbladeMitigated = Math.round(spellbladeRaw * physMult);
+    itemPassivesBreakdown.push({
+      itemId: '3078',
+      itemName: 'Force de la trinité',
+      effectName: 'Lame enchantée AD',
+      damageType: 'Physique',
+      procsCount: spellbladeProcsCount,
+      rawDamage: spellbladeRaw,
+      mitigatedDamage: spellbladeMitigated,
+      healingDone: 0,
+      formulaNote: `${spellbladeProcsCount}× (${perProc} bruts = 200% AD de base)`,
+    });
+  } else if (hasIceborn && spellbladeProcsCount > 0) {
+    const perProc = Math.round(1.5 * baseAd);
+    spellbladeRaw = perProc * spellbladeProcsCount;
+    spellbladeMitigated = Math.round(spellbladeRaw * physMult);
+    itemPassivesBreakdown.push({
+      itemId: '6662',
+      itemName: 'Gantelet givrant',
+      effectName: 'Lame enchantée & Zone glaciale',
+      damageType: 'Physique',
+      procsCount: spellbladeProcsCount,
+      rawDamage: spellbladeRaw,
+      mitigatedDamage: spellbladeMitigated,
+      healingDone: 0,
+      formulaNote: `${spellbladeProcsCount}× (${perProc} bruts = 150% AD de base)`,
+    });
+  }
+
+  if (hasHeartsteel && clampedDuration >= 3) {
+    const hsRaw = Math.round(70 + 0.06 * stats.totals.hp);
+    const hsMit = Math.round(hsRaw * physMult);
+    itemPassivesBreakdown.push({
+      itemId: '3084',
+      itemName: 'Cœuracier',
+      effectName: 'Consommation colossale',
+      damageType: 'Physique',
+      procsCount: 1,
+      rawDamage: hsRaw,
+      mitigatedDamage: hsMit,
+      healingDone: 0,
+      formulaNote: `70 + 6% de ${stats.totals.hp} PV (+${Math.round(hsRaw * 0.1)} PV max gagnés)`,
+    });
+  }
+
+  if (hasUnendingDespair && clampedDuration >= 4) {
+    const ticks = Math.floor(clampedDuration / 4);
+    const perTickRaw = Math.round(30 + 0.03 * stats.totals.hp);
+    const rawSum = perTickRaw * ticks;
+    const mitSum = Math.round(rawSum * magMult);
+    const healSum = Math.round(mitSum * 2.5 * healAmp);
+    combatHealingTotal += healSum;
+    itemPassivesBreakdown.push({
+      itemId: '2502',
+      itemName: 'Désespoir infini',
+      effectName: 'Affliction (toutes les 4s)',
+      damageType: 'Magique',
+      procsCount: ticks,
+      rawDamage: rawSum,
+      mitigatedDamage: mitSum,
+      healingDone: healSum,
+      formulaNote: `${ticks}× (30 + 3% PV max) · Soigne 250% des dégâts infligés${hasSpiritVisage ? ' ×1.25' : ''}`,
+    });
+  }
+
+  if (hasThornmail) {
+    const enemyAutosTaken = Math.max(1, Math.floor(clampedDuration / 1.3));
+    const perReflect = Math.round(20 + 0.15 * bonusArmor);
+    const rawSum = perReflect * enemyAutosTaken;
+    const mitSum = Math.round(rawSum * magMult);
+    itemPassivesBreakdown.push({
+      itemId: '3075',
+      itemName: 'Cotte épineuse',
+      effectName: 'Épines (renvoi + 40% Hémorragie)',
+      damageType: 'Magique',
+      procsCount: enemyAutosTaken,
+      rawDamage: rawSum,
+      mitigatedDamage: mitSum,
+      healingDone: 0,
+      formulaNote: `~${enemyAutosTaken} coups subis × (20 + 15% Armure bonus = ${perReflect} bruts)`,
+    });
+  }
+
+  if (hasLiandry && clampedSpells > 0) {
+    const burnSecs = Math.min(clampedDuration, clampedSpells * 3);
+    const rawSum = Math.round(0.02 * target.hp * burnSecs);
+    const mitSum = Math.round(rawSum * magMult);
+    itemPassivesBreakdown.push({
+      itemId: '6653',
+      itemName: 'Tourment de Liandry',
+      effectName: 'Tourment (2% PV max/s)',
+      damageType: 'Magique',
+      procsCount: burnSecs,
+      rawDamage: rawSum,
+      mitigatedDamage: mitSum,
+      healingDone: 0,
+      formulaNote: `${burnSecs}s de brûlure à 2% de ${target.hp} PV max`,
+    });
+  }
+
+  if (hasSunfire) {
+    const rawSum = Math.round((20 + 0.015 * bonusHp) * clampedDuration);
+    const mitSum = Math.round(rawSum * magMult);
+    itemPassivesBreakdown.push({
+      itemId: '3068',
+      itemName: 'Aura Immolation',
+      effectName: 'Dégâts de zone par seconde',
+      damageType: 'Magique',
+      procsCount: clampedDuration,
+      rawDamage: rawSum,
+      mitigatedDamage: mitSum,
+      healingDone: 0,
+      formulaNote: `${clampedDuration}s × (20 + 1.5% PV bonus)`,
+    });
+  }
+
+  // Soin additionnel du champion (ex. A de Tahm Kench si sorts > 0) + Vol de vie / Omnivamp
+  if (champion.id === 'TahmKench' && clampedSpells > 0) {
+    const qCasts = Math.max(1, Math.min(clampedSpells, Math.ceil(clampedDuration / 4.5)));
+    combatHealingTotal += Math.round(qCasts * (20 + bonusHp * 0.03) * healAmp);
+  }
+  if (stats.totals.lifeStealPct > 0) {
+    combatHealingTotal += Math.round(
+      physicalAutoMitigated * (stats.totals.lifeStealPct / 100) * healAmp,
+    );
+  }
+
+  // Somme totale sans double-compter Aube (qui contient spellblade + doubleOnHit dans l'affichage détaillé)
+  const extraPassiveRawOnly = itemPassivesBreakdown
+    .filter((p) => !['2510', '3100', '3078', '6662'].includes(p.itemId))
+    .reduce((acc, p) => acc + p.rawDamage, 0);
+  const extraPassiveMitOnly = itemPassivesBreakdown
+    .filter((p) => !['2510', '3100', '3078', '6662'].includes(p.itemId))
+    .reduce((acc, p) => acc + p.mitigatedDamage, 0);
+
+  const totalRawDamage =
+    physicalAutoRaw +
+    baseOnHitRaw +
+    doubleOnHitBonusRaw +
+    spellbladeRaw +
+    extraPassiveRawOnly;
+  const totalMitigatedDamage =
+    physicalAutoMitigated +
+    baseOnHitMitigated +
+    doubleOnHitBonusMitigated +
+    spellbladeMitigated +
+    extraPassiveMitOnly;
+
+  const realDps = Math.round(totalMitigatedDamage / clampedDuration);
+  const targetHpPctRemoved = Math.min(
+    100,
+    Number(((totalMitigatedDamage / Math.max(1, target.hp)) * 100).toFixed(1)),
+  );
+  const estimatedTtkSec = Number((target.hp / Math.max(1, realDps)).toFixed(1));
+
+  return {
+    durationSec: clampedDuration,
+    spellCasts: clampedSpells,
+    target,
+    effectiveArmor,
+    effectiveMr,
+    physicalMitigationPct: Math.round((1 - physMult) * 100),
+    magicMitigationPct: Math.round((1 - magMult) * 100),
+    autoAttacksCount,
+    spellbladeProcsCount,
+    extraDoubleOnHitProcs,
+    physicalAutoRaw,
+    physicalAutoMitigated,
+    baseOnHitRaw,
+    baseOnHitMitigated,
+    doubleOnHitBonusRaw,
+    doubleOnHitBonusMitigated,
+    spellbladeRaw,
+    spellbladeMitigated,
+    itemPassivesBreakdown,
+    totalRawDamage,
+    totalMitigatedDamage,
+    realDps,
+    targetHpPctRemoved,
+    estimatedTtkSec,
+    combatHealingTotal,
+    hasDoubleOnHit: hasDuskAndDawn || hasGuinsoo,
+  };
+}
+
+/**
+ * Mesure la contribution marginale exacte (Avec cet objet − Sans cet objet)
+ * de chaque objet équipé dans les 6 emplacements sur les stats finales ET les dégâts réels.
+ */
+export function computePerItemImpactMatrix(params: {
+  champion: ChampionSummary;
+  role: Role;
+  level: number;
+  slots: Array<ItemData | null>;
+  runeSelection: RunePageSelection;
+  target: CombatTargetConfig;
+  durationSec: number;
+  spellCasts: number;
+  heartsteelStacksHp?: number;
+  threats?: EnemyThreatSummary;
+}): PerItemImpactRow[] {
+  const {
+    champion,
+    role,
+    level,
+    slots,
+    runeSelection,
+    target,
+    durationSec,
+    spellCasts,
+    heartsteelStacksHp = 0,
+    threats,
+  } = params;
+
+  const fullItems = slots.filter((it): it is ItemData => Boolean(it));
+  if (fullItems.length === 0) return [];
+
+  const fullStats = computeFullChampionBuildStats({
+    champion,
+    role,
+    level,
+    items: fullItems,
+    runeSelection,
+    threats,
+    heartsteelStacksHp,
+  });
+
+  const fullDamage = simulateCombatDamageAgainstTarget({
+    champion,
+    role,
+    level,
+    items: fullItems,
+    runeSelection,
+    target,
+    durationSec,
+    spellCasts,
+    heartsteelStacksHp,
+    threats,
+  });
+
+  const rows: PerItemImpactRow[] = [];
+
+  slots.forEach((item, slotIndex) => {
+    if (!item) return;
+    const withoutItems = slots
+      .filter((it, idx): it is ItemData => Boolean(it) && idx !== slotIndex);
+
+    const withoutStats = computeFullChampionBuildStats({
+      champion,
+      role,
+      level,
+      items: withoutItems,
+      runeSelection,
+      threats,
+      heartsteelStacksHp,
+    });
+
+    const withoutDamage = simulateCombatDamageAgainstTarget({
+      champion,
+      role,
+      level,
+      items: withoutItems,
+      runeSelection,
+      target,
+      durationSec,
+      spellCasts,
+      heartsteelStacksHp,
+      threats,
+    });
+
+    const p = parseExactItemStats(item);
+    const selfGoldValue =
+      p.hp * GOLD_PER_STAT.hp +
+      p.mana * GOLD_PER_STAT.mana +
+      p.ad * GOLD_PER_STAT.ad +
+      p.ap * GOLD_PER_STAT.ap +
+      p.armor * GOLD_PER_STAT.armor +
+      p.mr * GOLD_PER_STAT.mr +
+      p.attackSpeedPct * GOLD_PER_STAT.asPct +
+      p.critChancePct * GOLD_PER_STAT.critPct +
+      p.abilityHaste * GOLD_PER_STAT.ah +
+      p.flatMoveSpeed * GOLD_PER_STAT.msFlat +
+      p.percentMoveSpeedPct * 45 +
+      p.lethality * GOLD_PER_STAT.lethality +
+      p.magicPenFlat * GOLD_PER_STAT.magicPenFlat +
+      p.healShieldPowerPct * GOLD_PER_STAT.healShieldPct +
+      p.lifeStealPct * GOLD_PER_STAT.lifeStealPct +
+      (p.hpRegenPct + p.manaRegenPct) * GOLD_PER_STAT.regenPct;
+
+    const deltaTotalDamage =
+      fullDamage.totalMitigatedDamage - withoutDamage.totalMitigatedDamage;
+
+    rows.push({
+      slotIndex,
+      item,
+      rawDetails: extractRawDataDragonItemDetails(item),
+      goldEfficiencySelfPct:
+        item.gold.total > 0 ? Math.round((selfGoldValue / item.gold.total) * 100) : 100,
+      deltaHp: fullStats.totals.hp - withoutStats.totals.hp,
+      deltaAd: Number((fullStats.totals.ad - withoutStats.totals.ad).toFixed(1)),
+      deltaAp: fullStats.totals.ap - withoutStats.totals.ap,
+      deltaArmor: Number((fullStats.totals.armor - withoutStats.totals.armor).toFixed(1)),
+      deltaMr: Number((fullStats.totals.mr - withoutStats.totals.mr).toFixed(1)),
+      deltaAs: Number((fullStats.totals.attackSpeed - withoutStats.totals.attackSpeed).toFixed(3)),
+      deltaAh: fullStats.totals.abilityHaste - withoutStats.totals.abilityHaste,
+      deltaPhysicalEhp: fullStats.combat.physicalEhp - withoutStats.combat.physicalEhp,
+      deltaMagicEhp: fullStats.combat.magicEhp - withoutStats.combat.magicEhp,
+      deltaTotalDamage,
+      deltaRealDps: fullDamage.realDps - withoutDamage.realDps,
+      deltaCombatHealing:
+        fullDamage.combatHealingTotal - withoutDamage.combatHealingTotal,
+      damageSharePct:
+        fullDamage.totalMitigatedDamage > 0
+          ? Math.max(
+              0,
+              Math.round((deltaTotalDamage / fullDamage.totalMitigatedDamage) * 100),
+            )
+          : 0,
+    });
+  });
+
+  return rows;
+}
+

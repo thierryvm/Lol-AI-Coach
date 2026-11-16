@@ -1,6 +1,8 @@
 import {
+  Bot,
   Check,
   Copy,
+  Cpu,
   Download,
   ExternalLink,
   Globe,
@@ -9,12 +11,21 @@ import {
   Save,
   Settings,
   ShieldCheck,
+  Sparkles,
   Terminal,
   Trash2,
   UserPlus,
   Users,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import {
+  AI_PROVIDER_CATALOG,
+  getProviderDefinition,
+  loadSavedAiSelection,
+  saveAiSelection,
+  type AiProvidersResponse,
+  type AiUserSelection,
+} from '../engines/aiConfig.ts';
 import type { RiotPlatform, Role, SavedPlayerProfile } from '../engines/types.ts';
 import { downloadMacAppLauncher, downloadWindowsAppLauncher } from '../utils/appLauncher.ts';
 
@@ -41,6 +52,7 @@ interface SettingsViewProps {
   onDeleteProfile: (id: string) => void;
   onSwitchProfile: (profile: SavedPlayerProfile) => void;
   onRefreshDataDragon: () => Promise<void>;
+  onAiSelectionChange?: (selection: AiUserSelection) => void;
 }
 
 const REGIONS: RiotPlatform[] = [
@@ -65,6 +77,14 @@ const ROLES: Role[] = ['TOP', 'JUNGLE', 'MID', 'ADC', 'SUPPORT'];
 const ENV_TEMPLATE_SNIPPET = `# Fichier .env à créer à la racine du projet (ne jamais le publier sur GitHub !)
 RIOT_API_KEY="RGAPI-VOTRE-CLE-RIOT-ICI"
 GEMINI_API_KEY="VOTRE-CLE-GEMINI-AI-STUDIO-ICI"
+# Fournisseurs IA optionnels (décommentez ceux que vous utilisez) :
+# ANTHROPIC_API_KEY="sk-ant-..."
+# OPENAI_API_KEY="sk-..."
+# OPENROUTER_API_KEY="sk-or-..."
+# MISTRAL_API_KEY=""
+# GROQ_API_KEY=""
+# DEEPSEEK_API_KEY=""
+# CUSTOM_AI_BASE_URL="http://127.0.0.1:11434/v1"
 PORT=3000`;
 
 const TERMINAL_QUICKSTART_SNIPPET = `git clone <URL_DE_VOTRE_DEPOT_GITHUB>
@@ -90,6 +110,7 @@ export function SettingsView({
   onDeleteProfile,
   onSwitchProfile,
   onRefreshDataDragon,
+  onAiSelectionChange,
 }: SettingsViewProps) {
   const [riotId, setRiotId] = useState(defaultRiotId);
   const [region, setRegion] = useState<RiotPlatform>(defaultRegion);
@@ -99,6 +120,23 @@ export function SettingsView({
   const [savedNotice, setSavedNotice] = useState(false);
   const [refreshingDd, setRefreshingDd] = useState(false);
 
+  // Configuration Multi-Fournisseurs IA & Choix du Modèle
+  const [aiSelection, setAiSelection] = useState<AiUserSelection>(() => loadSavedAiSelection());
+  const [customModelMode, setCustomModelMode] = useState<boolean>(() => {
+    const initial = loadSavedAiSelection();
+    const def = getProviderDefinition(initial.provider);
+    return !def.models.some((m) => m.id === initial.model);
+  });
+  const [aiProvidersStatus, setAiProvidersStatus] = useState<AiProvidersResponse | null>(null);
+  const [loadingAiProviders, setLoadingAiProviders] = useState(false);
+  const [aiSavedNotice, setAiSavedNotice] = useState(false);
+  const [aiTesting, setAiTesting] = useState(false);
+  const [aiTestResult, setAiTestResult] = useState<{
+    ok: boolean;
+    message: string;
+    latencyMs?: number;
+  } | null>(null);
+
   // Formulaire ajout profil Famille / Amis
   const [newLabel, setNewLabel] = useState('');
   const [newRiotId, setNewRiotId] = useState('');
@@ -107,6 +145,25 @@ export function SettingsView({
   const [profileAddedNotice, setProfileAddedNotice] = useState(false);
 
   const [copiedBlock, setCopiedBlock] = useState<'env' | 'cmd' | null>(null);
+
+  const fetchAiProviders = async (forceRefresh = false) => {
+    setLoadingAiProviders(true);
+    try {
+      const res = await fetch(`/api/ai/providers${forceRefresh ? '?refresh=1' : ''}`);
+      if (res.ok) {
+        const data = (await res.json()) as AiProvidersResponse;
+        setAiProvidersStatus(data);
+      }
+    } catch {
+      // ignore network error
+    } finally {
+      setLoadingAiProviders(false);
+    }
+  };
+
+  useEffect(() => {
+    void fetchAiProviders(false);
+  }, []);
 
   useEffect(() => {
     setRiotId(defaultRiotId);
@@ -157,9 +214,80 @@ export function SettingsView({
   const handleRefreshDd = async () => {
     setRefreshingDd(true);
     try {
-      await onRefreshDataDragon();
+      await Promise.all([onRefreshDataDragon(), fetchAiProviders(true)]);
     } finally {
       setRefreshingDd(false);
+    }
+  };
+
+  const activeProviderDef = getProviderDefinition(aiSelection.provider);
+  const activeProviderStatus = aiProvidersStatus?.providers.find(
+    (p) => p.id === aiSelection.provider,
+  );
+  const availableModelsForActive = [
+    ...activeProviderDef.models,
+    ...(activeProviderStatus?.detectedModels || [])
+      .filter((mId) => !activeProviderDef.models.some((m) => m.id === mId))
+      .map((mId) => ({ id: mId, label: `${mId} (Détecté sur Ollama)`, note: 'Modèle local installé' })),
+  ];
+
+  const handleSelectProvider = (providerId: AiUserSelection['provider']) => {
+    const def = getProviderDefinition(providerId);
+    const detectedLocal =
+      aiProvidersStatus?.providers.find((p) => p.id === providerId)?.detectedModels?.[0];
+    const nextModel = detectedLocal || def.defaultModel;
+    const next: AiUserSelection = {
+      ...aiSelection,
+      provider: providerId,
+      model: nextModel,
+      customBaseUrl: aiSelection.customBaseUrl || def.defaultBaseUrl,
+    };
+    setAiSelection(next);
+    setCustomModelMode(false);
+    setAiTestResult(null);
+  };
+
+  const handleSaveAiConfig = (e: React.FormEvent) => {
+    e.preventDefault();
+    const saved = saveAiSelection(aiSelection);
+    setAiSelection(saved);
+    onAiSelectionChange?.(saved);
+    setAiSavedNotice(true);
+    window.setTimeout(() => setAiSavedNotice(false), 2500);
+  };
+
+  const handleTestAiConnection = async () => {
+    setAiTesting(true);
+    setAiTestResult(null);
+    try {
+      const res = await fetch('/api/ai/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ aiConfig: aiSelection }),
+      });
+      const json = (await res.json()) as {
+        ok?: boolean;
+        providerLabel?: string;
+        model?: string;
+        latencyMs?: number;
+        replyPreview?: string;
+        error?: string;
+      };
+      if (!res.ok) {
+        throw new Error(json.error || `Échec du test (${res.status}).`);
+      }
+      setAiTestResult({
+        ok: true,
+        latencyMs: json.latencyMs,
+        message: `${json.providerLabel} (${json.model}) connecté : « ${json.replyPreview} »`,
+      });
+    } catch (err) {
+      setAiTestResult({
+        ok: false,
+        message: err instanceof Error ? err.message : 'Test de connexion impossible.',
+      });
+    } finally {
+      setAiTesting(false);
     }
   };
 
@@ -415,7 +543,296 @@ export function SettingsView({
         </form>
       </section>
 
-      {/* 3. État des services serveur */}
+      {/* 3. Fournisseurs IA, Abonnements & Choix du Modèle */}
+      <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-6 space-y-5">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div>
+            <h2 className="text-base font-semibold text-slate-900 dark:text-white flex items-center gap-2">
+              <Bot className="w-5 h-5 text-amber-500 shrink-0" aria-hidden="true" />
+              <span>Fournisseur IA, Abonnements &amp; Choix du Modèle</span>
+            </h2>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+              Choisissez le moteur IA et le modèle exact utilisés pour vos plans de match, débriefings, coaching live et explications de passifs.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => void fetchAiProviders(true)}
+            disabled={loadingAiProviders}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-50 transition-colors whitespace-nowrap shrink-0"
+          >
+            <RefreshCw
+              className={`w-3.5 h-3.5 ${loadingAiProviders ? 'animate-spin' : ''}`}
+              aria-hidden="true"
+            />
+            Actualiser la détection
+          </button>
+        </div>
+
+        {/* Grille de sélection du fournisseur IA */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {AI_PROVIDER_CATALOG.map((prov) => {
+            const st = aiProvidersStatus?.providers.find((p) => p.id === prov.id);
+            const isSelected = aiSelection.provider === prov.id;
+            const isReady = Boolean(st?.available);
+
+            return (
+              <button
+                key={prov.id}
+                type="button"
+                onClick={() => handleSelectProvider(prov.id)}
+                className={`p-3.5 rounded-xl border text-left transition-all space-y-2 flex flex-col justify-between ${
+                  isSelected
+                    ? 'border-amber-500 bg-amber-500/10 ring-1 ring-amber-500/40'
+                    : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] hover:border-amber-500/50'
+                }`}
+              >
+                <div className="space-y-1.5">
+                  <div className="flex items-start justify-between gap-2">
+                    <span className="text-xs font-bold text-slate-900 dark:text-white leading-snug">
+                      {prov.name}
+                    </span>
+                    <span
+                      className={`px-1.5 py-0.5 rounded text-[10px] font-semibold shrink-0 border ${
+                        isReady
+                          ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+                          : 'border-slate-300 dark:border-slate-700 bg-slate-100 dark:bg-[#0B0E14] text-slate-600 dark:text-slate-400'
+                      }`}
+                    >
+                      {isReady
+                        ? 'Prêt'
+                        : prov.category === 'local-subscription'
+                          ? 'Local PC'
+                          : prov.category === 'local-server'
+                            ? 'Local'
+                            : 'Clé requise'}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-600 dark:text-slate-400 leading-relaxed">
+                    {prov.description}
+                  </p>
+                </div>
+                <div className="pt-1 flex items-center justify-between gap-2 text-[10px] font-mono text-slate-500 dark:text-slate-400">
+                  <span className="truncate">
+                    {prov.envVarName ? prov.envVarName : 'CLI local (sans clé)'}
+                  </span>
+                  {isSelected && (
+                    <span className="font-sans font-semibold text-amber-600 dark:text-amber-400 shrink-0">
+                      Sélectionné
+                    </span>
+                  )}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Panneau de configuration du fournisseur sélectionné & choix du modèle */}
+        <form
+          onSubmit={handleSaveAiConfig}
+          className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] p-4 space-y-4"
+        >
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 pb-3 border-b border-slate-200 dark:border-slate-800">
+            <div className="space-y-0.5">
+              <div className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                <Cpu className="w-4 h-4 text-amber-500 shrink-0" aria-hidden="true" />
+                <span>Configuration active : {activeProviderDef.name}</span>
+              </div>
+              <p className="text-[11px] text-slate-600 dark:text-slate-400">
+                Statut serveur :{' '}
+                <span
+                  className={
+                    activeProviderStatus?.available
+                      ? 'font-semibold text-emerald-600 dark:text-emerald-400'
+                      : 'font-semibold text-amber-600 dark:text-amber-400'
+                  }
+                >
+                  {activeProviderStatus?.reason || 'Vérification en cours...'}
+                </span>
+              </p>
+            </div>
+            <a
+              href={activeProviderDef.docsUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-[11px] font-medium text-amber-600 dark:text-amber-400 hover:underline shrink-0"
+            >
+              <span>Documentation / Portail</span>
+              <ExternalLink className="w-3 h-3" aria-hidden="true" />
+            </a>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <label
+                  htmlFor="ai-model-select"
+                  className="text-xs font-medium text-slate-700 dark:text-slate-300"
+                >
+                  Modèle IA utilisé
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setCustomModelMode((prev) => !prev)}
+                  className="text-[11px] font-medium text-amber-600 dark:text-amber-400 hover:underline"
+                >
+                  {customModelMode ? 'Choisir dans la liste' : 'Saisir un ID personnalisé'}
+                </button>
+              </div>
+
+              {customModelMode ? (
+                <input
+                  id="ai-model-select"
+                  type="text"
+                  value={aiSelection.model}
+                  onChange={(e) =>
+                    setAiSelection((prev) => ({ ...prev, model: e.target.value }))
+                  }
+                  placeholder={`Ex : ${activeProviderDef.defaultModel}`}
+                  className="w-full px-3 py-2 text-xs font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0B0E14] text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+                />
+              ) : (
+                <select
+                  id="ai-model-select"
+                  value={
+                    availableModelsForActive.some((m) => m.id === aiSelection.model)
+                      ? aiSelection.model
+                      : activeProviderDef.defaultModel
+                  }
+                  onChange={(e) =>
+                    setAiSelection((prev) => ({ ...prev, model: e.target.value }))
+                  }
+                  className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0B0E14] text-slate-900 dark:text-white"
+                >
+                  {availableModelsForActive.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.label} — {m.note}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+
+            {aiSelection.provider === 'openai-compatible' ? (
+              <div className="space-y-1.5">
+                <label
+                  htmlFor="ai-custom-base-url"
+                  className="block text-xs font-medium text-slate-700 dark:text-slate-300"
+                >
+                  URL du serveur compatible OpenAI (Ollama / LM Studio)
+                </label>
+                <input
+                  id="ai-custom-base-url"
+                  type="url"
+                  value={aiSelection.customBaseUrl || ''}
+                  onChange={(e) =>
+                    setAiSelection((prev) => ({ ...prev, customBaseUrl: e.target.value }))
+                  }
+                  placeholder="http://127.0.0.1:11434/v1"
+                  className="w-full px-3 py-2 text-xs font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0B0E14] text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+                />
+              </div>
+            ) : (
+              <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0B0E14] p-3 text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed flex flex-col justify-center">
+                {aiSelection.provider === 'claude-code' ? (
+                  <>
+                    <strong className="text-slate-900 dark:text-white">
+                      Abonnement Claude Pro / Max via Claude Code :
+                    </strong>
+                    <span>
+                      Sur votre PC, lancez <code className="font-mono">claude login</code> une fois dans votre terminal puis démarrez l’app en local (<code className="font-mono">npm run dev</code> ou l’assistant). Aucune clé API payante nécessaire.
+                    </span>
+                  </>
+                ) : activeProviderDef.envVarName ? (
+                  <>
+                    <strong className="text-slate-900 dark:text-white">
+                      Variable serveur sécurisée : <code className="font-mono">{activeProviderDef.envVarName}</code>
+                    </strong>
+                    <span>
+                      Ajoutez cette variable dans <strong>Settings &gt; Secrets</strong> (sur AI Studio) ou dans votre fichier local <code className="font-mono">.env</code>. Aucune clé secrète n’est jamais stockée dans le navigateur.
+                    </span>
+                  </>
+                ) : null}
+              </div>
+            )}
+          </div>
+
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pt-2 border-t border-slate-200 dark:border-slate-800">
+            <label className="flex items-center gap-2 text-xs font-medium text-slate-700 dark:text-slate-300 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={aiSelection.fallbackToGemini}
+                onChange={(e) =>
+                  setAiSelection((prev) => ({ ...prev, fallbackToGemini: e.target.checked }))
+                }
+                className="rounded border-slate-300 accent-amber-500"
+              />
+              Bascule automatique sur Gemini si ce fournisseur est indisponible
+            </label>
+
+            <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+              {aiSavedNotice && (
+                <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400">
+                  Moteur IA enregistré !
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={handleTestAiConnection}
+                disabled={aiTesting}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0B0E14] text-slate-800 dark:text-slate-100 hover:border-amber-500/60 disabled:opacity-50 transition-colors"
+              >
+                <Sparkles className={`w-3.5 h-3.5 text-amber-500 ${aiTesting ? 'animate-spin' : ''}`} aria-hidden="true" />
+                {aiTesting ? 'Test en cours...' : 'Tester la connexion'}
+              </button>
+              <button
+                type="submit"
+                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-amber-600 dark:bg-amber-500 text-white dark:text-slate-950 hover:bg-amber-500 transition-colors"
+              >
+                <Save className="w-3.5 h-3.5" aria-hidden="true" />
+                Activer ce moteur IA
+              </button>
+            </div>
+          </div>
+
+          {aiTestResult && (
+            <div
+              className={`rounded-lg border p-3 text-xs leading-relaxed ${
+                aiTestResult.ok
+                  ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-800 dark:text-emerald-300'
+                  : 'border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-300'
+              }`}
+            >
+              <div className="font-semibold flex items-center justify-between gap-2">
+                <span>{aiTestResult.ok ? 'Connexion IA confirmée' : 'Connexion IA refusée / non configurée'}</span>
+                {typeof aiTestResult.latencyMs === 'number' && (
+                  <span className="font-mono tabular-nums text-[11px]">{aiTestResult.latencyMs} ms</span>
+                )}
+              </div>
+              <p className="mt-1">{aiTestResult.message}</p>
+            </div>
+          )}
+        </form>
+
+        <details className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] p-4 text-xs">
+          <summary className="cursor-pointer font-semibold text-slate-800 dark:text-slate-200 select-none">
+            Comment connecter un abonnement Claude Code, ChatGPT/OpenAI ou un modèle local ?
+          </summary>
+          <div className="mt-3 space-y-2.5 text-slate-600 dark:text-slate-300 leading-relaxed">
+            <p>
+              <strong>1. Claude Code (Abonnement Anthropic Pro / Max) :</strong> Anthropic permet d’utiliser votre abonnement via le terminal local <code className="font-mono">claude login</code>. Quand vous lancez LoL AI Coach sur votre ordinateur (avec l’assistant ou <code className="font-mono">npm run dev</code>), le serveur détecte automatiquement Claude Code et l’utilise sans aucune clé API payante.
+            </p>
+            <p>
+              <strong>2. OpenAI (ChatGPT API), Anthropic API, OpenRouter, Mistral, Groq, DeepSeek :</strong> Les abonnements web grand public (ChatGPT Plus / Claude.ai web) n’offrent pas de connexion OAuth pour les applications externes. Pour connecter ces modèles à LoL AI Coach depuis le cloud ou votre PC, ajoutez simplement la variable correspondante (ex. <code className="font-mono">OPENAI_API_KEY</code> ou <code className="font-mono">ANTHROPIC_API_KEY</code>) dans <strong>Settings &gt; Secrets</strong> ou dans <code className="font-mono">.env</code>.
+            </p>
+            <p>
+              <strong>3. Gratuit 100 % hors-ligne sur votre PC (Ollama / LM Studio) :</strong> Lancez Ollama sur votre PC (<code className="font-mono">ollama run qwen2.5:14b</code>), choisissez <strong>Serveur Local / Compatible OpenAI</strong> ci-dessus, cliquez sur <em>Actualiser la détection</em> et vos modèles installés apparaissent automatiquement.
+            </p>
+          </div>
+        </details>
+      </section>
+
+      {/* 4. État des services serveur */}
       <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-6 space-y-5">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div>

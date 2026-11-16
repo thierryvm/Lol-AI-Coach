@@ -7,17 +7,22 @@ import type { LiveClientAllGameData, LiveCoachSnapshot, RiotPlatform, Role } fro
 import {
   generateBuildCoachingRationale,
   generateCareerGlobalSynthesis,
+  generateItemPassiveFormulaExplanation,
   generateLiveCoachingCall,
   generatePostGameCoaching,
+  searchPopularBuildsWithGoogle,
 } from './server/aiCoachService.ts';
+import { getAiProvidersStatus, testAiProviderConnection } from './server/aiProviders.ts';
 import { SAMPLE_LIVE_CLIENT_PAYLOAD } from './server/referenceData.ts';
 import {
   checkActiveRiotGame,
   fetchRiotMatchById,
   getChampionDetail,
   getDDragonBootstrap,
+  getFreeChampionRotation,
   getRiotKeyDiagnostics,
   normalizeRiotMatch,
+  resolveDDragonItemsByNames,
   syncRiotPlayerProfile,
 } from './server/riotService.ts';
 
@@ -124,6 +129,18 @@ async function startServer() {
     }
   });
 
+  app.get('/api/riot/rotation', async (req, res) => {
+    try {
+      const region = (String(req.query.region || 'EUW1').toUpperCase() as RiotPlatform) || 'EUW1';
+      const rotation = await getFreeChampionRotation(region);
+      res.json(rotation);
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Erreur CHAMPION-V3.',
+      });
+    }
+  });
+
   app.get('/api/riot/match/:matchId', async (req, res) => {
     try {
       const matchId = String(req.params.matchId || '').trim();
@@ -200,14 +217,38 @@ async function startServer() {
     }
   });
 
-  // --- Coaching IA Gemini (Server-side uniquement) ---
+  // --- Gestion multi-fournisseurs IA (Gemini, Claude Code CLI, Anthropic, OpenAI, OpenRouter, Ollama...) ---
+  app.get('/api/ai/providers', async (req, res) => {
+    try {
+      const force = req.query.refresh === '1';
+      const status = await getAiProvidersStatus(force);
+      res.json(status);
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Erreur de détection des fournisseurs IA.',
+      });
+    }
+  });
+
+  app.post('/api/ai/test', async (req, res) => {
+    try {
+      const result = await testAiProviderConnection(req.body?.aiConfig);
+      res.json(result);
+    } catch (err) {
+      res.status(400).json({
+        error: err instanceof Error ? err.message : 'Échec du test de connexion IA.',
+      });
+    }
+  });
+
+  // --- Coaching IA Multi-Fournisseurs (Server-side uniquement) ---
   app.post('/api/coach/build-rationale', async (req, res) => {
     try {
       const result = await generateBuildCoachingRationale(req.body);
       res.json(result);
     } catch (err) {
       res.status(500).json({
-        error: err instanceof Error ? err.message : 'Erreur lors de l’analyse Gemini du build.',
+        error: err instanceof Error ? err.message : 'Erreur lors de l’analyse IA du build.',
       });
     }
   });
@@ -218,7 +259,7 @@ async function startServer() {
       res.json(result);
     } catch (err) {
       res.status(500).json({
-        error: err instanceof Error ? err.message : 'Erreur lors du débriefing Gemini post-game.',
+        error: err instanceof Error ? err.message : 'Erreur lors du débriefing IA post-game.',
       });
     }
   });
@@ -226,18 +267,18 @@ async function startServer() {
   app.post('/api/coach/live-advice', async (req, res) => {
     try {
       const snapshot: LiveCoachSnapshot = req.body?.snapshot || latestLiveSnapshot;
-      const result = await generateLiveCoachingCall(snapshot);
+      const result = await generateLiveCoachingCall(snapshot, req.body?.aiConfig);
       res.json(result);
     } catch (err) {
       res.status(500).json({
-        error: err instanceof Error ? err.message : 'Erreur lors du coaching temps réel Gemini.',
+        error: err instanceof Error ? err.message : 'Erreur lors du coaching temps réel IA.',
       });
     }
   });
 
   app.post('/api/coach/career-synthesis', async (req, res) => {
     try {
-      const { riotId, region, dataset } = req.body || {};
+      const { riotId, region, dataset, aiConfig } = req.body || {};
       if (!dataset || !dataset.gamesAnalyzed) {
         return res.status(400).json({
           error: 'Aucun historique de matchs disponible pour générer la synthèse globale.',
@@ -247,22 +288,125 @@ async function startServer() {
         riotId: String(riotId || 'Joueur'),
         region: String(region || 'EUW1'),
         dataset,
+        aiConfig,
       });
       return res.json(result);
     } catch (err) {
       return res.status(500).json({
-        error: err instanceof Error ? err.message : 'Erreur lors de la synthèse globale Gemini.',
+        error: err instanceof Error ? err.message : 'Erreur lors de la synthèse globale IA.',
       });
     }
   });
 
+  app.post('/api/coach/item-passive-formula', async (req, res) => {
+    try {
+      const payload = req.body;
+      if (!payload || !payload.championName || !payload.itemName) {
+        return res.status(400).json({
+          error: 'championName et itemName sont requis pour analyser le passif de l’objet.',
+        });
+      }
+      const result = await generateItemPassiveFormulaExplanation(payload);
+      return res.json(result);
+    } catch (err) {
+      return res.status(500).json({
+        error:
+          err instanceof Error
+            ? err.message
+            : 'Erreur lors de la génération de l’explication IA du passif.',
+      });
+    }
+  });
+
+  app.post('/api/coach/search-popular-builds', async (req, res) => {
+    try {
+      const { championName, championId, role, gameMode, patchVersion, focusHint, aiConfig } =
+        req.body || {};
+      if (!championName) {
+        return res.status(400).json({ error: 'championName est requis pour la recherche de builds.' });
+      }
+      const dd = await getDDragonBootstrap();
+      const searchRes = await searchPopularBuildsWithGoogle({
+        championName: String(championName),
+        championId: String(championId || championName),
+        role: String(role || 'SUPPORT'),
+        gameMode: String(gameMode || 'CLASSIC'),
+        patchVersion: String(patchVersion || dd.version),
+        focusHint: focusHint ? String(focusHint) : undefined,
+        aiConfig,
+      });
+
+      const allQueries: string[] = [];
+      for (const b of searchRes.builds) {
+        if (b.bootsName) allQueries.push(b.bootsName);
+        for (const it of b.itemNames) {
+          if (it) allQueries.push(it);
+        }
+      }
+
+      const { resolvedByQuery } = await resolveDDragonItemsByNames(allQueries);
+      const uniqueAggregated = new Map<string, any>();
+
+      const resolvedBuilds = searchRes.builds.map((b) => {
+        const bootsItem = b.bootsName ? resolvedByQuery[b.bootsName.trim()] || null : null;
+        if (bootsItem && !uniqueAggregated.has(bootsItem.id)) {
+          uniqueAggregated.set(bootsItem.id, bootsItem);
+        }
+        const resolvedItems = b.itemNames.map((rawName) => {
+          const item = resolvedByQuery[rawName.trim()] || null;
+          if (item && !uniqueAggregated.has(item.id)) {
+            uniqueAggregated.set(item.id, item);
+          }
+          return { rawName, item };
+        });
+        return {
+          ...b,
+          bootsItem,
+          resolvedItems,
+        };
+      });
+
+      return res.json({
+        patchVersion: dd.version,
+        summary: searchRes.summary,
+        builds: resolvedBuilds,
+        aggregatedSuggestedItems: Array.from(uniqueAggregated.values()),
+        groundingSources: searchRes.groundingSources,
+      });
+    } catch (err) {
+      return res.status(500).json({
+        error:
+          err instanceof Error
+            ? err.message
+            : 'Erreur lors de la recherche Google des builds populaires.',
+      });
+    }
+  });
+
+  // --- Healthcheck rapide (démarrage serveur / Cloud Run) ---
+  app.get('/api/health', (_req, res) => {
+    res.json({ ok: true, port: PORT, mode: process.env.NODE_ENV || 'development' });
+  });
+
   // --- Vite Dev Middleware ou Static Prod ---
+  // Important : ne pas bloquer app.listen() pendant le warm-up initial de Vite
+  // afin que le port 3000 réponde immédiatement dès le lancement du conteneur.
   if (process.env.NODE_ENV !== 'production') {
-    const vite = await createViteServer({
+    const vitePromise = createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
     });
-    app.use(vite.middlewares);
+    vitePromise.catch((err) => {
+      console.error('Vite dev server initialization error:', err);
+    });
+    app.use(async (req, res, next) => {
+      try {
+        const vite = await vitePromise;
+        vite.middlewares(req, res, next);
+      } catch (err) {
+        next(err);
+      }
+    });
   } else {
     const distDir = path.resolve(process.cwd(), 'dist');
     app.use(express.static(distDir));

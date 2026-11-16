@@ -1,13 +1,16 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   Brain,
   CheckCircle2,
   FileUp,
+  LayoutGrid,
+  MapPin,
   Search,
   ShieldCheck,
   Sparkles,
 } from 'lucide-react';
+import { postCoachJson } from '../engines/aiConfig.ts';
 import { analyzePostGameMatch } from '../engines/postGameEngine.ts';
 import type { ChampionSummary, ItemData, MatchRecord, RiotPlatform } from '../engines/types.ts';
 import { SafeGameIcon } from './SafeGameIcon.tsx';
@@ -64,6 +67,9 @@ export function PostGameView({
     return map;
   }, [items]);
 
+  const [subTab, setSubTab] = useState<'overview' | 'tactical-map'>('overview');
+  const [selectedMapTimestampMs, setSelectedMapTimestampMs] = useState<number | null>(null);
+
   const [matchIdQuery, setMatchIdQuery] = useState('');
   const [matchIdLoading, setMatchIdLoading] = useState(false);
   const [matchIdError, setMatchIdError] = useState<string | null>(null);
@@ -72,6 +78,10 @@ export function PostGameView({
   const [importJsonText, setImportJsonText] = useState('');
   const [importError, setImportError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
+
+  useEffect(() => {
+    setSelectedMapTimestampMs(null);
+  }, [activeMatch?.matchId]);
 
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
@@ -142,13 +152,12 @@ export function PostGameView({
     setAiLoading(true);
     setAiError(null);
     try {
-      const res = await fetch('/api/coach/postgame-review', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ match: activeMatch, analysis }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Erreur Gemini.');
+      const data = await postCoachJson<{
+        verdict: string;
+        placementReview: string;
+        farmingReview: string;
+        nextMatchFocus: string[];
+      }>('/api/coach/postgame-review', { match: activeMatch, analysis });
       setAiReview(data);
     } catch (err) {
       setAiError(err instanceof Error ? err.message : 'Erreur lors du débriefing IA.');
@@ -396,8 +405,84 @@ export function PostGameView({
             </div>
           </div>
         )}
+
+        {/* Sous-onglets de lecture : Vue d'ensemble vs Carte Tactique grand format */}
+        <div
+          role="tablist"
+          aria-label="Sous-vues de l'analyse Post-Game"
+          className="pt-3 border-t border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3"
+        >
+          <div className="grid grid-cols-2 gap-1.5 p-1 rounded-lg bg-slate-100 dark:bg-[#0B0E14] border border-slate-200 dark:border-slate-800 w-full sm:w-auto">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={subTab === 'overview'}
+              onClick={() => setSubTab('overview')}
+              className={`inline-flex items-center justify-center gap-1.5 px-3.5 py-1.5 text-xs rounded-md transition-colors whitespace-nowrap ${
+                subTab === 'overview'
+                  ? 'bg-amber-600 dark:bg-amber-500 text-white dark:text-slate-950 font-semibold shadow-sm'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white font-medium'
+              }`}
+            >
+              <LayoutGrid className="w-3.5 h-3.5" aria-hidden="true" />
+              Vue d’ensemble &amp; Stats
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={subTab === 'tactical-map'}
+              onClick={() => setSubTab('tactical-map')}
+              className={`inline-flex items-center justify-center gap-1.5 px-3.5 py-1.5 text-xs rounded-md transition-colors whitespace-nowrap ${
+                subTab === 'tactical-map'
+                  ? 'bg-amber-600 dark:bg-amber-500 text-white dark:text-slate-950 font-semibold shadow-sm'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white font-medium'
+              }`}
+            >
+              <MapPin className="w-3.5 h-3.5" aria-hidden="true" />
+              Carte Tactique &amp; Morts ({activeMatch.mapEvents.length})
+            </button>
+          </div>
+
+          <span className="text-[11px] text-slate-500 dark:text-slate-400">
+            {subTab === 'tactical-map'
+              ? 'Grand format : 22 tours, 40 buissons, positions des champions et diagnostic par mort.'
+              : 'Astuce : ouvrez « Carte Tactique & Morts » pour inspecter chaque mort en grand format.'}
+          </span>
+        </div>
       </section>
 
+      {subTab === 'tactical-map' ? (
+        <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5 sm:p-6 space-y-5">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+            <div>
+              <h2 className="text-lg font-bold text-slate-900 dark:text-white">
+                Carte Tactique Grand Format · Pourquoi je suis mort ?
+              </h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                Cliquez sur une mort (« × ») pour visualiser les positions des alliés/adversaires, la provenance des attaques, les tours et les buissons proches.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setSubTab('overview')}
+              className="self-start sm:self-auto px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors whitespace-nowrap"
+            >
+              ← Retour à la vue d’ensemble
+            </button>
+          </div>
+
+          <SummonersRiftMap
+            events={activeMatch.mapEvents}
+            patchVersion={patchVersion}
+            playerTeamId={p.teamId}
+            playerChampion={p.championName}
+            mode="expanded"
+            selectedTimestampMs={selectedMapTimestampMs}
+            onSelectTimestampMs={setSelectedMapTimestampMs}
+          />
+        </section>
+      ) : (
+        <>
       {/* Métriques clés Post-Game */}
       <section className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3.5">
         {[
@@ -489,15 +574,32 @@ export function PostGameView({
       {/* Carte de placement & Courbe de farming */}
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-stretch">
         <section className="xl:col-span-7 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5 space-y-4">
-          <div>
-            <h2 className="text-base font-semibold text-slate-900 dark:text-white">
-              Carte des erreurs de placement (Faille de l’invocateur)
-            </h2>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              Cliquez sur un marqueur pour inspecter la zone exacte, l’isolement et le timing d’objectif.
-            </p>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-base font-semibold text-slate-900 dark:text-white">
+                Carte des erreurs de placement (Faille de l’invocateur)
+              </h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                Sélectionnez un marqueur pour inspecter le placement, les tours et les buissons.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setSubTab('tactical-map')}
+              className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-amber-600 dark:bg-amber-500 text-white dark:text-slate-950 hover:bg-amber-500 transition-colors whitespace-nowrap shrink-0"
+            >
+              Ouvrir en grand format →
+            </button>
           </div>
-          <SummonersRiftMap events={activeMatch.mapEvents} patchVersion={patchVersion} />
+          <SummonersRiftMap
+            events={activeMatch.mapEvents}
+            patchVersion={patchVersion}
+            playerTeamId={p.teamId}
+            playerChampion={p.championName}
+            mode="compact"
+            selectedTimestampMs={selectedMapTimestampMs}
+            onSelectTimestampMs={setSelectedMapTimestampMs}
+          />
         </section>
 
         <section className="xl:col-span-5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5 space-y-4">
@@ -793,6 +895,8 @@ export function PostGameView({
           })}
         </div>
       </section>
+        </>
+      )}
     </div>
   );
 }

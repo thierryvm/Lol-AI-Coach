@@ -1,4 +1,5 @@
-import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
+import { Type } from '@google/genai';
+import type { AiUserSelection } from '../src/engines/aiConfig.ts';
 import type {
   BuildRecommendation,
   CareerSynthesisDataset,
@@ -7,87 +8,33 @@ import type {
   PlayerTendencies,
   PostGameAnalysis,
 } from '../src/engines/types.ts';
-
-function getAiClient(): GoogleGenAI {
-  const apiKey = process.env.GEMINI_API_KEY?.trim();
-  if (!apiKey) {
-    throw new Error('GEMINI_API_KEY manquante côté serveur. Configurez-la dans Settings > Secrets.');
-  }
-  return new GoogleGenAI({
-    apiKey,
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build',
-      },
-    },
-  });
-}
-
-function isTransientAiError(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err);
-  return (
-    msg.includes('503') ||
-    msg.includes('429') ||
-    msg.includes('UNAVAILABLE') ||
-    msg.includes('high demand') ||
-    msg.includes('overloaded')
-  );
-}
+import {
+  extractJsonObjectFromText,
+  generateStructuredWithSelectedProvider,
+  getGeminiClient,
+  isTransientAiError,
+} from './aiProviders.ts';
 
 async function generateJsonWithFallback(params: {
   contents: string;
   systemInstruction: string;
   responseSchema: Record<string, unknown>;
+  aiConfig?: Partial<AiUserSelection> | null;
 }) {
-  const ai = getAiClient();
-  const attempts: Array<{ model: string; thinkingLevel: ThinkingLevel }> = [
-    { model: 'gemini-4-hydrogen', thinkingLevel: ThinkingLevel.LOW },
-    { model: 'gemini-3.1-flash-lite', thinkingLevel: ThinkingLevel.MINIMAL },
-  ];
-
-  let lastError: unknown = null;
-
-  for (let i = 0; i < attempts.length; i++) {
-    const attempt = attempts[i];
-    try {
-      const response = await ai.models.generateContent({
-        model: attempt.model,
-        contents: params.contents,
-        config: {
-          systemInstruction: params.systemInstruction,
-          thinkingConfig: { thinkingLevel: attempt.thinkingLevel },
-          responseMimeType: 'application/json',
-          responseSchema: params.responseSchema as any,
-        },
-      });
-      return JSON.parse((response.text ?? '{}').trim());
-    } catch (err) {
-      lastError = err;
-      if (!isTransientAiError(err) && i === 0) {
-        // Pour une erreur non transitoire sur le premier modèle, tente quand même le modèle de secours
-        continue;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 450));
-    }
-  }
-
-  if (isTransientAiError(lastError)) {
-    throw new Error(
-      'Le service IA Gemini connaît un pic de charge momentané (503). Réessayez dans quelques secondes.',
-    );
-  }
-  throw new Error(
-    lastError instanceof Error
-      ? `Analyse IA temporairement indisponible : ${lastError.message.slice(0, 140)}`
-      : 'Analyse IA temporairement indisponible.',
-  );
+  return generateStructuredWithSelectedProvider({
+    contents: params.contents,
+    systemInstruction: params.systemInstruction,
+    responseSchema: params.responseSchema,
+    aiConfig: params.aiConfig,
+  });
 }
 
 export async function generateBuildCoachingRationale(payload: {
   recommendation: BuildRecommendation;
   tendencies?: PlayerTendencies;
+  aiConfig?: Partial<AiUserSelection> | null;
 }) {
-  const { recommendation, tendencies } = payload;
+  const { recommendation, tendencies, aiConfig } = payload;
 
   const promptData = {
     patch: recommendation.patchVersion,
@@ -124,6 +71,7 @@ export async function generateBuildCoachingRationale(payload: {
   };
 
   return generateJsonWithFallback({
+    aiConfig,
     contents:
       `Tu es un coach League of Legends de niveau Challenger. En t'appuyant UNIQUEMENT sur les données exactes ci-dessous (ne jamais inventer d'autres statistiques ni modifier les noms d'objets), rédige un plan de jeu concret en français pour ${recommendation.playerChampion.name} (${recommendation.role}, mode ${recommendation.gameMode}).\n\nDonnées vérifiées :\n` +
       JSON.stringify(promptData, null, 2),
@@ -150,8 +98,9 @@ export async function generateBuildCoachingRationale(payload: {
 export async function generatePostGameCoaching(payload: {
   match: MatchRecord;
   analysis: PostGameAnalysis;
+  aiConfig?: Partial<AiUserSelection> | null;
 }) {
-  const { match, analysis } = payload;
+  const { match, analysis, aiConfig } = payload;
 
   const summary = {
     champion: match.player.championName,
@@ -176,6 +125,7 @@ export async function generatePostGameCoaching(payload: {
   };
 
   return generateJsonWithFallback({
+    aiConfig,
     contents:
       `Analyse cette partie de League of Legends et propose un débriefing personnalisé en français en ciblant précisément les erreurs de placement et de farming observées.\n\nStatistiques et événements vérifiés :\n` +
       JSON.stringify(summary, null, 2),
@@ -198,8 +148,12 @@ export async function generatePostGameCoaching(payload: {
   });
 }
 
-export async function generateLiveCoachingCall(snapshot: LiveCoachSnapshot) {
+export async function generateLiveCoachingCall(
+  snapshot: LiveCoachSnapshot,
+  aiConfig?: Partial<AiUserSelection> | null,
+) {
   return generateJsonWithFallback({
+    aiConfig,
     contents:
       `Voici l'état instantané d'une partie de League of Legends en cours. Donne des instructions courtes et immédiatement applicables (10 secondes de lecture max) en français.\n\nÉtat Live :\n` +
       JSON.stringify(snapshot, null, 2),
@@ -367,11 +321,13 @@ export async function generateCareerGlobalSynthesis(payload: {
   riotId: string;
   region: string;
   dataset: CareerSynthesisDataset;
+  aiConfig?: Partial<AiUserSelection> | null;
 }) {
-  const { riotId, region, dataset } = payload;
+  const { riotId, region, dataset, aiConfig } = payload;
 
   try {
     const result = await generateJsonWithFallback({
+      aiConfig,
       contents:
         `Tu es un coach League of Legends Challenger chargé de réaliser une SYNTHÈSE GLOBALE LONG TERME complète pour le joueur ${riotId} (${region}) à partir de l'ENSEMBLE de ses ${dataset.gamesAnalyzed} matchs stockés localement.\n` +
         `IMPORTANT : Tu DOIS remplir TOUS les champs du JSON sans en laisser aucun vide (chaque erreur doit avoir zoneOrPattern + frequencyNote + correction détaillée, 3 ajustements complets dans gameplayAdjustments, un paragraphe championPoolAdvice et exactement 3 actions dans threeGameActionPlan).\n\n` +
@@ -442,4 +398,324 @@ export async function generateCareerGlobalSynthesis(payload: {
     throw err;
   }
 }
+
+export interface ItemPassiveFormulaPayload {
+  championName: string;
+  championId: string;
+  championTags: string[];
+  role: string;
+  level: number;
+  itemId: string;
+  itemName: string;
+  itemCost: number;
+  rawPassives: Array<{ name: string; text: string; isActive: boolean }>;
+  scalingNote: string | null;
+  championStats: {
+    hp: number;
+    bonusHp: number;
+    baseAd: number;
+    totalAd: number;
+    totalAp: number;
+    totalArmor: number;
+    totalMr: number;
+    attackSpeed: number;
+    abilityHaste: number;
+  };
+  targetStats: {
+    name: string;
+    hp: number;
+    armor: number;
+    mr: number;
+    effectiveArmor: number;
+    effectiveMr: number;
+  };
+  combatContext: {
+    durationSec: number;
+    spellCasts: number;
+    totalMitigatedDamage: number;
+    realDps: number;
+    deltaTotalDamage: number | null;
+    deltaRealDps: number | null;
+    deltaCombatHealing: number | null;
+  };
+  aiConfig?: Partial<AiUserSelection> | null;
+}
+
+export async function generateItemPassiveFormulaExplanation(
+  payload: ItemPassiveFormulaPayload,
+) {
+  const { aiConfig, ...formulaData } = payload;
+  return generateJsonWithFallback({
+    aiConfig,
+    contents:
+      `Tu es un expert en théorie-crafting et formules mathématiques de League of Legends (Patch S16 / Data Dragon).\n` +
+      `Explique de façon claire, rigoureuse et pédagogique en français comment le passif unique de l'objet « ${formulaData.itemName} » (ID #${formulaData.itemId}) modifie concrètement les formules de dégâts (et de soin/survie si applicable) du champion ${formulaData.championName} (${formulaData.role}, Niv.${formulaData.level}).\n\n` +
+      `Appuie-toi EXCLUSIVEMENT sur les données exactes ci-dessous (ne jamais inventer d'autres statistiques) :\n` +
+      JSON.stringify(formulaData, null, 2),
+    systemInstruction:
+      'Coach et mathématicien League of Legends francophone. Explique clairement chaque formule (ex: double application des effets à l’impact, ratios PV bonus / AP / AD de base, mitigation par Armure/RM effective) avec des calculs concrets basés sur les chiffres exacts fournis.',
+    responseSchema: {
+      type: Type.OBJECT,
+      required: [
+        'passiveTitle',
+        'coreMechanism',
+        'formulaModifications',
+        'liveNumericProof',
+        'executionTip',
+      ],
+      properties: {
+        passiveTitle: {
+          type: Type.STRING,
+          description: 'Titre clair du passif unique et de son rôle sur le champion.',
+        },
+        coreMechanism: {
+          type: Type.STRING,
+          description:
+            'Explication claire en 2 phrases de la mécanique du passif et de son interaction avec le kit du champion.',
+        },
+        formulaModifications: {
+          type: Type.ARRAY,
+          items: { type: Type.STRING },
+          description:
+            '2 à 4 formules ou étapes mathématiques montrant comment les dégâts du champion changent (ex. base -> avec passif).',
+        },
+        liveNumericProof: {
+          type: Type.STRING,
+          description:
+            'Application numérique concrète sur les statistiques actuelles du champion face à la cible sélectionnée.',
+        },
+        executionTip: {
+          type: Type.STRING,
+          description: 'Conseil pratique de combo ou de timing en partie pour maximiser ce passif.',
+        },
+      },
+    },
+  });
+}
+
+export interface PopularBuildSearchPayload {
+  championName: string;
+  championId: string;
+  role: string;
+  gameMode: string;
+  patchVersion: string;
+  focusHint?: string;
+  aiConfig?: Partial<AiUserSelection> | null;
+}
+
+export interface GroundedPopularBuildItem {
+  sourceSite: string;
+  buildTitle: string;
+  winRateNote: string;
+  pickRateNote: string;
+  bootsName: string;
+  itemNames: string[];
+  keystoneName: string;
+  secondaryTreeName: string;
+  rationale: string;
+}
+
+export interface GroundedPopularBuildResponse {
+  summary: string;
+  builds: GroundedPopularBuildItem[];
+  groundingSources: Array<{ title: string; uri: string }>;
+}
+
+export async function searchPopularBuildsWithGoogle(
+  payload: PopularBuildSearchPayload,
+): Promise<GroundedPopularBuildResponse> {
+  const { championName, championId, role, gameMode, patchVersion, focusHint, aiConfig } = payload;
+
+  const modeLabel =
+    gameMode === 'ARAM'
+      ? 'ARAM'
+      : gameMode === 'SWIFTPLAY'
+        ? 'Swiftplay / Summoner Rift'
+        : 'Ranked Solo/Duo Summoner Rift';
+
+  const focusClause = focusHint?.trim()
+    ? ` Focus spécifique souhaité par le joueur : "${focusHint.trim()}".`
+    : '';
+
+  const prompt =
+    `Effectue une recherche Google en direct sur U.GG, OP.GG et Lolalytics pour trouver les builds les plus populaires et performants actuellement pour le champion League of Legends "${championName}" (${championId}) au poste "${role}" (${modeLabel}, patch récent ${patchVersion}).${focusClause}\n\n` +
+    `Réponds STRICTEMENT avec un objet JSON valide (sans texte avant ni après, sans inventer de statistiques absentes des résultats trouvés) respectant exactement cette structure :\n` +
+    `{\n` +
+    `  "summary": "Résumé en 2 phrases en français des tendances de builds trouvées sur U.GG / OP.GG.",\n` +
+    `  "builds": [\n` +
+    `    {\n` +
+    `      "sourceSite": "U.GG" | "OP.GG" | "Lolalytics",\n` +
+    `      "buildTitle": "Nom court du style de build en français",\n` +
+    `      "winRateNote": "Ex: ~52.1% WR (ou 'Non précisé' si absent)",\n` +
+    `      "pickRateNote": "Ex: Build le plus joué (ou 'Populaire')",\n` +
+    `      "bootsName": "Nom exact des bottes (ex: Plated Steelcaps ou Coques en acier)",\n` +
+    `      "itemNames": ["Objet 1", "Objet 2", "Objet 3", "Objet 4", "Objet 5"],\n` +
+    `      "keystoneName": "Nom de la rune fondamentale (ex: Grasp of the Undying / Poigne de l'immortel)",\n` +
+    `      "secondaryTreeName": "Arbre secondaire (ex: Inspiration / Précision)",\n` +
+    `      "rationale": "Explication courte en français de pourquoi ce build fonctionne."\n` +
+    `    }\n` +
+    `  ]\n` +
+    `}\n` +
+    `Propose 2 à 3 builds distincts trouvés dans les résultats de recherche (par exemple 1 build U.GG standard + 1 build OP.GG ou variante populaire).`;
+
+  // Si l'utilisateur a sélectionné un autre fournisseur (Claude, OpenAI, etc.) sans passer par Gemini Search
+  const useExternalProvider =
+    aiConfig?.provider &&
+    aiConfig.provider !== 'gemini' &&
+    (!process.env.GEMINI_API_KEY?.trim() || aiConfig.fallbackToGemini === false);
+
+  if (useExternalProvider) {
+    const parsed = await generateStructuredWithSelectedProvider({
+      contents: prompt,
+      systemInstruction:
+        'Analyste League of Legends expert. Propose les builds les plus populaires observés sur U.GG, OP.GG et Lolalytics pour ce patch.',
+      responseSchema: {
+        type: Type.OBJECT,
+        required: ['summary', 'builds'],
+        properties: {
+          summary: { type: Type.STRING },
+          builds: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              required: ['sourceSite', 'buildTitle', 'bootsName', 'itemNames', 'rationale'],
+              properties: {
+                sourceSite: { type: Type.STRING },
+                buildTitle: { type: Type.STRING },
+                winRateNote: { type: Type.STRING },
+                pickRateNote: { type: Type.STRING },
+                bootsName: { type: Type.STRING },
+                itemNames: { type: Type.ARRAY, items: { type: Type.STRING } },
+                keystoneName: { type: Type.STRING },
+                secondaryTreeName: { type: Type.STRING },
+                rationale: { type: Type.STRING },
+              },
+            },
+          },
+        },
+      },
+      aiConfig,
+    });
+
+    const builds: GroundedPopularBuildItem[] = Array.isArray(parsed?.builds)
+      ? parsed.builds.slice(0, 3).map((b: any) => ({
+          sourceSite: String(b.sourceSite || parsed?._aiMeta?.providerLabel || 'IA'),
+          buildTitle: String(b.buildTitle || `Build ${championName}`),
+          winRateNote: String(b.winRateNote || 'Méta actuelle'),
+          pickRateNote: String(b.pickRateNote || 'Populaire'),
+          bootsName: String(b.bootsName || ''),
+          itemNames: Array.isArray(b.itemNames)
+            ? b.itemNames.map((n: any) => String(n || '').trim()).filter(Boolean).slice(0, 6)
+            : [],
+          keystoneName: String(b.keystoneName || ''),
+          secondaryTreeName: String(b.secondaryTreeName || ''),
+          rationale: String(b.rationale || ''),
+        }))
+      : [];
+
+    return {
+      summary: String(
+        parsed?.summary || `Builds suggérés pour ${championName} (${role}) via ${parsed?._aiMeta?.providerLabel || 'IA'}.`,
+      ),
+      builds,
+      groundingSources: [],
+    };
+  }
+
+  const ai = getGeminiClient();
+  const selectedGeminiModel =
+    aiConfig?.provider === 'gemini' && aiConfig.model?.trim()
+      ? aiConfig.model.trim()
+      : 'gemini-4-hydrogen';
+  const attempts = Array.from(new Set([selectedGeminiModel, 'gemini-4-hydrogen', 'gemini-3.1-flash-lite']));
+  let lastError: unknown = null;
+  const errorMessages: string[] = [];
+
+  for (let i = 0; i < attempts.length; i++) {
+    const model = attempts[i];
+    try {
+      const response = await ai.models.generateContent({
+        model,
+        contents: prompt,
+        config: {
+          tools: [{ googleSearch: {} }],
+          systemInstruction:
+            'Analyste League of Legends expert utilisant Google Search Grounding. Tu retournes uniquement un objet JSON propre basé sur les builds populaires réellement trouvés sur U.GG, OP.GG et Lolalytics.',
+        },
+      });
+
+      const parsed = extractJsonObjectFromText(response.text ?? '{}');
+      const rawChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
+      const seenUris = new Set<string>();
+      const groundingSources: Array<{ title: string; uri: string }> = [];
+
+      for (const ch of rawChunks) {
+        const uri = ch?.web?.uri;
+        const title = ch?.web?.title;
+        if (uri && !seenUris.has(uri)) {
+          seenUris.add(uri);
+          groundingSources.push({
+            title: title || uri,
+            uri,
+          });
+        }
+      }
+
+      const builds: GroundedPopularBuildItem[] = Array.isArray(parsed?.builds)
+        ? parsed.builds
+            .filter((b: any) => b && (b.bootsName || Array.isArray(b.itemNames)))
+            .slice(0, 3)
+            .map((b: any) => ({
+              sourceSite: String(b.sourceSite || 'Web Méta'),
+              buildTitle: String(b.buildTitle || `Build ${championName}`),
+              winRateNote: String(b.winRateNote || 'Méta actuelle'),
+              pickRateNote: String(b.pickRateNote || 'Populaire'),
+              bootsName: String(b.bootsName || ''),
+              itemNames: Array.isArray(b.itemNames)
+                ? b.itemNames.map((n: any) => String(n || '').trim()).filter(Boolean).slice(0, 6)
+                : [],
+              keystoneName: String(b.keystoneName || ''),
+              secondaryTreeName: String(b.secondaryTreeName || ''),
+              rationale: String(b.rationale || ''),
+            }))
+        : [];
+
+      if (builds.length === 0) {
+        throw new Error('Aucun build exploitable retourné par la recherche Google.');
+      }
+
+      return {
+        summary: String(
+          parsed?.summary ||
+            `Builds populaires trouvés via Google Search pour ${championName} (${role}).`,
+        ),
+        builds,
+        groundingSources: groundingSources.slice(0, 6),
+      };
+    } catch (err) {
+      lastError = err;
+      const msg = err instanceof Error ? err.message : String(err);
+      errorMessages.push(`${model}: ${msg.slice(0, 120)}`);
+      console.error(`[searchPopularBuildsWithGoogle] model=${model} failed:`, msg);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  }
+
+  const joinedErrors = errorMessages.join(' | ');
+  if (joinedErrors.includes('429') || joinedErrors.toLowerCase().includes('quota')) {
+    throw new Error(
+      `Quota de recherche Google via Gemini atteint (429). Patientez une minute ou vérifiez votre quota Gemini (${joinedErrors.slice(0, 160)}).`,
+    );
+  }
+  if (isTransientAiError(lastError)) {
+    throw new Error(
+      `La recherche Google via Gemini est momentanément indisponible (${joinedErrors.slice(0, 160)}). Réessayez dans quelques secondes.`,
+    );
+  }
+  throw new Error(
+    `Recherche de builds impossible : ${joinedErrors.slice(0, 200)}`,
+  );
+}
+
+
 

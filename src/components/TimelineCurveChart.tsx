@@ -31,10 +31,10 @@ export function TimelineCurveChart({ splits }: TimelineCurveChartProps) {
 
   return (
     <div className="space-y-4">
-      <div className="w-full overflow-x-auto">
+      <div className="w-full">
         <svg
           viewBox={`0 0 ${width} ${height}`}
-          className="w-full min-w-[420px] h-44"
+          className="w-full h-44"
           role="img"
           aria-label="Courbe d'écart d'or contre l'adversaire de lane"
         >

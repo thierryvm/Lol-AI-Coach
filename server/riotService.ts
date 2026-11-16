@@ -5,6 +5,8 @@ import type {
   DDragonBootstrap,
   ItemData,
   MapCoordinateEvent,
+  MapDamageSource,
+  MapParticipantSnapshot,
   MatchParticipantSummary,
   MatchRecord,
   PlayerProfileResponse,
@@ -347,9 +349,11 @@ export function normalizeRiotMatch(
 
     const champByPid = new Map<number, string>();
     const teamByPid = new Map<number, number>();
+    const roleByPid = new Map<number, string>();
     for (const rp of rawParticipants) {
       champByPid.set(rp.participantId, rp.championName);
       teamByPid.set(rp.participantId, rp.teamId);
+      roleByPid.set(rp.participantId, rp.teamPosition || rp.individualPosition || 'UNKNOWN');
     }
 
     const frames: any[] = timelineJson.info.frames;
@@ -362,6 +366,88 @@ export function normalizeRiotMatch(
         }
       }
     }
+
+    const extractSnapshotsAtTimestamp = (
+      ts: number,
+      killerId: number,
+      assists: number[],
+    ): { snapshots: MapParticipantSnapshot[]; deltaSec: number } => {
+      // Cherche la frame la plus proche juste avant (ou au plus près de) l'événement
+      let chosenFrame = frames[0];
+      for (const candidate of frames) {
+        if ((candidate.timestamp || 0) <= ts) {
+          chosenFrame = candidate;
+        } else {
+          break;
+        }
+      }
+      if (!chosenFrame?.participantFrames) {
+        return { snapshots: [], deltaSec: 0 };
+      }
+
+      const deltaSec = Math.max(0, Math.round((ts - (chosenFrame.timestamp || 0)) / 1000));
+      const assistSet = new Set(assists);
+      const snapshots: MapParticipantSnapshot[] = [];
+
+      for (const rp of rawParticipants) {
+        const pid = rp.participantId;
+        const pf = chosenFrame.participantFrames[String(pid)];
+        const pos = pf?.position;
+        if (!pos || !Number.isFinite(pos.x) || !Number.isFinite(pos.y)) continue;
+
+        snapshots.push({
+          participantId: pid,
+          championName: champByPid.get(pid) || `Champion #${pid}`,
+          teamId: teamByPid.get(pid) || 100,
+          teamPosition: roleByPid.get(pid) || 'UNKNOWN',
+          x: pos.x,
+          y: pos.y,
+          isPlayer: pid === playerParticipantId,
+          isAlly: (teamByPid.get(pid) || 100) === player.teamId,
+          isKiller: pid === killerId,
+          isAssister: assistSet.has(pid),
+        });
+      }
+
+      return { snapshots, deltaSec };
+    };
+
+    const extractDamageBreakdown = (rawDamage: any[]): MapDamageSource[] => {
+      if (!Array.isArray(rawDamage) || rawDamage.length === 0) return [];
+      const bySource = new Map<string, MapDamageSource>();
+
+      for (const d of rawDamage) {
+        const pid = Number(d.participantId || 0);
+        const champ =
+          pid > 0
+            ? champByPid.get(pid) || d.name || `Champion #${pid}`
+            : d.type === 'TOWER'
+              ? 'Tourelle'
+              : 'Sbires / Monstres';
+        const key = `${pid}-${champ}`;
+        const cur = bySource.get(key) || {
+          sourceName: champ,
+          isEnemyChampion: pid > 0 && (teamByPid.get(pid) || 0) !== player.teamId,
+          physicalDamage: 0,
+          magicDamage: 0,
+          trueDamage: 0,
+          totalDamage: 0,
+        };
+        const phys = Number(d.physicalDamage || 0);
+        const mag = Number(d.magicDamage || 0);
+        const tru = Number(d.trueDamage || 0);
+        cur.physicalDamage += phys;
+        cur.magicDamage += mag;
+        cur.trueDamage += tru;
+        cur.totalDamage += phys + mag + tru;
+        bySource.set(key, cur);
+      }
+
+      return Array.from(bySource.values())
+        .filter((s) => s.totalDamage > 0)
+        .sort((a, b) => b.totalDamage - a.totalDamage)
+        .slice(0, 5);
+    };
 
     for (const f of frames) {
       const minute = Math.round((f.timestamp || 0) / 60000);
@@ -391,9 +477,14 @@ export function normalizeRiotMatch(
           const y = ev.position.y || 0;
           const zone = classifySummonersRiftZone(x, y);
           const evMin = Math.round((ev.timestamp || 0) / 60000);
+          const assists: number[] = Array.isArray(ev.assistingParticipantIds)
+            ? ev.assistingParticipantIds
+            : [];
+          const assistingChampions = assists
+            .map((aid) => champByPid.get(aid))
+            .filter((name): name is string => Boolean(name));
 
           if (ev.victimId === playerParticipantId) {
-            const assists: number[] = ev.assistingParticipantIds || [];
             // Vérifie si un objectif majeur est tombé ou était en approche dans les 45s suivant cette mort
             const nearObjectiveWindow = objectiveTimestamps.some(
               (ot) => ot >= ev.timestamp && ot - ev.timestamp <= 45000,
@@ -402,6 +493,18 @@ export function normalizeRiotMatch(
               (player.teamId === 100 && x + y > 15200) ||
               (player.teamId === 200 && x + y < 14500) ||
               assists.length === 0;
+
+            const { snapshots, deltaSec } = extractSnapshotsAtTimestamp(
+              ev.timestamp || 0,
+              Number(ev.killerId || 0),
+              assists,
+            );
+            const damageBreakdown = extractDamageBreakdown(ev.victimDamageReceived);
+            const killerChamp = champByPid.get(ev.killerId) || 'Adversaire';
+            const assistSuffix =
+              assistingChampions.length > 0
+                ? ` (+ ${assistingChampions.join(', ')})`
+                : '';
 
             mapEvents.push({
               timestampMs: ev.timestamp,
@@ -412,10 +515,20 @@ export function normalizeRiotMatch(
               zone,
               isolated,
               nearObjectiveWindow,
-              killerChampion: champByPid.get(ev.killerId) || 'Adversaire',
-              contextNote: `Éliminé par ${champByPid.get(ev.killerId) || 'adversaire'} en ${zone} à ${evMin} min.`,
+              killerChampion: killerChamp,
+              assistingChampions,
+              damageBreakdown,
+              participantSnapshots: snapshots,
+              snapshotDeltaSec: deltaSec,
+              contextNote: `Éliminé par ${killerChamp}${assistSuffix} en ${zone} à ${evMin} min.`,
             });
           } else if (ev.killerId === playerParticipantId) {
+            const { snapshots, deltaSec } = extractSnapshotsAtTimestamp(
+              ev.timestamp || 0,
+              Number(ev.killerId || 0),
+              assists,
+            );
+
             mapEvents.push({
               timestampMs: ev.timestamp,
               minute: evMin,
@@ -425,7 +538,12 @@ export function normalizeRiotMatch(
               zone,
               isolated: false,
               nearObjectiveWindow: false,
-              contextNote: `Élimination réalisée en ${zone} à ${evMin} min.`,
+              assistingChampions,
+              participantSnapshots: snapshots,
+              snapshotDeltaSec: deltaSec,
+              contextNote: `Élimination réalisée en ${zone} à ${evMin} min${
+                assistingChampions.length > 0 ? ` (avec ${assistingChampions.join(', ')})` : ''
+              }.`,
             });
           }
         }
@@ -773,3 +891,192 @@ export async function fetchRiotMatchById(
 
   return normalizeRiotMatch(matchData, targetPuuid, timelineData, 'Riot API Match-V5');
 }
+
+let cachedEnItemMap: { version: string; byNormName: Map<string, string> } | null = null;
+let cachedRotation: { expiresAt: number; value: { available: boolean; freeChampionIds: number[]; freeChampionIdsForNewPlayers: number[]; maxNewPlayerLevel: number } } | null = null;
+
+function normalizeItemLookup(name: string): string {
+  return name
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/['’`.,:-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+const COMMUNITY_ITEM_ALIASES: Record<string, string> = {
+  'aube de haut lacere': '2510',
+  'aube et crepuscule': '2510',
+  'dusk and dawn': '2510',
+  'dawn of highreach': '2510',
+  'steelcaps': '3047',
+  'tabi': '3047',
+  'mercs': '3111',
+  'swifties': '3009',
+  'bork': '3153',
+  'botrk': '3153',
+  'jaksho': '6665',
+  'jak sho': '6665',
+  'locket': '3190',
+  'sunfire': '3068',
+  'thornmail': '3075',
+  'heartsteel': '3084',
+  'unending despair': '2502',
+  'spirit visage': '3065',
+  'kaenic rookern': '2504',
+  'hollow radiance': '6664',
+  'knights vow': '3109',
+  'knight s vow': '3109',
+  'zekes': '3050',
+  'zeke s convergence': '3050',
+  'zhonyas': '3157',
+  'rabadons': '3089',
+  'liandrys': '6653',
+  'guinsoos': '3124',
+  'nashors': '3115',
+  'wits end': '3091',
+  'randuins': '3143',
+  'frozen heart': '3110',
+  'warmogs': '3083',
+  'riftmaker': '4633',
+  'iceborn': '6662',
+  'trinity': '3078',
+  'triforce': '3078',
+};
+
+export async function resolveDDragonItemsByNames(
+  queryNames: string[],
+): Promise<{ patchVersion: string; resolvedByQuery: Record<string, ItemData | null> }> {
+  const bootstrap = await getDDragonBootstrap();
+
+  if (!cachedEnItemMap || cachedEnItemMap.version !== bootstrap.version) {
+    try {
+      const enRaw = await fetchJson<{ data: Record<string, any> }>(
+        `${DDRAGON_BASE}/cdn/${bootstrap.version}/data/en_US/item.json`,
+      );
+      const byNormName = new Map<string, string>();
+      const validIds = new Set(bootstrap.items.map((it) => it.id));
+      for (const [id, entry] of Object.entries(enRaw.data || {})) {
+        if (!validIds.has(id)) continue;
+        const norm = normalizeItemLookup(String((entry as any)?.name || ''));
+        if (norm && !byNormName.has(norm)) {
+          byNormName.set(norm, id);
+        }
+      }
+      cachedEnItemMap = { version: bootstrap.version, byNormName };
+    } catch {
+      cachedEnItemMap = { version: bootstrap.version, byNormName: new Map() };
+    }
+  }
+
+  const byId = new Map<string, ItemData>();
+  const frByNorm = new Map<string, ItemData>();
+  for (const it of bootstrap.items) {
+    byId.set(it.id, it);
+    const norm = normalizeItemLookup(it.name);
+    if (norm && !frByNorm.has(norm)) {
+      frByNorm.set(norm, it);
+    }
+  }
+
+  const resolvedByQuery: Record<string, ItemData | null> = {};
+
+  for (const rawQuery of queryNames) {
+    const q = rawQuery.trim();
+    if (!q) continue;
+    if (resolvedByQuery[q]) continue;
+
+    const norm = normalizeItemLookup(q);
+    let match: ItemData | null = null;
+
+    // 1. Alias communautaires connus
+    const aliasId = COMMUNITY_ITEM_ALIASES[norm];
+    if (aliasId && byId.has(aliasId)) {
+      match = byId.get(aliasId) || null;
+    }
+
+    // 2. Correspondance exacte FR
+    if (!match && frByNorm.has(norm)) {
+      match = frByNorm.get(norm) || null;
+    }
+
+    // 3. Correspondance exacte EN -> ID FR
+    if (!match && cachedEnItemMap.byNormName.has(norm)) {
+      const id = cachedEnItemMap.byNormName.get(norm)!;
+      match = byId.get(id) || null;
+    }
+
+    // 4. Recherche par inclusion / tokens sur FR puis EN
+    if (!match && norm.length >= 4) {
+      for (const [frNorm, item] of frByNorm.entries()) {
+        if (frNorm.includes(norm) || norm.includes(frNorm)) {
+          match = item;
+          break;
+        }
+      }
+    }
+    if (!match && norm.length >= 4) {
+      for (const [enNorm, id] of cachedEnItemMap.byNormName.entries()) {
+        if (enNorm.includes(norm) || norm.includes(enNorm)) {
+          match = byId.get(id) || null;
+          if (match) break;
+        }
+      }
+    }
+
+    resolvedByQuery[q] = match;
+  }
+
+  return { patchVersion: bootstrap.version, resolvedByQuery };
+}
+
+export async function getFreeChampionRotation(platform: RiotPlatform = 'EUW1'): Promise<{
+  available: boolean;
+  freeChampionIds: number[];
+  freeChampionIdsForNewPlayers: number[];
+  maxNewPlayerLevel: number;
+}> {
+  if (!hasRiotApiKey()) {
+    return {
+      available: false,
+      freeChampionIds: [],
+      freeChampionIdsForNewPlayers: [],
+      maxNewPlayerLevel: 10,
+    };
+  }
+  const now = Date.now();
+  if (cachedRotation && cachedRotation.expiresAt > now) {
+    return cachedRotation.value;
+  }
+
+  try {
+    const apiKey = getCleanRiotApiKey();
+    const platformHost = `${platform.toLowerCase()}.api.riotgames.com`;
+    const data = await fetchJson<{
+      freeChampionIds: number[];
+      freeChampionIdsForNewPlayers: number[];
+      maxNewPlayerLevel: number;
+    }>(`https://${platformHost}/lol/platform/v3/champion-rotations`, {
+      'X-Riot-Token': apiKey,
+    });
+    const value = {
+      available: true,
+      freeChampionIds: Array.isArray(data.freeChampionIds) ? data.freeChampionIds : [],
+      freeChampionIdsForNewPlayers: Array.isArray(data.freeChampionIdsForNewPlayers)
+        ? data.freeChampionIdsForNewPlayers
+        : [],
+      maxNewPlayerLevel: Number(data.maxNewPlayerLevel || 10),
+    };
+    cachedRotation = { expiresAt: now + 1000 * 60 * 30, value };
+    return value;
+  } catch {
+    return {
+      available: false,
+      freeChampionIds: [],
+      freeChampionIdsForNewPlayers: [],
+      maxNewPlayerLevel: 10,
+    };
+  }
+}
+

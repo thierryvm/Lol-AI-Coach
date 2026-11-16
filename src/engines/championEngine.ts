@@ -105,6 +105,74 @@ const HIGH_CC_CHAMPIONS = new Set([
 ]);
 
 /**
+ * Référentiel des champions joués régulièrement en Jungle (Data Dragon ne fournit
+ * que les 6 classes de base Fighter/Mage/Assassin/Tank/Marksman/Support sans tag Jungler).
+ */
+export const JUNGLER_CHAMPION_IDS = new Set([
+  'Ambessa',
+  'Amumu',
+  'Belveth',
+  'Brand',
+  'Briar',
+  'Diana',
+  'DrMundo',
+  'Ekko',
+  'Elise',
+  'Evelynn',
+  'Fiddlesticks',
+  'Gragas',
+  'Graves',
+  'Gwen',
+  'Hecarim',
+  'Ivern',
+  'JarvanIV',
+  'Jax',
+  'Karthus',
+  'Kayn',
+  'Khazix',
+  'Kindred',
+  'LeeSin',
+  'Lillia',
+  'Maokai',
+  'MasterYi',
+  'MonkeyKing',
+  'Morgana',
+  'Naafiri',
+  'Nidalee',
+  'Nocturne',
+  'Nunu',
+  'Olaf',
+  'Pantheon',
+  'Poppy',
+  'Qiyana',
+  'Rammus',
+  'RekSai',
+  'Rengar',
+  'Rumble',
+  'Sejuani',
+  'Shaco',
+  'Shyvana',
+  'Skarner',
+  'Sylas',
+  'Taliyah',
+  'Talon',
+  'Trundle',
+  'Udyr',
+  'Vi',
+  'Viego',
+  'Volibear',
+  'Warwick',
+  'XinZhao',
+  'Zac',
+  'Zed',
+  'Zyra',
+]);
+
+export function isJunglerChampion(championId: string): boolean {
+  return JUNGLER_CHAMPION_IDS.has(championId);
+}
+
+/**
  * Analyse déterministe du profil de dégâts, de résistance, de soin et de contrôle
  * d'un champion à partir des données officielles Data Dragon.
  */
