@@ -740,7 +740,17 @@ export function SettingsView({
                       Abonnement Claude Pro / Max via Claude Code :
                     </strong>
                     <span>
-                      Sur votre PC, lancez <code className="font-mono">claude login</code> une fois dans votre terminal puis démarrez l’app en local (<code className="font-mono">npm run dev</code> ou l’assistant). Aucune clé API payante nécessaire.
+                      {aiProvidersStatus?.environment === 'cloud'
+                        ? 'En mode Cloud (ici sur le web), aucune fenêtre de connexion Claude ne peut s’ouvrir vers votre abonnement. Pour l’utiliser sans clé API payante, lancez l’app sur votre PC après '
+                        : 'Sur votre PC, lancez '}
+                      <code className="font-mono">claude login</code>
+                      {aiProvidersStatus?.environment === 'cloud'
+                        ? ' (c’est là que votre navigateur demandera la connexion à votre compte Claude Pro/Max), puis démarrez l’app en local avec '
+                        : ' une fois dans votre terminal puis démarrez l’app en local ('}
+                      <code className="font-mono">npm run dev</code>
+                      {aiProvidersStatus?.environment === 'cloud'
+                        ? ' ou l’assistant Windows/Mac).'
+                        : ' ou l’assistant). Aucune clé API payante nécessaire.'}
                     </span>
                   </>
                 ) : activeProviderDef.envVarName ? (

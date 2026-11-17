@@ -1,6 +1,7 @@
 import { classifySummonersRiftZone, computePlayerTendencies } from '../src/engines/postGameEngine.ts';
 import type {
   ChampionDetail,
+  ChampionMasteryEntry,
   ChampionSummary,
   DDragonBootstrap,
   ItemData,
@@ -676,7 +677,7 @@ export async function syncRiotPlayerProfile(
       summonerLevel: number;
     }>(`https://${platformHost}/lol/summoner/v4/summoners/by-puuid/${account.puuid}`, headers);
 
-    const [leagueEntries, activeGameRes, matchIds] = await Promise.all([
+    const [leagueEntries, activeGameRes, matchIds, masteryRaw] = await Promise.all([
       fetchRiotWithRetry<any[]>(
         `https://${platformHost}/lol/league/v4/entries/by-puuid/${account.puuid}`,
         headers,
@@ -697,7 +698,21 @@ export async function syncRiotPlayerProfile(
         `https://${regionalHost}/lol/match/v5/matches/by-puuid/${account.puuid}/ids?start=0&count=${clampedCount}`,
         headers,
       ),
+      fetchRiotWithRetry<any[]>(
+        `https://${platformHost}/lol/champion-mastery/v4/champion-masteries/by-puuid/${account.puuid}/top?count=12`,
+        headers,
+      ).catch(() => []),
     ]);
+
+    const championMasteries: ChampionMasteryEntry[] = Array.isArray(masteryRaw)
+      ? masteryRaw
+          .map((m) => ({
+            championId: Number(m?.championId || 0),
+            championLevel: Number(m?.championLevel || 0),
+            championPoints: Number(m?.championPoints || 0),
+          }))
+          .filter((m) => m.championId > 0)
+      : [];
 
     const soloEntry =
       leagueEntries.find((e) => e.queueType === 'RANKED_SOLO_5x5') || leagueEntries[0] || null;
@@ -760,6 +775,7 @@ export async function syncRiotPlayerProfile(
             losses: soloEntry.losses,
           }
         : null,
+      championMasteries,
       activeGame,
       matches,
       tendencies: computePlayerTendencies(matches),

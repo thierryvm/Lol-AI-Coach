@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { AnimatePresence, motion, MotionConfig } from 'motion/react';
 import {
   Activity,
   BookOpen,
@@ -261,8 +262,12 @@ function mergeAccountMatches(existing: MatchRecord[], incoming: MatchRecord[]): 
         byId.set(m.matchId, m);
       }
     } else if (
-      (m.timelineSplits.length > prev.timelineSplits.length || m.participants.length > prev.participants.length) &&
-      m.source !== 'Match de référence'
+      m.source !== 'Match de référence' &&
+      (m.timelineSplits.length > prev.timelineSplits.length ||
+        m.participants.length > prev.participants.length ||
+        m.mapEvents.length > prev.mapEvents.length ||
+        (m.mapEvents.some((e) => (e.participantSnapshots?.length || 0) > 0) &&
+          !prev.mapEvents.some((e) => (e.participantSnapshots?.length || 0) > 0)))
     ) {
       byId.set(m.matchId, m);
     }
@@ -310,6 +315,7 @@ export default function App() {
 
   const [selectedMatchId, setSelectedMatchId] = useState<string | null>(null);
   const [builderInitialChamp, setBuilderInitialChamp] = useState<string | undefined>(undefined);
+  const [builderInitialDuoChamp, setBuilderInitialDuoChamp] = useState<string | undefined>(undefined);
 
   const activeAccountKey = getAccountArchiveKey(riotIdInput, region);
   const [careerSynthesis, setCareerSynthesis] = useState<CareerAiSynthesis | null>(
@@ -601,6 +607,7 @@ export default function App() {
   const activeNavTitle = NAV_ITEMS.find((n) => n.id === activeTab)?.label || 'Tableau de bord';
 
   return (
+    <MotionConfig reducedMotion="user">
     <div className="min-h-screen flex bg-slate-50 text-slate-900 dark:bg-[#0B0E14] dark:text-slate-100">
       {/* Sidebar Desktop */}
       <aside className="hidden lg:flex lg:w-64 lg:flex-col lg:fixed lg:inset-y-0 border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0E131D]">
@@ -619,19 +626,27 @@ export default function App() {
                 key={item.id}
                 type="button"
                 onClick={() => setActiveTab(item.id)}
-                className={`w-full flex items-center gap-3 px-3 py-2.5 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
+                className={`relative w-full flex items-center gap-3 px-3 py-2.5 text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
                   active
-                    ? 'bg-slate-100 dark:bg-slate-800/80 text-slate-900 dark:text-white'
+                    ? 'text-slate-900 dark:text-white'
                     : 'text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800/40 hover:text-slate-900 dark:hover:text-white'
                 }`}
               >
+                {active && (
+                  <motion.span
+                    layoutId="sidebar-active-indicator"
+                    transition={{ type: 'spring', stiffness: 420, damping: 34 }}
+                    className="absolute inset-0 rounded-lg bg-slate-100 dark:bg-slate-800/85"
+                    aria-hidden="true"
+                  />
+                )}
                 <Icon
-                  className={`w-4 h-4 shrink-0 ${
+                  className={`relative z-10 w-4 h-4 shrink-0 transition-colors ${
                     active ? 'text-amber-600 dark:text-amber-400' : 'text-slate-400'
                   }`}
                   aria-hidden="true"
                 />
-                <span>{item.label}</span>
+                <span className="relative z-10">{item.label}</span>
               </button>
             );
           })}
@@ -847,7 +862,14 @@ export default function App() {
               <div className="h-64 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] animate-pulse" />
             </div>
           ) : (
-            <>
+            <AnimatePresence mode="wait">
+              <motion.div
+                key={activeTab}
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -6 }}
+                transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+              >
               {activeTab === 'dashboard' && (
                 <DashboardView
                   profile={profile}
@@ -864,8 +886,9 @@ export default function App() {
                   onDismissError={() => setProfileError(null)}
                   onMergeLocalMatches={handleMergeLocalMatches}
                   onSelectMatchForReview={handleSelectMatchForReview}
-                  onNavigateToBuilds={(champName) => {
+                  onNavigateToBuilds={(champName, duoName) => {
                     setBuilderInitialChamp(champName);
+                    setBuilderInitialDuoChamp(duoName);
                     setActiveTab('builds');
                   }}
                   onNavigateToLive={() => setActiveTab('live')}
@@ -884,6 +907,7 @@ export default function App() {
                   ddragon={ddragon}
                   tendencies={profile?.tendencies}
                   initialChampionName={builderInitialChamp}
+                  initialDuoChampionName={builderInitialDuoChamp}
                   initialRole={defaultRole}
                   riotId={riotIdInput}
                   region={region}
@@ -973,10 +997,12 @@ export default function App() {
                   onAiSelectionChange={(sel) => setActiveAiSelection(sel)}
                 />
               )}
-            </>
+              </motion.div>
+            </AnimatePresence>
           )}
         </main>
       </div>
     </div>
+    </MotionConfig>
   );
 }

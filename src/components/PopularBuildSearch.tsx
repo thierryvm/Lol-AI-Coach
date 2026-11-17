@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Check,
   ExternalLink,
@@ -38,9 +38,11 @@ export interface PopularBuildSearchResponse {
 
 interface PopularBuildSearchProps {
   champion: ChampionSummary;
+  champions?: ChampionSummary[];
   role: Role;
   gameMode: GameModeContext;
   patchVersion: string;
+  onSwitchChampion?: (championId: string) => void;
   onApplyBuild: (items: ItemData[]) => void;
   onQuickTestItem: (item: ItemData) => void;
   onSuggestionsUpdated: (
@@ -55,11 +57,21 @@ const QUICK_FOCUS_PRESETS: Array<{ id: string; label: string; hint: string }> = 
   { id: 'carry', label: 'Dégâts / Snowball', hint: 'build dégâts AP on-hit ou bruiser snowball' },
 ];
 
+function normalizeChampQuery(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
+}
+
 export function PopularBuildSearch({
   champion,
+  champions = [],
   role,
   gameMode,
   patchVersion,
+  onSwitchChampion,
   onApplyBuild,
   onQuickTestItem,
   onSuggestionsUpdated,
@@ -69,9 +81,14 @@ export function PopularBuildSearch({
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<PopularBuildSearchResponse | null>(null);
   const [appliedBuildIdx, setAppliedBuildIdx] = useState<number | null>(null);
+  const skipNextResetForChampIdRef = useRef<string | null>(null);
 
   // Réinitialiser les résultats affichés quand le champion ou le rôle change
   useEffect(() => {
+    if (skipNextResetForChampIdRef.current === champion.id) {
+      skipNextResetForChampIdRef.current = null;
+      return;
+    }
     setResult(null);
     setError(null);
     setAppliedBuildIdx(null);
@@ -79,7 +96,32 @@ export function PopularBuildSearch({
   }, [champion.id, role, gameMode]);
 
   const runSearch = async (overrideHint?: string) => {
-    const queryFocus = typeof overrideHint === 'string' ? overrideHint : focusHint;
+    const rawHint = typeof overrideHint === 'string' ? overrideHint : focusHint;
+    const trimmedHint = rawHint.trim();
+
+    let targetChampion = champion;
+    let queryFocus = trimmedHint;
+
+    // Si l'utilisateur tape un nom de champion (ex: "sona" alors que Tahm Kench est actif), basculer dessus !
+    if (trimmedHint && champions.length > 0 && onSwitchChampion) {
+      const normalized = normalizeChampQuery(trimmedHint);
+      const matched = champions.find(
+        (c) =>
+          normalizeChampQuery(c.name) === normalized ||
+          normalizeChampQuery(c.id) === normalized ||
+          (normalized === 'wukong' && c.id === 'MonkeyKing'),
+      );
+      if (matched) {
+        targetChampion = matched;
+        queryFocus = '';
+        if (matched.id !== champion.id) {
+          skipNextResetForChampIdRef.current = matched.id;
+          onSwitchChampion(matched.id);
+        }
+        setFocusHint('');
+      }
+    }
+
     setLoading(true);
     setError(null);
     setAppliedBuildIdx(null);
@@ -88,8 +130,8 @@ export function PopularBuildSearch({
       const json = await postCoachJson<PopularBuildSearchResponse>(
         '/api/coach/search-popular-builds',
         {
-          championName: champion.name,
-          championId: champion.id,
+          championName: targetChampion.name,
+          championId: targetChampion.id,
           role,
           gameMode,
           patchVersion,
@@ -105,7 +147,7 @@ export function PopularBuildSearch({
       setError(
         err instanceof Error
           ? err.message
-          : 'Impossible de récupérer les builds populaires depuis Google Search.',
+          : 'Impossible de récupérer les builds populaires en direct.',
       );
     } finally {
       setLoading(false);
@@ -178,7 +220,7 @@ export function PopularBuildSearch({
             type="text"
             value={focusHint}
             onChange={(e) => setFocusHint(e.target.value)}
-            placeholder={`Préciser un style pour ${champion.name} (ex: Aube et crépuscule, AP on-hit, Support peel...)`}
+            placeholder={`Style pour ${champion.name} (ex: tank, AP on-hit...) ou nom d'un autre champion (ex: Sona)`}
             aria-label="Préciser la recherche de build"
             className="w-full pl-8 pr-3 py-2 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B0E14] text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-sky-500"
           />
@@ -192,7 +234,7 @@ export function PopularBuildSearch({
           {loading ? (
             <>
               <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
-              <span>Recherche U.GG / OP.GG...</span>
+              <span>Recherche OP.GG / Web...</span>
             </>
           ) : (
             <>
@@ -221,12 +263,12 @@ export function PopularBuildSearch({
           <div className="flex items-center gap-2.5">
             <Sparkles className="w-4 h-4 text-sky-500 shrink-0" aria-hidden="true" />
             <span>
-              Cliquez sur <strong>Rechercher sur le Web</strong> pour extraire les builds populaires U.GG / OP.GG de{' '}
-              <strong>{champion.name}</strong> et les comparer immédiatement dans votre Atelier.
+              Cliquez sur <strong>Rechercher sur le Web</strong> pour extraire en direct les builds populaires d’OP.GG / méta pour{' '}
+              <strong>{champion.name}</strong> et les charger dans votre Atelier.
             </span>
           </div>
           <span className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400 shrink-0">
-            Google Search Grounding
+            OP.GG Live + Web Search
           </span>
         </div>
       )}

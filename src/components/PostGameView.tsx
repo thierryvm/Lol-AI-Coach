@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
 import {
   AlertTriangle,
   Brain,
@@ -6,16 +7,42 @@ import {
   FileUp,
   LayoutGrid,
   MapPin,
+  RotateCcw,
   Search,
   ShieldCheck,
+  SlidersHorizontal,
   Sparkles,
 } from 'lucide-react';
 import { postCoachJson } from '../engines/aiConfig.ts';
 import { analyzePostGameMatch } from '../engines/postGameEngine.ts';
 import type { ChampionSummary, ItemData, MatchRecord, RiotPlatform } from '../engines/types.ts';
 import { SafeGameIcon } from './SafeGameIcon.tsx';
-import { SummonersRiftMap } from './SummonersRiftMap.tsx';
+import { SummonersRiftMap, type ArchiveDeathPoint } from './SummonersRiftMap.tsx';
 import { TimelineCurveChart } from './TimelineCurveChart.tsx';
+
+type MatchResultFilter = 'ALL' | 'WIN' | 'LOSS';
+type MatchRoleFilter = 'ALL' | 'TOP' | 'JUNGLE' | 'MID' | 'ADC' | 'SUPPORT';
+type MatchSortMode = 'RECENT' | 'KDA' | 'CS' | 'DURATION';
+
+function normalizePostGameRole(pos?: string): Exclude<MatchRoleFilter, 'ALL'> | 'OTHER' {
+  const upper = (pos || '').toUpperCase();
+  if (upper === 'TOP') return 'TOP';
+  if (upper === 'JUNGLE') return 'JUNGLE';
+  if (upper === 'MID' || upper === 'MIDDLE') return 'MID';
+  if (upper === 'ADC' || upper === 'BOTTOM') return 'ADC';
+  if (upper === 'SUPPORT' || upper === 'UTILITY') return 'SUPPORT';
+  return 'OTHER';
+}
+
+function formatRoleShort(pos?: string): string {
+  const norm = normalizePostGameRole(pos);
+  if (norm === 'OTHER') return 'Libre';
+  if (norm === 'TOP') return 'Top';
+  if (norm === 'JUNGLE') return 'Jungle';
+  if (norm === 'MID') return 'Mid';
+  if (norm === 'ADC') return 'ADC';
+  return 'Support';
+}
 
 interface PostGameViewProps {
   matches: MatchRecord[];
@@ -67,6 +94,90 @@ export function PostGameView({
     return map;
   }, [items]);
 
+  const archiveDeaths = useMemo<ArchiveDeathPoint[]>(
+    () =>
+      matches.flatMap((m) =>
+        m.mapEvents
+          .filter((e) => e.type === 'DEATH')
+          .map((e) => ({
+            x: e.x,
+            y: e.y,
+            zone: e.zone || 'Faille',
+            isolated: Boolean(e.isolated),
+          })),
+      ),
+    [matches],
+  );
+
+  const [resultFilter, setResultFilter] = useState<MatchResultFilter>('ALL');
+  const [roleFilter, setRoleFilter] = useState<MatchRoleFilter>('ALL');
+  const [championFilter, setChampionFilter] = useState<string>('ALL');
+  const [sortBy, setSortBy] = useState<MatchSortMode>('RECENT');
+
+  const championFilterOptions = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const m of matches) {
+      const name = m.player.championName;
+      counts.set(name, (counts.get(name) || 0) + 1);
+    }
+    return Array.from(counts.entries())
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+  }, [matches]);
+
+  const filteredMatches = useMemo(() => {
+    const list = matches.filter((m) => {
+      if (resultFilter === 'WIN' && !m.player.win) return false;
+      if (resultFilter === 'LOSS' && m.player.win) return false;
+      if (roleFilter !== 'ALL' && normalizePostGameRole(m.player.teamPosition) !== roleFilter) {
+        return false;
+      }
+      if (championFilter !== 'ALL' && m.player.championName !== championFilter) {
+        return false;
+      }
+      return true;
+    });
+
+    return [...list].sort((a, b) => {
+      if (sortBy === 'KDA') {
+        const kdaA = (a.player.kills + a.player.assists) / Math.max(1, a.player.deaths);
+        const kdaB = (b.player.kills + b.player.assists) / Math.max(1, b.player.deaths);
+        return kdaB - kdaA || b.gameCreation - a.gameCreation;
+      }
+      if (sortBy === 'CS') {
+        return b.player.csPerMin - a.player.csPerMin || b.gameCreation - a.gameCreation;
+      }
+      if (sortBy === 'DURATION') {
+        return b.gameDurationSec - a.gameDurationSec || b.gameCreation - a.gameCreation;
+      }
+      return b.gameCreation - a.gameCreation;
+    });
+  }, [matches, resultFilter, roleFilter, championFilter, sortBy]);
+
+  const hasActiveFilters =
+    resultFilter !== 'ALL' ||
+    roleFilter !== 'ALL' ||
+    championFilter !== 'ALL' ||
+    sortBy !== 'RECENT';
+
+  const filteredWinRate = useMemo(() => {
+    if (filteredMatches.length === 0) return 0;
+    const wins = filteredMatches.filter((m) => m.player.win).length;
+    return Math.round((wins / filteredMatches.length) * 100);
+  }, [filteredMatches]);
+
+  // Si les filtres excluent le match actuellement sélectionné, basculer automatiquement sur le 1er match filtré
+  useEffect(() => {
+    if (
+      filteredMatches.length > 0 &&
+      activeMatch &&
+      !filteredMatches.some((m) => m.matchId === activeMatch.matchId)
+    ) {
+      onSelectMatchId(filteredMatches[0].matchId);
+      setAiReview(null);
+    }
+  }, [filteredMatches, activeMatch, onSelectMatchId]);
+
   const [subTab, setSubTab] = useState<'overview' | 'tactical-map'>('overview');
   const [selectedMapTimestampMs, setSelectedMapTimestampMs] = useState<number | null>(null);
 
@@ -79,9 +190,50 @@ export function PostGameView({
   const [importError, setImportError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
 
+  const enrichedMatchIdsRef = useRef<Set<string>>(new Set());
+
   useEffect(() => {
     setSelectedMapTimestampMs(null);
   }, [activeMatch?.matchId]);
+
+  // Enrichit automatiquement un ancien match archivé s'il lui manque les positions des 10 champions
+  useEffect(() => {
+    if (!activeMatch) return;
+    if (activeMatch.source !== 'Riot API Match-V5') return;
+    if (!/^[A-Z0-9]+_\d+$/i.test(activeMatch.matchId)) return;
+    const hasSnapshots = activeMatch.mapEvents.some(
+      (e) => (e.participantSnapshots?.length || 0) > 0,
+    );
+    if (hasSnapshots) return;
+    if (enrichedMatchIdsRef.current.has(activeMatch.matchId)) return;
+
+    enrichedMatchIdsRef.current.add(activeMatch.matchId);
+    const { gameName, tagLine } = parseRiotId(riotId);
+    let cancelled = false;
+
+    fetch(
+      `/api/riot/match/${encodeURIComponent(activeMatch.matchId)}?gameName=${encodeURIComponent(
+        gameName,
+      )}&tagLine=${encodeURIComponent(tagLine)}&region=${encodeURIComponent(region)}`,
+    )
+      .then((r) => (r.ok ? r.json() : null))
+      .then((enriched: MatchRecord | null) => {
+        if (
+          cancelled ||
+          !enriched ||
+          !Array.isArray(enriched.mapEvents) ||
+          !enriched.mapEvents.some((e) => (e.participantSnapshots?.length || 0) > 0)
+        ) {
+          return;
+        }
+        onImportMatch(enriched);
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeMatch, riotId, region, onImportMatch]);
 
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
@@ -327,7 +479,7 @@ export function PostGameView({
               aria-label="Choisir une partie"
               className="px-3 py-2 text-xs font-medium rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B0E14] text-slate-900 dark:text-slate-100"
             >
-              {matches.map((m) => (
+              {(filteredMatches.length > 0 ? filteredMatches : matches).map((m) => (
                 <option key={m.matchId} value={m.matchId}>
                   {m.player.championName} ({m.player.win ? 'V' : 'D'} · {m.player.kills}/{m.player.deaths}/{m.player.assists})
                 </option>
@@ -406,6 +558,185 @@ export function PostGameView({
           </div>
         )}
 
+        {/* Panneau de filtres de l'historique archivé (Résultat, Rôle, Champion & Tri) */}
+        {matches.length > 1 && (
+          <div className="pt-3.5 border-t border-slate-200 dark:border-slate-800 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2.5">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700 dark:text-slate-300 mr-1">
+                  <SlidersHorizontal className="w-3.5 h-3.5 text-amber-500" aria-hidden="true" />
+                  <span>Filtrer l’historique</span>
+                </span>
+
+                {/* Filtre Résultat */}
+                <div className="flex items-center gap-0.5 p-0.5 rounded-lg bg-slate-100 dark:bg-[#0B0E14] border border-slate-200 dark:border-slate-800">
+                  {(
+                    [
+                      { id: 'ALL', label: 'Toutes' },
+                      { id: 'WIN', label: 'Victoires' },
+                      { id: 'LOSS', label: 'Défaites' },
+                    ] as Array<{ id: MatchResultFilter; label: string }>
+                  ).map((opt) => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => setResultFilter(opt.id)}
+                      className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors whitespace-nowrap ${
+                        resultFilter === opt.id
+                          ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-sm'
+                          : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Filtre Rôle */}
+                <div className="flex items-center gap-0.5 p-0.5 rounded-lg bg-slate-100 dark:bg-[#0B0E14] border border-slate-200 dark:border-slate-800 overflow-x-auto max-w-full">
+                  {(
+                    [
+                      { id: 'ALL', label: 'Tous rôles' },
+                      { id: 'TOP', label: 'Top' },
+                      { id: 'JUNGLE', label: 'Jungle' },
+                      { id: 'MID', label: 'Mid' },
+                      { id: 'ADC', label: 'ADC' },
+                      { id: 'SUPPORT', label: 'Support' },
+                    ] as Array<{ id: MatchRoleFilter; label: string }>
+                  ).map((opt) => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => setRoleFilter(opt.id)}
+                      className={`px-2 py-1 text-[11px] font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
+                        roleFilter === opt.id
+                          ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-sm'
+                          : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Filtre Champion */}
+                <select
+                  value={championFilter}
+                  onChange={(e) => setChampionFilter(e.target.value)}
+                  aria-label="Filtrer par champion"
+                  className="px-2.5 py-1 text-[11px] font-medium rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#0B0E14] text-slate-800 dark:text-slate-200"
+                >
+                  <option value="ALL">Tous les champions ({matches.length})</option>
+                  {championFilterOptions.map((c) => (
+                    <option key={c.name} value={c.name}>
+                      {c.name} ({c.count})
+                    </option>
+                  ))}
+                </select>
+
+                {/* Tri */}
+                <select
+                  value={sortBy}
+                  onChange={(e) => setSortBy(e.target.value as MatchSortMode)}
+                  aria-label="Trier les parties"
+                  className="px-2.5 py-1 text-[11px] font-medium rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#0B0E14] text-slate-800 dark:text-slate-200"
+                >
+                  <option value="RECENT">Tri : Plus récentes</option>
+                  <option value="KDA">Tri : Meilleur KDA</option>
+                  <option value="CS">Tri : Meilleur CS/min</option>
+                  <option value="DURATION">Tri : Durée</option>
+                </select>
+              </div>
+
+              <div className="flex items-center gap-2.5 shrink-0">
+                <span className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                  {filteredMatches.length}/{matches.length} parties
+                  {filteredMatches.length > 0 ? ` · ${filteredWinRate}% WR` : ''}
+                </span>
+                {hasActiveFilters && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setResultFilter('ALL');
+                      setRoleFilter('ALL');
+                      setChampionFilter('ALL');
+                      setSortBy('RECENT');
+                    }}
+                    className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium rounded-md border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:text-amber-600 dark:hover:text-amber-400 transition-colors whitespace-nowrap"
+                  >
+                    <RotateCcw className="w-3 h-3" aria-hidden="true" />
+                    <span>Réinitialiser</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {filteredMatches.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-slate-300 dark:border-slate-700 px-4 py-3 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400">
+                <span>Aucune partie archivée ne correspond à cette combinaison de filtres.</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setResultFilter('ALL');
+                    setRoleFilter('ALL');
+                    setChampionFilter('ALL');
+                    setSortBy('RECENT');
+                  }}
+                  className="text-xs font-semibold text-amber-600 dark:text-amber-400 hover:underline"
+                >
+                  Afficher toutes les parties
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 overflow-x-auto pb-1.5 thin-scrollbar">
+                {filteredMatches.slice(0, 20).map((m) => {
+                  const isSelected = m.matchId === activeMatch.matchId;
+                  const durMin = Math.round(m.gameDurationSec / 60);
+                  return (
+                    <button
+                      key={m.matchId}
+                      type="button"
+                      onClick={() => {
+                        onSelectMatchId(m.matchId);
+                        setAiReview(null);
+                      }}
+                      className={`group flex items-center gap-2.5 px-2.5 py-2 rounded-lg border text-left transition-all duration-150 hover:-translate-y-0.5 shrink-0 ${
+                        isSelected
+                          ? 'border-amber-500 bg-amber-500/10 shadow-sm'
+                          : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] hover:border-slate-300 dark:hover:border-slate-700'
+                      }`}
+                    >
+                      <SafeGameIcon
+                        src={getChampIcon(m.player.championName)}
+                        alt={m.player.championName}
+                        fallbackLabel={m.player.championName}
+                        sizeClass="w-7 h-7"
+                      />
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-900 dark:text-white whitespace-nowrap">
+                          <span>{m.player.championName}</span>
+                          <span
+                            className={`font-mono ${
+                              m.player.win
+                                ? 'text-emerald-600 dark:text-emerald-400'
+                                : 'text-rose-600 dark:text-rose-400'
+                            }`}
+                          >
+                            {m.player.win ? 'V' : 'D'}
+                          </span>
+                        </div>
+                        <div className="text-[10px] font-mono tabular-nums text-slate-500 dark:text-slate-400 whitespace-nowrap">
+                          {m.player.kills}/{m.player.deaths}/{m.player.assists} · {formatRoleShort(m.player.teamPosition)} · {durMin}m
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Sous-onglets de lecture : Vue d'ensemble vs Carte Tactique grand format */}
         <div
           role="tablist"
@@ -445,12 +776,21 @@ export function PostGameView({
 
           <span className="text-[11px] text-slate-500 dark:text-slate-400">
             {subTab === 'tactical-map'
-              ? 'Grand format : 22 tours, 40 buissons, positions des champions et diagnostic par mort.'
+              ? 'Grand format : 22 tours, 34 buissons, positions des champions et diagnostic par mort.'
               : 'Astuce : ouvrez « Carte Tactique & Morts » pour inspecter chaque mort en grand format.'}
           </span>
         </div>
       </section>
 
+      <AnimatePresence mode="wait">
+        <motion.div
+          key={`${subTab}-${activeMatch.matchId}`}
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -6 }}
+          transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+          className="space-y-6"
+        >
       {subTab === 'tactical-map' ? (
         <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5 sm:p-6 space-y-5">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
@@ -473,6 +813,9 @@ export function PostGameView({
 
           <SummonersRiftMap
             events={activeMatch.mapEvents}
+            archiveDeaths={archiveDeaths}
+            archiveMatchCount={matches.length}
+            champions={champions}
             patchVersion={patchVersion}
             playerTeamId={p.teamId}
             playerChampion={p.championName}
@@ -593,6 +936,9 @@ export function PostGameView({
           </div>
           <SummonersRiftMap
             events={activeMatch.mapEvents}
+            archiveDeaths={archiveDeaths}
+            archiveMatchCount={matches.length}
+            champions={champions}
             patchVersion={patchVersion}
             playerTeamId={p.teamId}
             playerChampion={p.championName}
@@ -897,6 +1243,8 @@ export function PostGameView({
       </section>
         </>
       )}
+        </motion.div>
+      </AnimatePresence>
     </div>
   );
 }

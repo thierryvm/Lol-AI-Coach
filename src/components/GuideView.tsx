@@ -151,9 +151,9 @@ const WORKFLOW_STAGES: WorkflowStage[] = [
           'Vos parties classées/normales/ARAM arrivent automatiquement. Pour l’Outil d’entraînement ou les parties privées (non exposées par Match-V5), utilisez l’import local LCU (/history) ou un Match ID.',
       },
       {
-        title: 'Inspecter la Carte Tactique & Morts (22 tours, 40 buissons, 10 champions)',
+        title: 'Inspecter la Carte Tactique & Morts (22 tours, 34 buissons, 10 champions)',
         detail:
-          'Cliquez sur « Ouvrir en grand format → » (ou l’onglet Carte Tactique & Morts) pour afficher les 22 tours avec leur portée, les 40 buissons, la position des 10 champions, les flèches d’approche et la répartition des dégâts subis.',
+          'Cliquez sur « Ouvrir en grand format → » (ou l’onglet Carte Tactique & Morts) pour afficher les 22 tours avec leur portée, les 34 buissons calibrés 2026, le portrait réel de votre champion et des 9 autres joueurs, les flèches d’approche et la répartition des dégâts subis.',
       },
       {
         title: 'Lancer le débriefing IA sur le match',
@@ -219,14 +219,14 @@ const FEATURE_CARDS: FeatureGuideCard[] = [
   {
     id: 'multi-combo',
     category: 'builds',
-    title: 'Calculateur Multi-Combinaisons (4 scénarios)',
-    where: 'Builds & Match-ups → Milieu de page',
+    title: 'Calculateur Multi-Combinaisons, Conseiller Draft & Carnet Match-ups',
+    where: 'Builds & Match-ups → En-tête Match-up & Milieu de page',
     summary:
-      'Évalue mathématiquement plusieurs centaines de combinaisons d’objets et de runes pour proposer 4 builds prêts à jouer : Équilibré, Je me fais dominer, En avance (Snowball) et Anti-Composition.',
+      'Suggère 3 contre-picks adaptés à votre rôle et à la composition ennemie (« Conseiller mon pick »), sauvegarde vos mémos personnels par duo de lane et calcule 4 builds prêts à jouer (Équilibré, Retard, Snowball, Anti-Comp).',
     howToUse:
-      'Cliquez sur « Charger ce build + runes » sur le scénario qui correspond à votre partie pour injecter immédiatement objets et runes dans l’Atelier.',
+      'Notez vos réflexes de lane dans le Mémo en haut, cliquez sur « Conseiller mon pick » en draft, ou cliquez sur « Charger ce build + runes » sur l’un des 4 scénarios.',
     targetTab: 'builds',
-    keywords: 'calculateur combinaisons dominé retard snowball anti soin runes',
+    keywords: 'calculateur combinaisons dominé retard snowball anti soin runes conseiller pick draft memo carnet matchup',
   },
   {
     id: 'atelier-sandbox',
@@ -268,37 +268,37 @@ const FEATURE_CARDS: FeatureGuideCard[] = [
     id: 'multi-ai-providers',
     category: 'ai',
     title: 'Multi-Fournisseurs IA & Choix du Modèle (Claude, OpenAI, Gemini, Local)',
-    where: 'Paramètres → Intelligence Artificielle',
+    where: 'Paramètres → Fournisseur IA, Abonnements & Choix du Modèle',
     summary:
       'Permet de brancher votre abonnement ou clé préférée : Google Gemini, Claude Code (CLI Anthropic), Anthropic Claude API, OpenAI (GPT / o-series), OpenRouter, Mistral, Groq, DeepSeek ou Ollama local.',
     howToUse:
-      'Choisissez votre fournisseur et le modèle exact dans Paramètres, puis cliquez sur « Tester la connexion IA ». Ce modèle pilote alors toutes les analyses de l’application.',
+      'Choisissez votre fournisseur et le modèle exact dans Paramètres, puis cliquez sur « Tester la connexion ». Ce modèle pilote alors toutes les analyses de l’application.',
     targetTab: 'settings',
     keywords: 'claude code anthropic openai chatgpt gemini mistral groq modele ia abonnement parametres',
   },
   {
     id: 'career-synthesis',
     category: 'ai',
-    title: 'Synthèse Globale IA (Multi-Matchs)',
-    where: 'Tableau de bord → Bloc Synthèse Globale',
+    title: 'ADN Gameplay, Champions recommandés & Synthèse Globale',
+    where: 'Tableau de bord → Juste sous les 4 KPIs principaux',
     summary:
-      'Analyse toute votre archive locale de matchs pour repérer les zones où vous mourez trop souvent seul, l’évolution de votre CS/vision et générer un plan concret sur 3 parties.',
+      'Analyse toutes vos parties archivées et vos maîtrises officielles Riot (CHAMPION-MASTERY-V4) pour définir votre profil de joueur, recommander des champions ou pépites oubliées, puis générer un plan IA sur 3 parties.',
     howToUse:
-      'Cliquez sur « Actualiser l’analyse » après avoir synchronisé vos dernières parties pour mettre à jour les recommandations long terme.',
+      'Filtrez les suggestions par rôle (Auto, Top, Jungle, Mid, ADC, Support) puis cliquez sur « Préparer le build » pour ouvrir le champion directement dans l’Optimiseur.',
     targetTab: 'dashboard',
-    keywords: 'synthese globale ia tendance historique positionnement tableau de bord',
+    keywords: 'adn gameplay recommandation champions nouveau champion decouvrir maitrise mastery synthese globale tableau de bord',
   },
   {
     id: 'postgame-map',
     category: 'live',
-    title: 'Carte Tactique & Morts (22 tours, 40 buissons, 10 champions)',
+    title: 'Carte Tactique, Morts & Heatmap Multi-Matchs',
     where: 'Analyse Post-Game → Vue d’ensemble ou onglet Carte Tactique & Morts',
     summary:
-      'Superpose les 22 tours officielles (avec portée ~775), les 40 lignes de buissons et la position exacte des 10 champions autour de chaque mort, avec flèches d’approche, rapport 1vX et dégâts subis.',
+      'Superpose les 22 tours officielles (portée ~775), les 34 buissons calibrés 2026, les portraits des champions autour de chaque mort et un calque « Heatmap » agrégeant toutes vos morts de l’archive pour repérer vos zones critiques récurrentes.',
     howToUse:
-      'Dans Analyse Post-Game, cliquez sur « Ouvrir en grand format → » puis sélectionnez une mort sur la carte ou avec les flèches ← / → pour lire pourquoi l’action a échoué.',
+      'Dans Analyse Post-Game, activez « Heatmap » pour voir vos zones les plus punitives sur l’ensemble de vos matchs, ou ouvrez la carte en grand format et parcourez vos morts avec ← / →.',
     targetTab: 'postgame',
-    keywords: 'post-game carte tactique morts tours portee buissons champions timeline courbes or cs',
+    keywords: 'post-game carte tactique morts heatmap zones critiques tours portee buissons champions timeline courbes or cs',
   },
   {
     id: 'live-bridge',
@@ -394,7 +394,7 @@ const TROUBLESHOOTING_ITEMS: TroubleshootingItem[] = [
     cause:
       'Par défaut, l’application démarre sur Google Gemini, mais vous pouvez piloter les analyses avec votre propre abonnement ou clé (Claude Code en local, Anthropic API, OpenAI, Mistral, Groq, etc.).',
     solution:
-      'Allez dans Paramètres → Intelligence Artificielle, sélectionnez votre fournisseur et le modèle souhaité, puis cliquez sur « Tester la connexion IA ». Note : la « Recherche de Builds U.GG/OP.GG » continue d’utiliser Google Search via Gemini si disponible.',
+      'Allez dans Paramètres → Fournisseur IA, Abonnements & Choix du Modèle, sélectionnez votre fournisseur et le modèle souhaité, puis cliquez sur « Tester la connexion ». En ligne (Cloud), utilisez une clé API via Settings > Secrets ; en local sur votre PC, `claude login` connecte votre abonnement Claude Code.',
     targetTab: 'settings',
     actionLabel: 'Configurer mon fournisseur IA',
   },
@@ -450,10 +450,10 @@ const RIOT_API_CAPABILITIES: RiotApiCapability[] = [
   {
     name: 'CHAMPION-MASTERY-V4',
     endpoint: 'champion-masteries/by-puuid/top',
-    status: 'opportunity',
-    usage: 'Non encore branché · Points et niveaux de maîtrise par champion',
+    status: 'active',
+    usage: 'Top 12 maîtrises officielles (niveaux et points par champion)',
     benefitForYou:
-      'Mettrait en avant vos champions les mieux maîtrisés dans l’Optimiseur et l’Encyclopédie.',
+      'Met en avant vos champions historiques et pépites oubliées directement dans « Champions recommandés » sur le Tableau de bord.',
   },
   {
     name: 'CHAMPION-V3 (Rotation gratuite)',

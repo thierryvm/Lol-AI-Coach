@@ -472,6 +472,12 @@ export interface SpectatorParticipant {
   keystoneId?: number;
 }
 
+export interface ChampionMasteryEntry {
+  championId: number;
+  championLevel: number;
+  championPoints: number;
+}
+
 export interface PlayerProfileResponse {
   source: 'Riot API Live' | 'Données de démonstration (RIOT_API_KEY requise pour le live)';
   riotId: string;
@@ -485,6 +491,7 @@ export interface PlayerProfileResponse {
     wins: number;
     losses: number;
   } | null;
+  championMasteries?: ChampionMasteryEntry[];
   activeGame: {
     inGame: boolean;
     gameId?: number;

@@ -1,8 +1,22 @@
-import { useEffect, useMemo, useState } from 'react';
-import type { MapCoordinateEvent, MapParticipantSnapshot } from '../engines/types.ts';
+import { useEffect, useId, useMemo, useState } from 'react';
+import type {
+  ChampionSummary,
+  MapCoordinateEvent,
+  MapParticipantSnapshot,
+} from '../engines/types.ts';
+
+export interface ArchiveDeathPoint {
+  x: number;
+  y: number;
+  zone: string;
+  isolated: boolean;
+}
 
 interface SummonersRiftMapProps {
   events: MapCoordinateEvent[];
+  archiveDeaths?: ArchiveDeathPoint[];
+  archiveMatchCount?: number;
+  champions?: ChampionSummary[];
   patchVersion: string;
   playerTeamId?: number;
   playerChampion?: string;
@@ -68,63 +82,57 @@ interface BushLine {
   width?: number;
 }
 
-// 40 lignes de buissons calibrées sur les couloirs praticables de map11.png (grille 300x300)
+// 34 buissons officiels de la Faille 2026 (post-refonte S14+) calibrés pixel par pixel sur map11.png (grille 300x300)
 const SUMMONERS_RIFT_BUSHES: BushLine[] = [
-  // Top Lane (3 buissons en courbe + 2 murs latéraux + 2 tri-bush)
-  { id: 'top-lane-1', label: 'Top Lane (buisson bas)', zone: 'lane', pts: [[23, 51], [24, 46], [25, 41]], width: 4.2 },
-  { id: 'top-lane-2', label: 'Top Lane (buisson milieu)', zone: 'lane', pts: [[34, 30], [39, 27]], width: 4.2 },
-  { id: 'top-lane-3', label: 'Top Lane (buisson haut)', zone: 'lane', pts: [[48, 25], [55, 22], [63, 20]], width: 4.2 },
-  { id: 'top-side-blue', label: 'Mur Top Bleu (T1/T2)', zone: 'lane', pts: [[18, 129], [18, 141]], width: 3.6 },
-  { id: 'top-side-red', label: 'Mur Top Rouge (T1/T2)', zone: 'lane', pts: [[129, 18], [142, 18]], width: 3.6 },
-  { id: 'top-tri-blue', label: 'Tri-bush Top Bleu', zone: 'jungle', pts: [[46, 67], [51, 67]], width: 4.2 },
-  { id: 'top-tri-red', label: 'Tri-bush Top Rouge', zone: 'jungle', pts: [[109, 45], [116, 45]], width: 4.2 },
+  // Top Lane (3 buissons en courbe + 2 tri-bush)
+  { id: 'top-lane-1', label: 'Top Lane (buisson bas)', zone: 'lane', pts: [[25, 56], [26, 50], [28, 43]], width: 4.2 },
+  { id: 'top-lane-2', label: 'Top Lane (buisson milieu)', zone: 'lane', pts: [[33, 31], [38, 28]], width: 4.2 },
+  { id: 'top-lane-3', label: 'Top Lane (buisson haut)', zone: 'lane', pts: [[49, 25], [56, 23], [63, 22]], width: 4.2 },
+  { id: 'top-tri-blue', label: 'Tri-bush Top Bleu', zone: 'jungle', pts: [[48, 91], [53, 95]], width: 4.2 },
+  { id: 'top-tri-red', label: 'Tri-bush Top Rouge', zone: 'jungle', pts: [[104, 46], [109, 48]], width: 4.2 },
 
-  // Rivière Top & Mid
-  { id: 'top-pixel', label: 'Pixel Bush Rivière Top', zone: 'river', pts: [[56, 70], [60, 74]], width: 4.0 },
-  { id: 'top-pit-back', label: 'Buisson Rivière Nashor', zone: 'river', pts: [[123, 93], [126, 99]], width: 4.0 },
-  { id: 'top-mid-river', label: 'Buisson Mid-Rivière Top', zone: 'river', pts: [[124, 134], [131, 127]], width: 4.2 },
-  { id: 'mid-wall-top', label: 'Buisson Mur Mid Top', zone: 'jungle', pts: [[95, 131], [100, 128]], width: 3.8 },
+  // Rivière Top & Mid (buissons S14–2026 recentrés dans la rivière)
+  { id: 'top-pixel', label: 'Pixel Bush Rivière Top', zone: 'river', pts: [[51, 66], [56, 70]], width: 4.0 },
+  { id: 'top-pit-back', label: 'Buisson derrière fosse Nashor', zone: 'jungle', pts: [[124, 97], [128, 102]], width: 4.0 },
+  { id: 'top-mid-river', label: 'Buisson Mid-Rivière Top', zone: 'river', pts: [[115, 121], [121, 115]], width: 4.2 },
 
   // Jungle Bleue (quart haut-gauche)
-  { id: 'blue-gromp', label: 'Buisson Gromp Bleu', zone: 'jungle', pts: [[47, 108], [51, 114]], width: 3.8 },
+  { id: 'blue-gromp', label: 'Buisson Gromp Bleu', zone: 'jungle', pts: [[45, 109], [49, 115]], width: 3.8 },
   { id: 'blue-buff-top', label: 'Buisson Buff Bleu', zone: 'jungle', pts: [[74, 125], [80, 127]], width: 4.0 },
-  { id: 'blue-wolves-top', label: 'Buisson Loups Bleu', zone: 'jungle', pts: [[68, 152], [69, 159]], width: 3.8 },
-  { id: 'blue-river-exit', label: 'Entrée Jungle Bleue Top', zone: 'jungle', pts: [[101, 116], [106, 118]], width: 3.8 },
+  { id: 'blue-wolves-top', label: 'Buisson Loups Bleu', zone: 'jungle', pts: [[67, 151], [68, 158]], width: 3.8 },
+  { id: 'blue-river-exit', label: 'Entrée Jungle Bleue Top', zone: 'jungle', pts: [[96, 125], [102, 125]], width: 3.8 },
 
   // Jungle Rouge (quart haut-droite)
-  { id: 'red-krugs-top', label: 'Buisson Krugs Rouge', zone: 'jungle', pts: [[169, 48], [175, 49]], width: 3.8 },
-  { id: 'red-behind-top', label: 'Buisson arrière Red Rouge', zone: 'jungle', pts: [[152, 62], [156, 62]], width: 3.8 },
-  { id: 'red-cross-top', label: 'Carrefour Red Rouge', zone: 'jungle', pts: [[132, 69], [142, 69]], width: 4.0 },
-  { id: 'red-buff-top', label: 'Buisson Red Buff Rouge', zone: 'jungle', pts: [[156, 92], [161, 96]], width: 4.0 },
-  { id: 'red-raptors-top', label: 'Buisson Corbins Rouge', zone: 'jungle', pts: [[165, 91], [167, 94]], width: 3.6 },
+  { id: 'red-krugs-top', label: 'Buisson Krugs Rouge', zone: 'jungle', pts: [[168, 49], [174, 51]], width: 3.8 },
+  { id: 'red-behind-top', label: 'Buisson arrière Red Rouge', zone: 'jungle', pts: [[148, 61], [154, 62]], width: 3.8 },
+  { id: 'red-cross-top', label: 'Carrefour Red Rouge', zone: 'jungle', pts: [[128, 66], [136, 66]], width: 4.0 },
+  { id: 'red-buff-top', label: 'Buisson Red Buff Rouge', zone: 'jungle', pts: [[156, 91], [160, 94]], width: 4.0 },
+  { id: 'red-raptors-top', label: 'Buisson Corbins Rouge', zone: 'jungle', pts: [[168, 95], [171, 100]], width: 3.8 },
 
-  // Bot Lane (3 buissons en courbe + 2 murs latéraux + 2 tri-bush)
-  { id: 'bot-lane-1', label: 'Bot Lane (buisson haut)', zone: 'lane', pts: [[277, 249], [276, 254], [275, 259]], width: 4.2 },
-  { id: 'bot-lane-2', label: 'Bot Lane (buisson milieu)', zone: 'lane', pts: [[266, 270], [261, 273]], width: 4.2 },
-  { id: 'bot-lane-3', label: 'Bot Lane (buisson bas)', zone: 'lane', pts: [[252, 275], [245, 278], [237, 280]], width: 4.2 },
-  { id: 'bot-side-red', label: 'Mur Bot Rouge (T1/T2)', zone: 'lane', pts: [[282, 171], [282, 159]], width: 3.6 },
-  { id: 'bot-side-blue', label: 'Mur Bot Bleu (T1/T2)', zone: 'lane', pts: [[171, 282], [158, 282]], width: 3.6 },
-  { id: 'bot-tri-red', label: 'Tri-bush Bot Rouge', zone: 'jungle', pts: [[248, 234], [245, 232]], width: 4.2 },
-  { id: 'bot-tri-blue', label: 'Tri-bush Bot Bleu', zone: 'jungle', pts: [[187, 257], [180, 257]], width: 4.2 },
+  // Bot Lane (3 buissons en courbe + 2 tri-bush)
+  { id: 'bot-lane-1', label: 'Bot Lane (buisson haut)', zone: 'lane', pts: [[274, 244], [273, 250], [271, 257]], width: 4.2 },
+  { id: 'bot-lane-2', label: 'Bot Lane (buisson milieu)', zone: 'lane', pts: [[266, 269], [261, 272]], width: 4.2 },
+  { id: 'bot-lane-3', label: 'Bot Lane (buisson bas)', zone: 'lane', pts: [[251, 275], [244, 277], [237, 278]], width: 4.2 },
+  { id: 'bot-tri-red', label: 'Tri-bush Bot Rouge', zone: 'jungle', pts: [[252, 209], [247, 205]], width: 4.2 },
+  { id: 'bot-tri-blue', label: 'Tri-bush Bot Bleu', zone: 'jungle', pts: [[193, 251], [188, 249]], width: 4.2 },
 
-  // Rivière Bot & Mid
-  { id: 'bot-pixel', label: 'Pixel Bush Rivière Bot', zone: 'river', pts: [[244, 230], [240, 226]], width: 4.0 },
-  { id: 'bot-pit-back', label: 'Buisson Rivière Dragon', zone: 'river', pts: [[177, 207], [174, 201]], width: 4.0 },
-  { id: 'bot-mid-river', label: 'Buisson Mid-Rivière Bot', zone: 'river', pts: [[176, 166], [169, 173]], width: 4.2 },
-  { id: 'mid-wall-bot', label: 'Buisson Mur Mid Bot', zone: 'jungle', pts: [[205, 169], [200, 172]], width: 3.8 },
+  // Rivière Bot & Mid (buissons S14–2026 recentrés dans la rivière)
+  { id: 'bot-pixel', label: 'Pixel Bush Rivière Bot', zone: 'river', pts: [[249, 234], [244, 230]], width: 4.0 },
+  { id: 'bot-pit-back', label: 'Buisson derrière fosse Dragon', zone: 'jungle', pts: [[176, 203], [172, 198]], width: 4.0 },
+  { id: 'bot-mid-river', label: 'Buisson Mid-Rivière Bot', zone: 'river', pts: [[185, 179], [179, 185]], width: 4.2 },
 
   // Jungle Rouge (quart bas-droite)
-  { id: 'red-gromp', label: 'Buisson Gromp Rouge', zone: 'jungle', pts: [[253, 192], [250, 188]], width: 3.8 },
+  { id: 'red-gromp', label: 'Buisson Gromp Rouge', zone: 'jungle', pts: [[255, 191], [251, 185]], width: 3.8 },
   { id: 'red-buff-bot', label: 'Buisson Buff Bleu (Rouge)', zone: 'jungle', pts: [[226, 175], [220, 173]], width: 4.0 },
-  { id: 'red-wolves-bot', label: 'Buisson Loups Rouge', zone: 'jungle', pts: [[232, 148], [231, 141]], width: 3.8 },
-  { id: 'red-river-exit', label: 'Entrée Jungle Rouge Bot', zone: 'jungle', pts: [[199, 184], [194, 182]], width: 3.8 },
+  { id: 'red-wolves-bot', label: 'Buisson Loups Rouge', zone: 'jungle', pts: [[233, 149], [232, 142]], width: 3.8 },
+  { id: 'red-river-exit', label: 'Entrée Jungle Rouge Bot', zone: 'jungle', pts: [[204, 175], [198, 175]], width: 3.8 },
 
   // Jungle Bleue (quart bas-gauche)
-  { id: 'blue-krugs-bot', label: 'Buisson Krugs Bleu', zone: 'jungle', pts: [[131, 252], [125, 251]], width: 3.8 },
-  { id: 'blue-behind-bot', label: 'Buisson arrière Red Bleu', zone: 'jungle', pts: [[148, 238], [144, 238]], width: 3.8 },
-  { id: 'blue-cross-bot', label: 'Carrefour Red Bleu', zone: 'jungle', pts: [[168, 231], [158, 231]], width: 4.0 },
-  { id: 'blue-buff-bot', label: 'Buisson Red Buff Bleu', zone: 'jungle', pts: [[144, 208], [139, 204]], width: 4.0 },
-  { id: 'blue-raptors-bot', label: 'Buisson Corbins Bleu', zone: 'jungle', pts: [[135, 209], [133, 206]], width: 3.6 },
+  { id: 'blue-krugs-bot', label: 'Buisson Krugs Bleu', zone: 'jungle', pts: [[132, 251], [126, 249]], width: 3.8 },
+  { id: 'blue-behind-bot', label: 'Buisson arrière Red Bleu', zone: 'jungle', pts: [[152, 239], [146, 238]], width: 3.8 },
+  { id: 'blue-cross-bot', label: 'Carrefour Red Bleu', zone: 'jungle', pts: [[172, 234], [164, 234]], width: 4.0 },
+  { id: 'blue-buff-bot', label: 'Buisson Red Buff Bleu', zone: 'jungle', pts: [[144, 209], [140, 206]], width: 4.0 },
+  { id: 'blue-raptors-bot', label: 'Buisson Corbins Bleu', zone: 'jungle', pts: [[132, 205], [129, 200]], width: 3.8 },
 ];
 
 function bushPointsToSvgPath(pts: Array<[number, number]>): string {
@@ -167,13 +175,46 @@ function formatRoleFr(pos: string): string {
   return '';
 }
 
+const CHAMPION_IMG_ALIASES: Record<string, string> = {
+  fiddlesticks: 'Fiddlesticks',
+  wukong: 'MonkeyKing',
+  monkeyking: 'MonkeyKing',
+  nunuwillump: 'Nunu',
+  nunu: 'Nunu',
+  renataglasc: 'Renata',
+  renata: 'Renata',
+  belveth: 'Belveth',
+  chogath: 'Chogath',
+  drmundo: 'DrMundo',
+  jarvaniv: 'JarvanIV',
+  kaisa: 'Kaisa',
+  khazix: 'Khazix',
+  kogmaw: 'KogMaw',
+  ksante: 'KSante',
+  leblanc: 'Leblanc',
+  leesin: 'LeeSin',
+  masteryi: 'MasterYi',
+  missfortune: 'MissFortune',
+  reksai: 'RekSai',
+  tahmkench: 'TahmKench',
+  twistedfate: 'TwistedFate',
+  velkoz: 'Velkoz',
+  xinzhao: 'XinZhao',
+  aurelionsol: 'AurelionSol',
+};
+
 function normalizeChampionImageKey(name: string): string {
-  if (name === 'FiddleSticks') return 'Fiddlesticks';
-  return name.replace(/[^a-zA-Z0-9]/g, '');
+  const cleaned = name.replace(/[^a-zA-Z0-9]/g, '');
+  const alias = CHAMPION_IMG_ALIASES[cleaned.toLowerCase()];
+  if (alias) return alias;
+  return cleaned;
 }
 
 export function SummonersRiftMap({
   events,
+  archiveDeaths = [],
+  archiveMatchCount = 0,
+  champions = [],
   patchVersion,
   playerTeamId = 100,
   playerChampion,
@@ -182,6 +223,7 @@ export function SummonersRiftMap({
   onSelectTimestampMs,
   onOpenExpanded,
 }: SummonersRiftMapProps) {
+  const svgUid = useId().replace(/:/g, '');
   const [filterType, setFilterType] = useState<'ALL' | 'DEATH' | 'KILL'>('ALL');
   const [internalSelectedEvent, setInternalSelectedEvent] = useState<MapCoordinateEvent | null>(
     events.find((e) => e.type === 'DEATH') || events[0] || null,
@@ -190,9 +232,42 @@ export function SummonersRiftMap({
   const [showTurrets, setShowTurrets] = useState(true);
   const [showTurretRanges, setShowTurretRanges] = useState(false);
   const [showChampionPositions, setShowChampionPositions] = useState(true);
+  const [showHeatmap, setShowHeatmap] = useState(false);
   const [hoveredFeature, setHoveredFeature] = useState<string | null>(null);
   const [hoveredTurretId, setHoveredTurretId] = useState<string | null>(null);
   const [mapImgFailed, setMapImgFailed] = useState(false);
+
+  const championIconLookup = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const c of champions) {
+      map.set(c.id.toLowerCase(), c.imageUrl);
+      map.set(c.name.toLowerCase(), c.imageUrl);
+      map.set(c.id.toLowerCase().replace(/[^a-z0-9]/g, ''), c.imageUrl);
+    }
+    return map;
+  }, [champions]);
+
+  const resolveChampionIconUrl = (rawName?: string): string | null => {
+    if (!rawName) return null;
+    const trimmed = rawName.trim();
+    if (
+      !trimmed ||
+      trimmed === 'Adversaire' ||
+      trimmed === 'Tourelle' ||
+      trimmed === 'Sbires / Monstres'
+    ) {
+      return null;
+    }
+    const direct =
+      championIconLookup.get(trimmed.toLowerCase()) ||
+      championIconLookup.get(trimmed.toLowerCase().replace(/[^a-z0-9]/g, ''));
+    if (direct) return direct;
+    const imgKey = normalizeChampionImageKey(trimmed);
+    if (!imgKey) return null;
+    return `https://ddragon.leagueoflegends.com/cdn/${patchVersion}/img/champion/${imgKey}.png`;
+  };
+
+  const playerIconUrl = resolveChampionIconUrl(playerChampion);
 
   const isExpanded = mode === 'expanded';
 
@@ -228,6 +303,16 @@ export function SummonersRiftMap({
   const mapUrl = `https://ddragon.leagueoflegends.com/cdn/${patchVersion}/img/map/map11.png`;
   const deathCount = events.filter((e) => e.type === 'DEATH').length;
   const killCount = events.filter((e) => e.type === 'KILL').length;
+
+  const heatmapHotspot = useMemo(() => {
+    if (archiveDeaths.length === 0) return null;
+    const zoneCounts = new Map<string, number>();
+    for (const d of archiveDeaths) {
+      zoneCounts.set(d.zone, (zoneCounts.get(d.zone) || 0) + 1);
+    }
+    const top = Array.from(zoneCounts.entries()).sort((a, b) => b[1] - a[1])[0];
+    return top ? { zone: top[0], count: top[1] } : null;
+  }, [archiveDeaths]);
 
   // Diagnostic géométrique + positionnel pour l'événement sélectionné
   const tacticalAnalysis = useMemo(() => {
@@ -409,12 +494,12 @@ export function SummonersRiftMap({
       <div className={`${isExpanded ? 'xl:col-span-7' : 'lg:col-span-6'} space-y-2.5`}>
         {/* Barre de calques sur une seule ligne propre */}
         <div
-          className={`${mapMaxWidthClass} mx-auto grid grid-cols-4 gap-1 p-1 rounded-lg bg-slate-100 dark:bg-[#0B0E14] border border-slate-200 dark:border-slate-800`}
+          className={`${mapMaxWidthClass} mx-auto grid grid-cols-5 gap-1 p-1 rounded-lg bg-slate-100 dark:bg-[#0B0E14] border border-slate-200 dark:border-slate-800`}
         >
           <button
             type="button"
             onClick={() => setShowBushes((prev) => !prev)}
-            className={`px-2 py-1.5 text-[11px] font-medium rounded-md transition-colors whitespace-nowrap truncate ${
+            className={`px-1.5 py-1.5 text-[11px] font-medium rounded-md transition-colors whitespace-nowrap truncate ${
               showBushes
                 ? 'bg-emerald-600/15 text-emerald-700 dark:text-emerald-300 font-semibold'
                 : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
@@ -425,7 +510,7 @@ export function SummonersRiftMap({
           <button
             type="button"
             onClick={() => setShowTurrets((prev) => !prev)}
-            className={`px-2 py-1.5 text-[11px] font-medium rounded-md transition-colors whitespace-nowrap truncate ${
+            className={`px-1.5 py-1.5 text-[11px] font-medium rounded-md transition-colors whitespace-nowrap truncate ${
               showTurrets
                 ? 'bg-sky-600/15 text-sky-700 dark:text-sky-300 font-semibold'
                 : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
@@ -437,7 +522,7 @@ export function SummonersRiftMap({
             type="button"
             disabled={!showTurrets}
             onClick={() => setShowTurretRanges((prev) => !prev)}
-            className={`px-2 py-1.5 text-[11px] font-medium rounded-md transition-colors whitespace-nowrap truncate disabled:opacity-40 ${
+            className={`px-1.5 py-1.5 text-[11px] font-medium rounded-md transition-colors whitespace-nowrap truncate disabled:opacity-40 ${
               showTurretRanges && showTurrets
                 ? 'bg-amber-500/20 text-amber-700 dark:text-amber-300 font-semibold'
                 : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
@@ -448,13 +533,30 @@ export function SummonersRiftMap({
           <button
             type="button"
             onClick={() => setShowChampionPositions((prev) => !prev)}
-            className={`px-2 py-1.5 text-[11px] font-medium rounded-md transition-colors whitespace-nowrap truncate ${
+            className={`px-1.5 py-1.5 text-[11px] font-medium rounded-md transition-colors whitespace-nowrap truncate ${
               showChampionPositions
                 ? 'bg-rose-600/15 text-rose-700 dark:text-rose-300 font-semibold'
                 : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
             }`}
           >
             Champions
+          </button>
+          <button
+            type="button"
+            disabled={archiveDeaths.length === 0}
+            onClick={() => setShowHeatmap((prev) => !prev)}
+            title={
+              archiveDeaths.length > 0
+                ? `Superposer les ${archiveDeaths.length} morts de vos ${archiveMatchCount} parties archivées`
+                : 'Synchronisez vos matchs pour activer la carte thermique'
+            }
+            className={`px-1.5 py-1.5 text-[11px] font-medium rounded-md transition-colors whitespace-nowrap truncate disabled:opacity-40 ${
+              showHeatmap && archiveDeaths.length > 0
+                ? 'bg-orange-500/20 text-orange-700 dark:text-orange-300 font-semibold'
+                : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'
+            }`}
+          >
+            Heatmap
           </button>
         </div>
 
@@ -494,7 +596,27 @@ export function SummonersRiftMap({
               >
                 <path d="M 0 1 L 8 5 L 0 9 z" fill="#FB7185" />
               </marker>
+              <radialGradient id="death-heat-grad" cx="50%" cy="50%" r="50%">
+                <stop offset="0%" stopColor="#F97316" stopOpacity="0.46" />
+                <stop offset="55%" stopColor="#EF4444" stopOpacity="0.22" />
+                <stop offset="100%" stopColor="#EF4444" stopOpacity="0" />
+              </radialGradient>
             </defs>
+
+            {/* Calque 0 : Carte thermique multi-matchs (zones de mort récurrentes) */}
+            {showHeatmap && archiveDeaths.length > 0 && (
+              <g aria-label="Carte thermique multi-matchs" className="pointer-events-none">
+                {archiveDeaths.map((d, i) => (
+                  <circle
+                    key={`heat-${i}`}
+                    cx={toEventX(d.x)}
+                    cy={toEventY(d.y)}
+                    r={d.isolated ? 16 : 12}
+                    fill="url(#death-heat-grad)"
+                  />
+                ))}
+              </g>
+            )}
 
             {/* Labels des bases */}
             <text
@@ -513,7 +635,7 @@ export function SummonersRiftMap({
               BASE ROUGE
             </text>
 
-            {/* Calque 1 : Lignes de buissons (40 buissons vérifiés sur la Faille) */}
+            {/* Calque 1 : Lignes de buissons (34 buissons officiels 2026 vérifiés sur map11.png) */}
             {showBushes && (
               <g aria-label="Lignes de buissons">
                 {SUMMONERS_RIFT_BUSHES.map((bush) => {
@@ -680,17 +802,37 @@ export function SummonersRiftMap({
                       );
                     })}
 
-                  {/* Jetons des 9 autres champions (hors joueur déjà affiché par le marqueur principal) */}
+                  {/* Jetons des 9 autres champions (hors joueur déjà affiché par son portrait en Calque 6) */}
                   {tacticalAnalysis.snapshots
                     .filter((s) => !s.isPlayer)
                     .map((snap) => {
-                      const sx = toEventX(snap.x);
-                      const sy = toEventY(snap.y);
+                      const rawSx = toEventX(snap.x);
+                      const rawSy = toEventY(snap.y);
+                      const selX = toEventX(selectedEvent.x);
+                      const selY = toEventY(selectedEvent.y);
+                      const distToPlayer = Math.hypot(rawSx - selX, rawSy - selY);
+                      // Léger décalage visuel si l'attaquant est collé pile sur le portrait du joueur
+                      let sx = rawSx;
+                      let sy = rawSy;
+                      if (distToPlayer < 12) {
+                        const angle =
+                          distToPlayer > 0.5
+                            ? Math.atan2(rawSy - selY, rawSx - selX)
+                            : (snap.participantId % 5) * 0.9 - 1.2;
+                        sx = Math.max(10, Math.min(290, selX + Math.cos(angle) * 13));
+                        sy = Math.max(10, Math.min(290, selY + Math.sin(angle) * 13));
+                      }
+
                       const isThreat = snap.isKiller || snap.isAssister;
-                      const radius = isThreat ? (isExpanded ? 7.5 : 6.5) : isExpanded ? 6 : 5.2;
-                      const clipId = `champ-clip-${snap.participantId}`;
-                      const imgKey = normalizeChampionImageKey(snap.championName);
-                      const imgUrl = `https://ddragon.leagueoflegends.com/cdn/${patchVersion}/img/champion/${imgKey}.png`;
+                      const radius = isThreat
+                        ? isExpanded
+                          ? 8.5
+                          : 7.2
+                        : isExpanded
+                          ? 6.8
+                          : 5.8;
+                      const clipId = `${svgUid}-snap-${snap.participantId}`;
+                      const imgUrl = resolveChampionIconUrl(snap.championName);
                       const roleTag = formatRoleFr(snap.teamPosition);
                       const tooltip = `${snap.championName}${roleTag ? ` (${roleTag})` : ''} · ${
                         snap.isKiller
@@ -718,17 +860,17 @@ export function SummonersRiftMap({
                           <circle
                             cx={sx}
                             cy={sy}
-                            r={radius + (isThreat ? 1.5 : 0.6)}
+                            r={radius + (isThreat ? 1.5 : 0.7)}
                             fill={
                               snap.isAlly
                                 ? '#0284C7'
                                 : isThreat
                                   ? '#E11D48'
-                                  : '#475569'
+                                  : '#334155'
                             }
                             stroke={isThreat ? '#FDE047' : snap.isAlly ? '#7DD3FC' : '#FDA4AF'}
-                            strokeWidth={isThreat ? 1.4 : 1}
-                            opacity={snap.isAlly || isThreat ? 0.96 : 0.72}
+                            strokeWidth={isThreat ? 1.5 : 1}
+                            opacity={snap.isAlly || isThreat ? 0.98 : 0.78}
                           />
                           <text
                             x={sx}
@@ -738,33 +880,57 @@ export function SummonersRiftMap({
                           >
                             {snap.championName.slice(0, 2).toUpperCase()}
                           </text>
-                          <image
-                            href={imgUrl}
-                            x={sx - radius + 0.8}
-                            y={sy - radius + 0.8}
-                            width={(radius - 0.8) * 2}
-                            height={(radius - 0.8) * 2}
-                            clipPath={`url(#${clipId})`}
-                            preserveAspectRatio="xMidYMid slice"
-                            opacity={snap.isAlly || isThreat ? 0.98 : 0.75}
-                          />
+                          {imgUrl && (
+                            <image
+                              href={imgUrl}
+                              x={sx - radius + 0.8}
+                              y={sy - radius + 0.8}
+                              width={(radius - 0.8) * 2}
+                              height={(radius - 0.8) * 2}
+                              clipPath={`url(#${clipId})`}
+                              preserveAspectRatio="xMidYMid slice"
+                              opacity={snap.isAlly || isThreat ? 0.98 : 0.82}
+                            />
+                          )}
                         </g>
                       );
                     })}
                 </g>
               )}
 
-            {/* Calque 6 : Événements du joueur (Morts × et Éliminations +) */}
+            {/* Calque 6 : Événements du joueur (Portrait réel du champion joué + badge × / +) */}
             {visibleEvents.map((ev, idx) => {
               const cx = toEventX(ev.x);
               const cy = toEventY(ev.y);
               const isSelected = selectedEvent === ev;
               const isDeath = ev.type === 'DEATH';
+              const showPortrait = showChampionPositions && Boolean(playerIconUrl);
+              const radius = showPortrait
+                ? isSelected
+                  ? isExpanded
+                    ? 10.2
+                    : 9.2
+                  : isExpanded
+                    ? 7.2
+                    : 6.4
+                : isSelected
+                  ? 7.5
+                  : 6.2;
+              const playerClipId = `${svgUid}-player-ev-${idx}`;
+              const badgeX = cx + radius * 0.72;
+              const badgeY = cy - radius * 0.72;
+              const badgeR = isSelected ? 3.5 : 2.9;
 
               return (
                 <g
                   key={`${ev.timestampMs}-${idx}`}
                   onClick={() => handleSelectEvent(ev)}
+                  onMouseEnter={() =>
+                    setHoveredFeature(
+                      `${playerChampion || 'Vous'} · ${isDeath ? 'Mort' : 'Élimination'} (${ev.minute} min)`,
+                    )
+                  }
+                  onMouseLeave={() => setHoveredFeature(null)}
                   className="cursor-pointer"
                 >
                   <title>{ev.contextNote}</title>
@@ -772,33 +938,89 @@ export function SummonersRiftMap({
                     <circle
                       cx={cx}
                       cy={cy}
-                      r="12.5"
+                      r={radius + 4.2}
                       className={
                         isDeath
-                          ? 'fill-rose-500/35 stroke-white'
-                          : 'fill-emerald-500/35 stroke-white'
+                          ? 'fill-rose-500/30 stroke-white'
+                          : 'fill-emerald-500/30 stroke-white'
                       }
                       strokeWidth="1.6"
                     />
                   )}
-                  <circle
-                    cx={cx}
-                    cy={cy}
-                    r={isSelected ? 7.5 : 6.2}
-                    className={
-                      isDeath ? 'fill-rose-600 stroke-white' : 'fill-emerald-600 stroke-white'
-                    }
-                    strokeWidth="1.5"
-                    opacity={selectedEvent && !isSelected && isExpanded ? 0.68 : 1}
-                  />
-                  <text
-                    x={cx}
-                    y={cy + 2.8}
-                    textAnchor="middle"
-                    className="fill-white text-[8.5px] font-mono font-bold pointer-events-none"
-                  >
-                    {isDeath ? '×' : '+'}
-                  </text>
+                  {showPortrait && playerIconUrl ? (
+                    <>
+                      <defs>
+                        <clipPath id={playerClipId}>
+                          <circle cx={cx} cy={cy} r={radius - 0.9} />
+                        </clipPath>
+                      </defs>
+                      <circle
+                        cx={cx}
+                        cy={cy}
+                        r={radius}
+                        fill={isDeath ? '#9F1239' : '#065F46'}
+                        stroke={isSelected ? '#FFFFFF' : isDeath ? '#FB7185' : '#34D399'}
+                        strokeWidth={isSelected ? 1.8 : 1.35}
+                        opacity={selectedEvent && !isSelected ? 0.85 : 1}
+                      />
+                      <text
+                        x={cx}
+                        y={cy + 2.2}
+                        textAnchor="middle"
+                        className="fill-white text-[5.5px] font-mono font-bold pointer-events-none"
+                      >
+                        {(playerChampion || 'V').slice(0, 2).toUpperCase()}
+                      </text>
+                      <image
+                        href={playerIconUrl}
+                        x={cx - radius + 0.9}
+                        y={cy - radius + 0.9}
+                        width={(radius - 0.9) * 2}
+                        height={(radius - 0.9) * 2}
+                        clipPath={`url(#${playerClipId})`}
+                        preserveAspectRatio="xMidYMid slice"
+                        opacity={selectedEvent && !isSelected ? 0.88 : 1}
+                      />
+                      {/* Pastille compacte Mort (×) ou Kill (+) en coin pour garder le visage lisible */}
+                      <circle
+                        cx={badgeX}
+                        cy={badgeY}
+                        r={badgeR}
+                        fill={isDeath ? '#E11D48' : '#10B981'}
+                        stroke="#FFFFFF"
+                        strokeWidth="0.9"
+                      />
+                      <text
+                        x={badgeX}
+                        y={badgeY + 1.8}
+                        textAnchor="middle"
+                        className="fill-white text-[5.5px] font-mono font-bold pointer-events-none"
+                      >
+                        {isDeath ? '×' : '+'}
+                      </text>
+                    </>
+                  ) : (
+                    <>
+                      <circle
+                        cx={cx}
+                        cy={cy}
+                        r={radius}
+                        className={
+                          isDeath ? 'fill-rose-600 stroke-white' : 'fill-emerald-600 stroke-white'
+                        }
+                        strokeWidth="1.5"
+                        opacity={selectedEvent && !isSelected && isExpanded ? 0.68 : 1}
+                      />
+                      <text
+                        x={cx}
+                        y={cy + 2.8}
+                        textAnchor="middle"
+                        className="fill-white text-[8.5px] font-mono font-bold pointer-events-none"
+                      >
+                        {isDeath ? '×' : '+'}
+                      </text>
+                    </>
+                  )}
                 </g>
               );
             })}
@@ -824,6 +1046,16 @@ export function SummonersRiftMap({
             </span>
             {showChampionPositions && (
               <>
+                {playerIconUrl && (
+                  <span className="inline-flex items-center gap-1 text-slate-700 dark:text-slate-200 font-medium">
+                    <img
+                      src={playerIconUrl}
+                      alt={playerChampion || 'Vous'}
+                      className="w-3.5 h-3.5 rounded-full ring-1 ring-rose-400 object-cover"
+                    />
+                    {playerChampion || 'Vous'}
+                  </span>
+                )}
                 <span className="inline-flex items-center gap-1">
                   <span className="w-2 h-2 rounded-sm bg-rose-500 ring-1 ring-yellow-300 inline-block" aria-hidden="true" />
                   Attaquants
@@ -835,11 +1067,15 @@ export function SummonersRiftMap({
               </>
             )}
           </div>
-          {hoveredFeature && (
+          {hoveredFeature ? (
             <span className="text-amber-600 dark:text-amber-400 font-medium truncate max-w-[240px]">
               {hoveredFeature}
             </span>
-          )}
+          ) : showHeatmap && heatmapHotspot ? (
+            <span className="text-orange-600 dark:text-orange-400 font-mono tabular-nums truncate">
+              Heatmap ({archiveDeaths.length} morts / {archiveMatchCount}m) · Zone critique : {heatmapHotspot.zone} ({heatmapHotspot.count})
+            </span>
+          ) : null}
         </div>
       </div>
 
@@ -897,9 +1133,19 @@ export function SummonersRiftMap({
                 )}
               </div>
 
-              <p className="text-xs text-slate-700 dark:text-slate-200 leading-relaxed">
-                {selectedEvent.contextNote}
-              </p>
+              <div className="flex items-center gap-2">
+                {selectedEvent.type === 'DEATH' &&
+                  resolveChampionIconUrl(selectedEvent.killerChampion) && (
+                    <img
+                      src={resolveChampionIconUrl(selectedEvent.killerChampion)!}
+                      alt={selectedEvent.killerChampion || 'Attaquant'}
+                      className="w-5 h-5 rounded-full ring-1 ring-rose-500/70 object-cover shrink-0"
+                    />
+                  )}
+                <p className="text-xs text-slate-700 dark:text-slate-200 leading-relaxed">
+                  {selectedEvent.contextNote}
+                </p>
+              </div>
 
               <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
                 <span>{tacticalAnalysis.territory}</span>
@@ -1016,10 +1262,18 @@ export function SummonersRiftMap({
                       {selectedEvent.damageBreakdown.map((dmg, i) => {
                         const maxTotal = selectedEvent.damageBreakdown![0].totalDamage || 1;
                         const pct = Math.min(100, Math.round((dmg.totalDamage / maxTotal) * 100));
+                        const dmgIcon = resolveChampionIconUrl(dmg.sourceName);
                         return (
                           <div key={`${dmg.sourceName}-${i}`} className="text-[11px]">
                             <div className="flex items-center justify-between gap-2">
-                              <span className="font-medium text-slate-800 dark:text-slate-200">
+                              <span className="inline-flex items-center gap-1.5 font-medium text-slate-800 dark:text-slate-200">
+                                {dmgIcon && (
+                                  <img
+                                    src={dmgIcon}
+                                    alt={dmg.sourceName}
+                                    className="w-4 h-4 rounded-full object-cover shrink-0"
+                                  />
+                                )}
                                 {dmg.sourceName}
                               </span>
                               <span className="font-mono tabular-nums text-slate-500 dark:text-slate-400">
@@ -1098,7 +1352,7 @@ export function SummonersRiftMap({
             <div
               className={`${
                 isExpanded ? 'max-h-[290px]' : 'max-h-[245px]'
-              } overflow-y-auto divide-y divide-slate-200 dark:divide-slate-800 border border-slate-200 dark:border-slate-800 rounded-xl`}
+              } overflow-y-auto thin-scrollbar divide-y divide-slate-200 dark:divide-slate-800 border border-slate-200 dark:border-slate-800 rounded-xl`}
             >
               {visibleEvents.map((ev, idx) => {
                 const active = selectedEvent === ev;

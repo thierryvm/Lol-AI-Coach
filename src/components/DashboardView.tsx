@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { motion } from 'motion/react';
 import {
   AlertTriangle,
   ArrowDownRight,
@@ -25,7 +26,15 @@ import {
   TrendingUp,
   X,
 } from 'lucide-react';
+import { DuoSynergyAnalysis } from './DuoSynergyAnalysis.tsx';
+import { SafeGameIcon } from './SafeGameIcon.tsx';
+import { TopChampionsChart } from './TopChampionsChart.tsx';
 import { postCoachJson } from '../engines/aiConfig.ts';
+import {
+  analyzePlayerPlaystyleAndRecommendChampions,
+  formatRecommenderRoleLabel,
+  type RecommenderRoleFilter,
+} from '../engines/championRecommender.ts';
 import { buildCareerSynthesisDataset } from '../engines/postGameEngine.ts';
 import type {
   CareerAiSynthesis,
@@ -171,7 +180,6 @@ function hydrateCareerSynthesis(
     threeGameActionPlan: rawPlan.length >= 3 ? rawPlan.slice(0, 3) : [...rawPlan, ...defaultPlan].slice(0, 3),
   };
 }
-import { SafeGameIcon } from './SafeGameIcon.tsx';
 import {
   downloadWindowsBridgeBat,
   formatMatchQueueLabel,
@@ -194,7 +202,7 @@ interface DashboardViewProps {
   onDismissError: () => void;
   onMergeLocalMatches: (matches: MatchRecord[]) => number;
   onSelectMatchForReview: (match: MatchRecord) => void;
-  onNavigateToBuilds: (championName?: string) => void;
+  onNavigateToBuilds: (championName?: string, duoChampionName?: string) => void;
   onNavigateToLive: () => void;
   onNavigateToSettings?: () => void;
   careerSynthesis?: CareerAiSynthesis | null;
@@ -232,10 +240,24 @@ export function DashboardView({
   const [copiedHistCmd, setCopiedHistCmd] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
+  const [recRoleFilter, setRecRoleFilter] = useState<RecommenderRoleFilter>('AUTO');
+  const [includePlayedInRecs, setIncludePlayedInRecs] = useState(false);
 
   const careerDataset = useMemo(
     () => buildCareerSynthesisDataset(profile?.matches || [], profile?.tendencies),
     [profile?.matches, profile?.tendencies],
+  );
+
+  const championFit = useMemo(
+    () =>
+      analyzePlayerPlaystyleAndRecommendChampions(
+        profile?.matches || [],
+        champions,
+        recRoleFilter,
+        includePlayedInRecs,
+        profile?.championMasteries || [],
+      ),
+    [profile?.matches, profile?.championMasteries, champions, recRoleFilter, includePlayedInRecs],
   );
 
   const hydratedSynthesis = useMemo(
@@ -517,7 +539,12 @@ export function DashboardView({
 
       {/* Grille des 4 KPIs principaux */}
       <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5">
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.2, delay: 0, ease: [0.16, 1, 0.3, 1] }}
+          className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5 transition-transform duration-200 hover:-translate-y-0.5 hover:border-slate-300 dark:hover:border-slate-700"
+        >
           <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
             <span>Taux de victoire récent</span>
             <TrendingUp className="w-4 h-4 text-amber-500" aria-hidden="true" />
@@ -528,9 +555,14 @@ export function DashboardView({
           <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
             Calculé sur {tendencies.gamesAnalyzed} parties analysées
           </p>
-        </div>
+        </motion.div>
 
-        <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5">
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.2, delay: 0.04, ease: [0.16, 1, 0.3, 1] }}
+          className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5 transition-transform duration-200 hover:-translate-y-0.5 hover:border-slate-300 dark:hover:border-slate-700"
+        >
           <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
             <span>Rythme de farming moyen</span>
             <Crosshair className="w-4 h-4 text-sky-500" aria-hidden="true" />
@@ -541,9 +573,14 @@ export function DashboardView({
           <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
             Cible recommandée : 7.0+ CS/min
           </p>
-        </div>
+        </motion.div>
 
-        <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5">
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.2, delay: 0.08, ease: [0.16, 1, 0.3, 1] }}
+          className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5 transition-transform duration-200 hover:-translate-y-0.5 hover:border-slate-300 dark:hover:border-slate-700"
+        >
           <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
             <span>Morts isolées / sur-extension</span>
             <ShieldAlert className="w-4 h-4 text-rose-500" aria-hidden="true" />
@@ -554,9 +591,14 @@ export function DashboardView({
           <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
             Moyenne de {tendencies.avgDeaths} morts par match
           </p>
-        </div>
+        </motion.div>
 
-        <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5">
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.2, delay: 0.12, ease: [0.16, 1, 0.3, 1] }}
+          className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5 transition-transform duration-200 hover:-translate-y-0.5 hover:border-slate-300 dark:hover:border-slate-700"
+        >
           <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
             <span>Contrôle de vision</span>
             <Eye className="w-4 h-4 text-emerald-500" aria-hidden="true" />
@@ -567,8 +609,150 @@ export function DashboardView({
           <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
             {Math.round(tendencies.preObjectiveDeathRate * 100)}% de morts avant objectif
           </p>
-        </div>
+        </motion.div>
       </section>
+
+      {/* ADN Gameplay & Champions recommandés pour vous (Section visible dès les 4 KPIs) */}
+      {championFit.recommendations.length > 0 && (
+        <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-6 space-y-4">
+          <div className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-3">
+            <div className="space-y-0.5">
+              <h2 className="text-base font-semibold text-slate-900 dark:text-white flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                <Sparkles className="w-4 h-4 text-amber-500 shrink-0" aria-hidden="true" />
+                <span>Champions recommandés pour votre gameplay</span>
+                <span className="text-slate-400" aria-hidden="true">·</span>
+                <span className="text-sm font-semibold text-amber-600 dark:text-amber-400">
+                  {championFit.dna.archetypeTitle}
+                </span>
+              </h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                {championFit.dna.archetypeSummary}{' '}
+                <span className="font-mono tabular-nums text-slate-600 dark:text-slate-300">
+                  ({championFit.dna.gamesAnalyzed} parties · {championFit.dna.assistSharePct}% jeu collectif ·{' '}
+                  {championFit.dna.preferredRange} · {championFit.dna.preferredDamage})
+                </span>
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              <div className="flex items-center gap-0.5 p-0.5 rounded-lg bg-slate-100 dark:bg-[#0B0E14] border border-slate-200 dark:border-slate-800">
+                {(
+                  [
+                    { id: 'AUTO', label: `Auto (${formatRecommenderRoleLabel(championFit.dna.dominantRole)})` },
+                    { id: 'TOP', label: 'Top' },
+                    { id: 'JUNGLE', label: 'Jungle' },
+                    { id: 'MID', label: 'Mid' },
+                    { id: 'ADC', label: 'ADC' },
+                    { id: 'SUPPORT', label: 'Support' },
+                  ] as Array<{ id: RecommenderRoleFilter; label: string }>
+                ).map((opt) => (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => setRecRoleFilter(opt.id)}
+                    className={`px-2 py-1 text-[11px] font-medium rounded-md transition-colors whitespace-nowrap ${
+                      recRoleFilter === opt.id
+                        ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-sm'
+                        : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setIncludePlayedInRecs((prev) => !prev)}
+                className={`px-2.5 py-1 text-[11px] font-medium rounded-lg border transition-colors whitespace-nowrap ${
+                  includePlayedInRecs
+                    ? 'border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+                    : 'border-slate-200 dark:border-slate-800 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                {includePlayedInRecs ? 'Tout le catalogue' : 'Nouveaux à découvrir'}
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
+            {championFit.recommendations.map((rec) => (
+              <div
+                key={rec.champion.id}
+                className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] p-3.5 flex flex-col justify-between gap-2.5"
+              >
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <SafeGameIcon
+                        src={rec.champion.imageUrl}
+                        alt={rec.champion.name}
+                        fallbackLabel={rec.champion.name}
+                        sizeClass="w-9 h-9"
+                      />
+                      <div className="min-w-0">
+                        <div className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                          {rec.champion.name}
+                        </div>
+                        <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                          {formatRecommenderRoleLabel(rec.recommendedRole)} · {rec.styleLabel}
+                        </div>
+                      </div>
+                    </div>
+                    <span className="text-xs font-mono tabular-nums font-bold text-emerald-600 dark:text-emerald-400 shrink-0">
+                      {rec.matchScore}%
+                    </span>
+                  </div>
+
+                  <p className="text-[11px] text-slate-700 dark:text-slate-300 leading-relaxed">
+                    {rec.whyItFits}
+                  </p>
+                  <p className="text-[11px] text-sky-700 dark:text-sky-400 leading-snug">
+                    Atout : {rec.gameplayBenefit}
+                  </p>
+                </div>
+
+                <div className="pt-2 border-t border-slate-200/70 dark:border-slate-800 flex items-center justify-between gap-2">
+                  <span className="text-[10px] font-mono tabular-nums text-slate-500 dark:text-slate-400 truncate">
+                    {rec.masteryLevel && rec.masteryPoints
+                      ? `Maîtrise ${rec.masteryLevel} · ${Math.round(rec.masteryPoints / 1000)}k`
+                      : rec.alreadyPlayedGames > 0
+                        ? `${rec.alreadyPlayedGames} partie(s) récente(s)`
+                        : 'Nouveau pour vous'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => onNavigateToBuilds(rec.champion.name)}
+                    className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-600 dark:text-amber-400 hover:underline whitespace-nowrap shrink-0"
+                  >
+                    <span>Préparer le build</span>
+                    <ArrowRight className="w-3 h-3" aria-hidden="true" />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* Visualisation Recharts : Champions les plus joués (Winrate & KDA) */}
+      <TopChampionsChart
+        championStats={tendencies.championStats}
+        matches={matches}
+        getChampIcon={getChampIcon}
+        onSelectChampion={(championName) => onNavigateToBuilds(championName)}
+      />
+
+      {/* Analyse de synergie : Champions les plus joués vs Meilleurs duos alliés */}
+      <DuoSynergyAnalysis
+        matches={matches}
+        championStats={tendencies.championStats}
+        champions={champions}
+        getChampIcon={getChampIcon}
+        onSelectDuoForBuild={(championName, duoChampionName) =>
+          onNavigateToBuilds(championName, duoChampionName)
+        }
+      />
 
       {/* Coaching Proactif Carrière (Ensemble des parties analysées) */}
       {(tendencies.proactiveAlerts?.length || tendencies.championStats?.length || tendencies.trend) && (

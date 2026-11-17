@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Ban,
+  BookOpen,
   Brain,
   Check,
   CheckCircle2,
@@ -30,6 +31,7 @@ import {
 } from 'lucide-react';
 import { postCoachJson } from '../engines/aiConfig.ts';
 import { computeBuildRecommendation } from '../engines/buildEngine.ts';
+import { recommendCounterPicksForEnemyComp } from '../engines/championRecommender.ts';
 import { computeStatAtLevel, isJunglerChampion } from '../engines/championEngine.ts';
 import {
   computeFullChampionBuildStats,
@@ -76,6 +78,7 @@ interface BuildOptimizerViewProps {
   ddragon: DDragonBootstrap;
   tendencies?: PlayerTendencies;
   initialChampionName?: string;
+  initialDuoChampionName?: string;
   initialRole?: Role;
   riotId: string;
   region: RiotPlatform;
@@ -337,6 +340,7 @@ export function BuildOptimizerView({
   ddragon,
   tendencies,
   initialChampionName,
+  initialDuoChampionName,
   initialRole = 'SUPPORT',
   riotId,
   region,
@@ -358,7 +362,9 @@ export function BuildOptimizerView({
   const [role, setRole] = useState<Role>(initialRole);
   const [gameMode, setGameMode] = useState<GameModeContext>('CLASSIC');
   const [scenario, setScenario] = useState<GameScenario>('balanced');
-  const [duoPartnerId, setDuoPartnerId] = useState<string | null>('Jinx');
+  const [duoPartnerId, setDuoPartnerId] = useState<string | null>(() =>
+    initialDuoChampionName ? findChamp(initialDuoChampionName).id : 'Jinx',
+  );
   const [enemyIds, setEnemyIds] = useState<string[]>(['Aatrox', 'Viego', 'Zed', 'Kaisa', 'Leona']);
   const [bannedChampIds, setBannedChampIds] = useState<string[]>([]);
   const [detectedAllies, setDetectedAllies] = useState<string[]>([]);
@@ -447,6 +453,16 @@ export function BuildOptimizerView({
     teamfightPositioning?: string;
     keyReminders?: string[];
   } | null>(null);
+
+  const [showDraftCounterPanel, setShowDraftCounterPanel] = useState(false);
+  const [matchupNotesMap, setMatchupNotesMap] = useState<Record<string, string>>(() => {
+    try {
+      const raw = localStorage.getItem('lol_ai_coach_matchup_notes_v1');
+      return raw ? (JSON.parse(raw) as Record<string, string>) : {};
+    } catch {
+      return {};
+    }
+  });
 
   const isInsideIframe = typeof window !== 'undefined' && window.self !== window.top;
 
@@ -688,6 +704,55 @@ export function BuildOptimizerView({
         .map((id) => ddragon.champions.find((c) => c.id === id))
         .filter((c): c is ChampionSummary => Boolean(c)),
     [bannedChampIds, ddragon.champions],
+  );
+
+  const directEnemy = useMemo(() => {
+    if (gameMode === 'ARAM') return enemyChampions[0] || null;
+    const roleIdx = ROLES.indexOf(role);
+    const id = roleIdx >= 0 ? enemyIds[roleIdx] : undefined;
+    return (id ? ddragon.champions.find((c) => c.id === id) : null) || enemyChampions[0] || null;
+  }, [gameMode, role, enemyIds, ddragon.champions, enemyChampions]);
+
+  const matchupNoteKey = `${playerChampion.id}__${directEnemy?.id || 'general'}`;
+  const currentMatchupNote = matchupNotesMap[matchupNoteKey] || '';
+
+  const updateMatchupNote = (value: string) => {
+    setMatchupNotesMap((prev) => {
+      const next = { ...prev };
+      if (value === '') {
+        delete next[matchupNoteKey];
+      } else {
+        next[matchupNoteKey] = value;
+      }
+      try {
+        localStorage.setItem('lol_ai_coach_matchup_notes_v1', JSON.stringify(next));
+      } catch {
+        // ignore storage quota errors
+      }
+      return next;
+    });
+  };
+
+  const draftCounterPicks = useMemo(
+    () =>
+      showDraftCounterPanel
+        ? recommendCounterPicksForEnemyComp({
+            allChampions: ddragon.champions,
+            role,
+            enemyChampions,
+            tendencies,
+            excludeChampionIds: [playerChampion.id, ...enemyIds.filter(Boolean)],
+          })
+        : [],
+    [
+      showDraftCounterPanel,
+      ddragon.champions,
+      role,
+      enemyChampions,
+      tendencies,
+      playerChampion.id,
+      enemyIds,
+    ],
   );
 
   const recommendation = useMemo(
@@ -1818,6 +1883,102 @@ export function BuildOptimizerView({
             </div>
           </div>
         </div>
+
+        {/* Carnet de Match-ups Personnel + Assistant de Draft « Conseiller mon pick » */}
+        <div className="border-t border-slate-200 dark:border-slate-800 pt-3.5 space-y-3">
+          <div className="flex flex-col lg:flex-row lg:items-center gap-3">
+            <div className="flex-1 flex flex-col sm:flex-row sm:items-center gap-2">
+              <label
+                htmlFor="matchup-note-input"
+                className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300 whitespace-nowrap shrink-0"
+              >
+                <BookOpen className="w-3.5 h-3.5 text-amber-500" aria-hidden="true" />
+                Mémo {playerChampion.name} vs {directEnemy?.name || 'Draft'} :
+              </label>
+              <div className="relative flex-1">
+                <input
+                  id="matchup-note-input"
+                  type="text"
+                  value={currentMatchupNote}
+                  onChange={(e) => updateMatchupNote(e.target.value)}
+                  placeholder="Note perso (ex. Respecter le niveau 2, garder Q pour son dash...)"
+                  className="w-full h-8 pl-2.5 pr-7 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0D121C] text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-amber-500"
+                />
+                {currentMatchupNote && (
+                  <button
+                    type="button"
+                    onClick={() => updateMatchupNote('')}
+                    aria-label="Effacer le mémo de match-up"
+                    className="absolute right-1.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-rose-500 p-0.5"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setShowDraftCounterPanel((v) => !v)}
+              className={`inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors whitespace-nowrap shrink-0 ${
+                showDraftCounterPanel
+                  ? 'bg-amber-500 text-slate-950 border-amber-500'
+                  : 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300 hover:bg-amber-500/20'
+              }`}
+            >
+              <Sparkles className="w-3.5 h-3.5" aria-hidden="true" />
+              {showDraftCounterPanel ? 'Masquer les contre-picks' : `Conseiller mon pick (${role})`}
+            </button>
+          </div>
+
+          {showDraftCounterPanel && (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-1">
+              {draftCounterPicks.map((pick) => (
+                <div
+                  key={pick.champion.id}
+                  className="flex items-start justify-between gap-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] p-3"
+                >
+                  <div className="flex items-start gap-2.5 min-w-0">
+                    <SafeGameIcon
+                      src={pick.champion.imageUrl}
+                      alt={pick.champion.name}
+                      fallbackLabel={pick.champion.name.slice(0, 2)}
+                      sizeClass="w-10 h-10 shrink-0"
+                    />
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-semibold text-slate-900 dark:text-white truncate">
+                          {pick.champion.name}
+                        </span>
+                        <span className="text-[11px] font-mono tabular-nums font-bold text-emerald-600 dark:text-emerald-400">
+                          {pick.fitScore}%
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-amber-600 dark:text-amber-400">
+                        {pick.styleLabel}
+                      </div>
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 leading-snug">
+                        {pick.counterReason}
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      manualOverrideRef.current = true;
+                      setPlayerChampId(pick.champion.id);
+                      setAiPlan(null);
+                      setShowDraftCounterPanel(false);
+                    }}
+                    className="px-2 py-1 text-[11px] font-semibold rounded border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:border-amber-500 hover:text-amber-600 dark:hover:text-amber-400 whitespace-nowrap shrink-0"
+                  >
+                    Choisir
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </section>
 
       {/* Profil de menace + Projection (Gauche) & Ordre d'achat recommandé (Droite) */}
@@ -2243,12 +2404,17 @@ export function BuildOptimizerView({
         </div>
       </div>
 
-      {/* Recherche de Builds Populaires en direct (Google Search Grounding : U.GG / OP.GG / Lolalytics) */}
+      {/* Recherche de Builds Populaires en direct (OP.GG Live + Google Search Grounding) */}
       <PopularBuildSearch
         champion={playerChampion}
+        champions={ddragon.champions}
         role={role}
         gameMode={gameMode}
         patchVersion={ddragon.version}
+        onSwitchChampion={(champId) => {
+          setPlayerChampId(champId);
+          setCustomBuildItemIds(null);
+        }}
         onApplyBuild={handleApplyPopularBuildItems}
         onQuickTestItem={handleQuickTestItem}
         onSuggestionsUpdated={(items, meta) => {

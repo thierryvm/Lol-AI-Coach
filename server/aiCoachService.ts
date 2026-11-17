@@ -14,6 +14,7 @@ import {
   getGeminiClient,
   isTransientAiError,
 } from './aiProviders.ts';
+import { fetchOpggLiveBuilds } from './opggBuildService.ts';
 
 async function generateJsonWithFallback(params: {
   contents: string;
@@ -526,6 +527,31 @@ export async function searchPopularBuildsWithGoogle(
 ): Promise<GroundedPopularBuildResponse> {
   const { championName, championId, role, gameMode, patchVersion, focusHint, aiConfig } = payload;
 
+  // 1. Récupération directe en temps réel sur OP.GG (zéro quota Gemini consommé, vrais taux de victoire/pickrate Data Dragon)
+  let opggResult: GroundedPopularBuildResponse | null = null;
+  try {
+    opggResult = await fetchOpggLiveBuilds({
+      championName,
+      championId,
+      role,
+      gameMode,
+      patchVersion,
+      focusHint,
+    });
+  } catch (err) {
+    console.warn('[searchPopularBuildsWithGoogle] OP.GG live fetch warning:', err);
+  }
+
+  const trimmedHint = focusHint?.trim() || '';
+  const isStandardPreset =
+    !trimmedHint ||
+    /^build (tank survie|dégâts AP)/i.test(trimmedHint);
+
+  // Si OP.GG a trouvé de vrais builds live et que c'est une recherche standard / preset, renvoyer immédiatement
+  if (opggResult && opggResult.builds.length > 0 && isStandardPreset) {
+    return opggResult;
+  }
+
   const modeLabel =
     gameMode === 'ARAM'
       ? 'ARAM'
@@ -533,8 +559,8 @@ export async function searchPopularBuildsWithGoogle(
         ? 'Swiftplay / Summoner Rift'
         : 'Ranked Solo/Duo Summoner Rift';
 
-  const focusClause = focusHint?.trim()
-    ? ` Focus spécifique souhaité par le joueur : "${focusHint.trim()}".`
+  const focusClause = trimmedHint
+    ? ` Focus spécifique souhaité par le joueur : "${trimmedHint}".`
     : '';
 
   const prompt =
@@ -565,156 +591,182 @@ export async function searchPopularBuildsWithGoogle(
     (!process.env.GEMINI_API_KEY?.trim() || aiConfig.fallbackToGemini === false);
 
   if (useExternalProvider) {
-    const parsed = await generateStructuredWithSelectedProvider({
-      contents: prompt,
-      systemInstruction:
-        'Analyste League of Legends expert. Propose les builds les plus populaires observés sur U.GG, OP.GG et Lolalytics pour ce patch.',
-      responseSchema: {
-        type: Type.OBJECT,
-        required: ['summary', 'builds'],
-        properties: {
-          summary: { type: Type.STRING },
-          builds: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              required: ['sourceSite', 'buildTitle', 'bootsName', 'itemNames', 'rationale'],
-              properties: {
-                sourceSite: { type: Type.STRING },
-                buildTitle: { type: Type.STRING },
-                winRateNote: { type: Type.STRING },
-                pickRateNote: { type: Type.STRING },
-                bootsName: { type: Type.STRING },
-                itemNames: { type: Type.ARRAY, items: { type: Type.STRING } },
-                keystoneName: { type: Type.STRING },
-                secondaryTreeName: { type: Type.STRING },
-                rationale: { type: Type.STRING },
+    try {
+      const parsed = await generateStructuredWithSelectedProvider({
+        contents: prompt,
+        systemInstruction:
+          'Analyste League of Legends expert. Propose les builds les plus populaires observés sur U.GG, OP.GG et Lolalytics pour ce patch.',
+        responseSchema: {
+          type: Type.OBJECT,
+          required: ['summary', 'builds'],
+          properties: {
+            summary: { type: Type.STRING },
+            builds: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                required: ['sourceSite', 'buildTitle', 'bootsName', 'itemNames', 'rationale'],
+                properties: {
+                  sourceSite: { type: Type.STRING },
+                  buildTitle: { type: Type.STRING },
+                  winRateNote: { type: Type.STRING },
+                  pickRateNote: { type: Type.STRING },
+                  bootsName: { type: Type.STRING },
+                  itemNames: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  keystoneName: { type: Type.STRING },
+                  secondaryTreeName: { type: Type.STRING },
+                  rationale: { type: Type.STRING },
+                },
               },
             },
           },
         },
-      },
-      aiConfig,
-    });
-
-    const builds: GroundedPopularBuildItem[] = Array.isArray(parsed?.builds)
-      ? parsed.builds.slice(0, 3).map((b: any) => ({
-          sourceSite: String(b.sourceSite || parsed?._aiMeta?.providerLabel || 'IA'),
-          buildTitle: String(b.buildTitle || `Build ${championName}`),
-          winRateNote: String(b.winRateNote || 'Méta actuelle'),
-          pickRateNote: String(b.pickRateNote || 'Populaire'),
-          bootsName: String(b.bootsName || ''),
-          itemNames: Array.isArray(b.itemNames)
-            ? b.itemNames.map((n: any) => String(n || '').trim()).filter(Boolean).slice(0, 6)
-            : [],
-          keystoneName: String(b.keystoneName || ''),
-          secondaryTreeName: String(b.secondaryTreeName || ''),
-          rationale: String(b.rationale || ''),
-        }))
-      : [];
-
-    return {
-      summary: String(
-        parsed?.summary || `Builds suggérés pour ${championName} (${role}) via ${parsed?._aiMeta?.providerLabel || 'IA'}.`,
-      ),
-      builds,
-      groundingSources: [],
-    };
-  }
-
-  const ai = getGeminiClient();
-  const selectedGeminiModel =
-    aiConfig?.provider === 'gemini' && aiConfig.model?.trim()
-      ? aiConfig.model.trim()
-      : 'gemini-4-hydrogen';
-  const attempts = Array.from(new Set([selectedGeminiModel, 'gemini-4-hydrogen', 'gemini-3.1-flash-lite']));
-  let lastError: unknown = null;
-  const errorMessages: string[] = [];
-
-  for (let i = 0; i < attempts.length; i++) {
-    const model = attempts[i];
-    try {
-      const response = await ai.models.generateContent({
-        model,
-        contents: prompt,
-        config: {
-          tools: [{ googleSearch: {} }],
-          systemInstruction:
-            'Analyste League of Legends expert utilisant Google Search Grounding. Tu retournes uniquement un objet JSON propre basé sur les builds populaires réellement trouvés sur U.GG, OP.GG et Lolalytics.',
-        },
+        aiConfig,
       });
 
-      const parsed = extractJsonObjectFromText(response.text ?? '{}');
-      const rawChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
-      const seenUris = new Set<string>();
-      const groundingSources: Array<{ title: string; uri: string }> = [];
-
-      for (const ch of rawChunks) {
-        const uri = ch?.web?.uri;
-        const title = ch?.web?.title;
-        if (uri && !seenUris.has(uri)) {
-          seenUris.add(uri);
-          groundingSources.push({
-            title: title || uri,
-            uri,
-          });
-        }
-      }
-
       const builds: GroundedPopularBuildItem[] = Array.isArray(parsed?.builds)
-        ? parsed.builds
-            .filter((b: any) => b && (b.bootsName || Array.isArray(b.itemNames)))
-            .slice(0, 3)
-            .map((b: any) => ({
-              sourceSite: String(b.sourceSite || 'Web Méta'),
-              buildTitle: String(b.buildTitle || `Build ${championName}`),
-              winRateNote: String(b.winRateNote || 'Méta actuelle'),
-              pickRateNote: String(b.pickRateNote || 'Populaire'),
-              bootsName: String(b.bootsName || ''),
-              itemNames: Array.isArray(b.itemNames)
-                ? b.itemNames.map((n: any) => String(n || '').trim()).filter(Boolean).slice(0, 6)
-                : [],
-              keystoneName: String(b.keystoneName || ''),
-              secondaryTreeName: String(b.secondaryTreeName || ''),
-              rationale: String(b.rationale || ''),
-            }))
+        ? parsed.builds.slice(0, 3).map((b: any) => ({
+            sourceSite: String(b.sourceSite || parsed?._aiMeta?.providerLabel || 'IA'),
+            buildTitle: String(b.buildTitle || `Build ${championName}`),
+            winRateNote: String(b.winRateNote || 'Méta actuelle'),
+            pickRateNote: String(b.pickRateNote || 'Populaire'),
+            bootsName: String(b.bootsName || ''),
+            itemNames: Array.isArray(b.itemNames)
+              ? b.itemNames.map((n: any) => String(n || '').trim()).filter(Boolean).slice(0, 6)
+              : [],
+            keystoneName: String(b.keystoneName || ''),
+            secondaryTreeName: String(b.secondaryTreeName || ''),
+            rationale: String(b.rationale || ''),
+          }))
         : [];
 
-      if (builds.length === 0) {
-        throw new Error('Aucun build exploitable retourné par la recherche Google.');
+      if (builds.length > 0) {
+        return {
+          summary: String(
+            parsed?.summary ||
+              `Builds suggérés pour ${championName} (${role}) via ${parsed?._aiMeta?.providerLabel || 'IA'}.`,
+          ),
+          builds,
+          groundingSources: opggResult?.groundingSources || [],
+        };
       }
-
-      return {
-        summary: String(
-          parsed?.summary ||
-            `Builds populaires trouvés via Google Search pour ${championName} (${role}).`,
-        ),
-        builds,
-        groundingSources: groundingSources.slice(0, 6),
-      };
-    } catch (err) {
-      lastError = err;
-      const msg = err instanceof Error ? err.message : String(err);
-      errorMessages.push(`${model}: ${msg.slice(0, 120)}`);
-      console.error(`[searchPopularBuildsWithGoogle] model=${model} failed:`, msg);
-      await new Promise((resolve) => setTimeout(resolve, 500));
+    } catch (extErr) {
+      if (opggResult && opggResult.builds.length > 0) {
+        return opggResult;
+      }
+      throw extErr;
     }
   }
 
-  const joinedErrors = errorMessages.join(' | ');
-  if (joinedErrors.includes('429') || joinedErrors.toLowerCase().includes('quota')) {
+  // Recherche Google Search Grounding via Gemini (avec repli automatique vers OP.GG Live en cas de 429/quota)
+  try {
+    const ai = getGeminiClient();
+    const selectedGeminiModel =
+      aiConfig?.provider === 'gemini' && aiConfig.model?.trim()
+        ? aiConfig.model.trim()
+        : 'gemini-4-hydrogen';
+    const attempts = Array.from(new Set([selectedGeminiModel, 'gemini-4-hydrogen', 'gemini-3.1-flash-lite']));
+    let lastError: unknown = null;
+    const errorMessages: string[] = [];
+
+    for (let i = 0; i < attempts.length; i++) {
+      const model = attempts[i];
+      try {
+        const response = await ai.models.generateContent({
+          model,
+          contents: prompt,
+          config: {
+            tools: [{ googleSearch: {} }],
+            systemInstruction:
+              'Analyste League of Legends expert utilisant Google Search Grounding. Tu retournes uniquement un objet JSON propre basé sur les builds populaires réellement trouvés sur U.GG, OP.GG et Lolalytics.',
+          },
+        });
+
+        const parsed = extractJsonObjectFromText(response.text ?? '{}');
+        const rawChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
+        const seenUris = new Set<string>();
+        const groundingSources: Array<{ title: string; uri: string }> = [];
+
+        for (const ch of rawChunks) {
+          const uri = ch?.web?.uri;
+          const title = ch?.web?.title;
+          if (uri && !seenUris.has(uri)) {
+            seenUris.add(uri);
+            groundingSources.push({
+              title: title || uri,
+              uri,
+            });
+          }
+        }
+
+        const builds: GroundedPopularBuildItem[] = Array.isArray(parsed?.builds)
+          ? parsed.builds
+              .filter((b: any) => b && (b.bootsName || Array.isArray(b.itemNames)))
+              .slice(0, 3)
+              .map((b: any) => ({
+                sourceSite: String(b.sourceSite || 'Web Méta'),
+                buildTitle: String(b.buildTitle || `Build ${championName}`),
+                winRateNote: String(b.winRateNote || 'Méta actuelle'),
+                pickRateNote: String(b.pickRateNote || 'Populaire'),
+                bootsName: String(b.bootsName || ''),
+                itemNames: Array.isArray(b.itemNames)
+                  ? b.itemNames.map((n: any) => String(n || '').trim()).filter(Boolean).slice(0, 6)
+                  : [],
+                keystoneName: String(b.keystoneName || ''),
+                secondaryTreeName: String(b.secondaryTreeName || ''),
+                rationale: String(b.rationale || ''),
+              }))
+          : [];
+
+        if (builds.length === 0) {
+          throw new Error('Aucun build exploitable retourné par la recherche Google.');
+        }
+
+        return {
+          summary: String(
+            parsed?.summary ||
+              `Builds populaires trouvés via Google Search pour ${championName} (${role}).`,
+          ),
+          builds,
+          groundingSources: groundingSources.slice(0, 6),
+        };
+      } catch (err) {
+        lastError = err;
+        const msg = err instanceof Error ? err.message : String(err);
+        errorMessages.push(`${model}: ${msg.slice(0, 120)}`);
+        console.error(`[searchPopularBuildsWithGoogle] model=${model} failed:`, msg);
+        // Si Gemini renvoie 429 et qu'OP.GG a déjà de vraies données live, basculer sans attendre
+        if (opggResult && opggResult.builds.length > 0 && msg.includes('429')) {
+          return opggResult;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 350));
+      }
+    }
+
+    if (opggResult && opggResult.builds.length > 0) {
+      return opggResult;
+    }
+
+    const joinedErrors = errorMessages.join(' | ');
+    if (joinedErrors.includes('429') || joinedErrors.toLowerCase().includes('quota')) {
+      throw new Error(
+        `Quota de recherche Google via Gemini atteint (429). Patientez une minute ou vérifiez votre quota Gemini (${joinedErrors.slice(0, 160)}).`,
+      );
+    }
+    if (isTransientAiError(lastError)) {
+      throw new Error(
+        `La recherche Google via Gemini est momentanément indisponible (${joinedErrors.slice(0, 160)}). Réessayez dans quelques secondes.`,
+      );
+    }
     throw new Error(
-      `Quota de recherche Google via Gemini atteint (429). Patientez une minute ou vérifiez votre quota Gemini (${joinedErrors.slice(0, 160)}).`,
+      `Recherche de builds impossible : ${joinedErrors.slice(0, 200)}`,
     );
+  } catch (outerErr) {
+    if (opggResult && opggResult.builds.length > 0) {
+      return opggResult;
+    }
+    throw outerErr;
   }
-  if (isTransientAiError(lastError)) {
-    throw new Error(
-      `La recherche Google via Gemini est momentanément indisponible (${joinedErrors.slice(0, 160)}). Réessayez dans quelques secondes.`,
-    );
-  }
-  throw new Error(
-    `Recherche de builds impossible : ${joinedErrors.slice(0, 200)}`,
-  );
 }
 
 
