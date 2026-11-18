@@ -336,6 +336,16 @@ export default function App() {
     }
   }, [darkMode]);
 
+  // Fermeture du drawer mobile via touche Escape
+  useEffect(() => {
+    if (!mobileNavOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMobileNavOpen(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [mobileNavOpen]);
+
   const loadBootstrap = async (forceRefresh = false) => {
     const [ddRes, statusRes] = await Promise.all([
       fetch(`/api/ddragon/bootstrap${forceRefresh ? '?refresh=1' : ''}`),
@@ -689,65 +699,76 @@ export default function App() {
         </div>
       </aside>
 
-      {/* Drawer Mobile */}
-      {mobileNavOpen && (
-        <div className="fixed inset-0 z-50 lg:hidden flex">
-          <div
-            className="fixed inset-0 bg-black/60"
-            onClick={() => setMobileNavOpen(false)}
-            aria-hidden="true"
-          />
-          <aside className="relative w-64 max-w-full bg-white dark:bg-[#0E131D] border-r border-slate-200 dark:border-slate-800 flex flex-col z-10">
-            <div className="h-16 px-5 flex items-center justify-between border-b border-slate-200 dark:border-slate-800">
-              <span className="font-display text-lg font-bold text-slate-900 dark:text-white">
-                LoL AI Coach
-              </span>
-              <button
-                type="button"
-                onClick={() => setMobileNavOpen(false)}
-                className="p-2 text-slate-500"
-                aria-label="Fermer le menu"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <nav className="flex-1 p-3 space-y-1">
-              {NAV_ITEMS.map((item) => {
-                const Icon = item.icon;
-                const active = activeTab === item.id;
-                return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => {
-                      setActiveTab(item.id);
-                      setMobileNavOpen(false);
-                    }}
-                    className={`w-full flex items-center gap-3 px-3 py-2.5 text-sm font-medium rounded-lg ${
-                      active
-                        ? 'bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-white'
-                        : 'text-slate-600 dark:text-slate-400'
-                    }`}
-                  >
-                    <Icon className="w-4 h-4" aria-hidden="true" />
-                    <span>{item.label}</span>
-                  </button>
-                );
-              })}
-            </nav>
-            <div className="p-4 border-t border-slate-200 dark:border-slate-800">
-              <button
-                type="button"
-                onClick={() => setDarkMode((v) => !v)}
-                className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700"
-              >
-                <span>{darkMode ? 'Mode sombre' : 'Mode clair'}</span>
-                {darkMode ? <Moon className="w-3.5 h-3.5" /> : <Sun className="w-3.5 h-3.5" />}
-              </button>
-            </div>
-          </aside>
-        </div>
-      )}
+      {/* Drawer Mobile avec physique tiroir iOS */}
+      <AnimatePresence>
+        {mobileNavOpen && (
+          <div className="fixed inset-0 z-50 lg:hidden flex">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.18, ease: 'easeOut' }}
+              className="fixed inset-0 bg-black/60"
+              onClick={() => setMobileNavOpen(false)}
+              aria-hidden="true"
+            />
+            <motion.aside
+              initial={{ x: '-100%' }}
+              animate={{ x: 0, transition: { duration: 0.25, ease: [0.32, 0.72, 0, 1] } }}
+              exit={{ x: '-100%', transition: { duration: 0.17, ease: [0.32, 0.72, 0, 1] } }}
+              className="relative w-64 max-w-full bg-white dark:bg-[#0E131D] border-r border-slate-200 dark:border-slate-800 flex flex-col z-10 shadow-2xl"
+            >
+              <div className="h-16 px-5 flex items-center justify-between border-b border-slate-200 dark:border-slate-800">
+                <span className="font-display text-lg font-bold text-slate-900 dark:text-white">
+                  LoL AI Coach
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setMobileNavOpen(false)}
+                  className="p-2 text-slate-500 hover:text-slate-900 dark:hover:text-white rounded-lg"
+                  aria-label="Fermer le menu"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <nav className="flex-1 p-3 space-y-1">
+                {NAV_ITEMS.map((item) => {
+                  const Icon = item.icon;
+                  const active = activeTab === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => {
+                        setActiveTab(item.id);
+                        setMobileNavOpen(false);
+                      }}
+                      className={`w-full flex items-center gap-3 px-3 py-2.5 text-sm font-medium rounded-lg ${
+                        active
+                          ? 'bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-white'
+                          : 'text-slate-600 dark:text-slate-400'
+                      }`}
+                    >
+                      <Icon className="w-4 h-4 shrink-0" aria-hidden="true" />
+                      <span>{item.label}</span>
+                    </button>
+                  );
+                })}
+              </nav>
+              <div className="p-4 border-t border-slate-200 dark:border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setDarkMode((v) => !v)}
+                  className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700"
+                >
+                  <span>{darkMode ? 'Mode sombre' : 'Mode clair'}</span>
+                  {darkMode ? <Moon className="w-3.5 h-3.5" /> : <Sun className="w-3.5 h-3.5" />}
+                </button>
+              </div>
+            </motion.aside>
+          </div>
+        )}
+      </AnimatePresence>
 
       {/* Zone Principale */}
       <div className="flex-1 lg:pl-64 flex flex-col min-w-0">
@@ -865,10 +886,17 @@ export default function App() {
             <AnimatePresence mode="wait">
               <motion.div
                 key={activeTab}
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -6 }}
-                transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+                initial={{ opacity: 0, y: 6 }}
+                animate={{
+                  opacity: 1,
+                  y: 0,
+                  transition: { duration: 0.18, ease: [0.23, 1, 0.32, 1] },
+                }}
+                exit={{
+                  opacity: 0,
+                  y: -4,
+                  transition: { duration: 0.11, ease: [0.23, 1, 0.32, 1] },
+                }}
               >
               {activeTab === 'dashboard' && (
                 <DashboardView

@@ -615,8 +615,8 @@ export function GuideView({
             </div>
             <div className="h-2 w-full rounded bg-slate-200 dark:bg-slate-800 overflow-hidden">
               <div
-                className="h-full bg-amber-500 transition-all duration-300"
-                style={{ width: `${masteryPct}%` }}
+                className="h-full w-full origin-left bg-amber-500 transition-transform duration-300 ease-[cubic-bezier(0.23,1,0.32,1)]"
+                style={{ transform: `scaleX(${Math.max(0, Math.min(1, masteryPct / 100))})` }}
               />
             </div>
             {completedCount > 0 && (

@@ -4,6 +4,7 @@ dist/
 coverage/
 server.js
 .aistudio/
+public/assets/aistudio/
 .vscode/
 .idea/
 .DS_Store

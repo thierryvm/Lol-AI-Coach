@@ -705,7 +705,7 @@ export function VisualRunePage({
                     type="button"
                     onClick={() => handleSelectPrimaryTree(t.id)}
                     title={`Choisir ${t.name} comme voie principale`}
-                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border transition-all ${
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border transition-[transform,border-color,background-color,opacity] duration-150 ${
                       active
                         ? `${theme.borderClass} bg-[#0E1E36] text-[#F0E6D2] font-semibold shadow-sm`
                         : 'border-[#C8AA6E]/15 text-[#A09B8C] hover:text-[#F0E6D2] hover:border-[#C8AA6E]/40 opacity-75 hover:opacity-100'
@@ -741,7 +741,7 @@ export function VisualRunePage({
                       type="button"
                       onClick={() => handleSelectSecondaryTree(t.id)}
                       title={`Choisir ${t.name} comme voie secondaire`}
-                      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border transition-all ${
+                      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border transition-[transform,border-color,background-color,opacity] duration-150 ${
                         active
                           ? `${theme.borderClass} bg-[#0E1E36] text-[#F0E6D2] font-semibold shadow-sm`
                           : 'border-[#C8AA6E]/15 text-[#A09B8C] hover:text-[#F0E6D2] hover:border-[#C8AA6E]/40 opacity-75 hover:opacity-100'
@@ -861,7 +861,7 @@ export function VisualRunePage({
                               type="button"
                               onMouseEnter={() => inspectRune(cand)}
                               onClick={() => handleSelectKeystone(cand)}
-                              className={`flex items-center gap-1.5 px-2 py-1 rounded-md border text-[11px] transition-all ${
+                              className={`flex items-center gap-1.5 px-2 py-1 rounded-md border text-[11px] transition-[transform,border-color,background-color,opacity] duration-150 ${
                                 active
                                   ? `${primaryTheme.borderClass} bg-[#0E1E36] text-[#F0E6D2] font-semibold`
                                   : 'border-slate-700/70 text-[#A09B8C] hover:text-[#F0E6D2] hover:border-[#C8AA6E]/50'
@@ -952,7 +952,7 @@ export function VisualRunePage({
                                   type="button"
                                   onMouseEnter={() => inspectRune(cand)}
                                   onClick={() => handleSelectPrimaryMinor(slotIdx, cand)}
-                                  className={`flex items-center gap-1.5 px-2 py-1 rounded-md border text-[11px] transition-all ${
+                                  className={`flex items-center gap-1.5 px-2 py-1 rounded-md border text-[11px] transition-[transform,border-color,background-color,opacity] duration-150 ${
                                     active
                                       ? 'border-[#C8AA6E] bg-[#C8AA6E]/20 text-[#F0E6D2] font-semibold'
                                       : 'border-slate-700/70 text-[#A09B8C] hover:text-[#F0E6D2] hover:border-[#C8AA6E]/50'
@@ -1035,7 +1035,7 @@ export function VisualRunePage({
                                 type="button"
                                 onMouseEnter={() => inspectRune(cand)}
                                 onClick={() => handleSelectSecondaryMinor(rowIdx + 1, cand)}
-                                className={`flex items-center gap-1 px-2 py-1 rounded-md border text-[11px] transition-all ${
+                                className={`flex items-center gap-1 px-2 py-1 rounded-md border text-[11px] transition-[transform,border-color,background-color,opacity] duration-150 ${
                                   active
                                     ? `${secondaryTheme.borderClass} bg-[#0E1E36] text-[#F0E6D2] font-semibold`
                                     : 'border-slate-700/70 text-[#A09B8C] hover:text-[#F0E6D2]'
@@ -1163,7 +1163,7 @@ export function VisualRunePage({
                                 key={`${opt.id}-${colIdx}`}
                                 type="button"
                                 onClick={() => handleSelectShard(idx, colIdx, opt)}
-                                className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md border text-[11px] transition-all ${
+                                className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md border text-[11px] transition-[transform,border-color,background-color,opacity] duration-150 ${
                                   active
                                     ? 'border-[#C8AA6E] bg-[#C8AA6E]/20 text-[#F0E6D2] font-semibold'
                                     : 'border-slate-700/70 text-[#A09B8C] hover:text-[#F0E6D2]'
@@ -1276,7 +1276,7 @@ export function VisualRunePage({
                             onMouseEnter={() => inspectRune(rune)}
                             onClick={() => handleSelectKeystone(rune)}
                             title={`${rune.name} — ${cleanRuneDesc(rune.shortDesc)}`}
-                            className={`p-0.5 rounded-full bg-[#030912] transition-all focus:outline-none ${
+                            className={`p-0.5 rounded-full bg-[#030912] transition-[transform,border-color,background-color,opacity] duration-150 focus:outline-none ${
                               active
                                 ? `ring-2 ${differs ? 'ring-sky-400' : primaryTheme.ringClass} ${primaryTheme.glowShadow} scale-110`
                                 : `opacity-35 grayscale hover:opacity-90 hover:grayscale-0 border border-[#C8AA6E]/25 ${editable ? 'cursor-pointer hover:scale-105' : ''}`
@@ -1315,7 +1315,7 @@ export function VisualRunePage({
                             onMouseEnter={() => inspectRune(rune)}
                             onClick={() => handleSelectPrimaryMinor(rowIdx, rune)}
                             title={`${rune.name} — ${cleanRuneDesc(rune.shortDesc)}`}
-                            className={`p-0.5 rounded-full bg-[#030912] transition-all focus:outline-none ${
+                            className={`p-0.5 rounded-full bg-[#030912] transition-[transform,border-color,background-color,opacity] duration-150 focus:outline-none ${
                               active
                                 ? `ring-2 ${differs ? 'ring-sky-400' : 'ring-[#C8AA6E]'} ${primaryTheme.glowShadow} scale-105`
                                 : `opacity-35 grayscale hover:opacity-90 hover:grayscale-0 border border-[#C8AA6E]/20 ${editable ? 'cursor-pointer hover:scale-105' : ''}`
@@ -1373,7 +1373,7 @@ export function VisualRunePage({
                             type="button"
                             onClick={() => handleSelectSecondaryTree(t.id)}
                             title={t.name}
-                            className={`w-6 h-6 rounded-full flex items-center justify-center border transition-all ${
+                            className={`w-6 h-6 rounded-full flex items-center justify-center border transition-[transform,border-color,background-color,opacity] duration-150 ${
                               active
                                 ? 'border-[#C8AA6E] bg-[#0E1E36] scale-110'
                                 : 'border-slate-700 opacity-45 hover:opacity-100'
@@ -1414,7 +1414,7 @@ export function VisualRunePage({
                           onMouseEnter={() => inspectRune(rune)}
                           onClick={() => handleSelectSecondaryMinor(rowIdx + 1, rune)}
                           title={`${rune.name} — ${cleanRuneDesc(rune.shortDesc)}`}
-                          className={`p-0.5 rounded-full bg-[#030912] transition-all focus:outline-none ${
+                          className={`p-0.5 rounded-full bg-[#030912] transition-[transform,border-color,background-color,opacity] duration-150 focus:outline-none ${
                             active
                               ? `ring-2 ${differs ? 'ring-sky-400' : secondaryTheme.ringClass} scale-105`
                               : `opacity-35 grayscale hover:opacity-90 hover:grayscale-0 border border-[#C8AA6E]/20 ${editable ? 'cursor-pointer hover:scale-105' : ''}`
@@ -1461,7 +1461,7 @@ export function VisualRunePage({
                                 })
                               }
                               title={opt.clientLabel}
-                              className={`w-8 h-8 rounded-full flex items-center justify-center border transition-all ${
+                              className={`w-8 h-8 rounded-full flex items-center justify-center border transition-[transform,border-color,background-color,opacity] duration-150 ${
                                 active
                                   ? 'border-[#C8AA6E] bg-[#C8AA6E]/20 ring-2 ring-[#C8AA6E]/70 scale-110'
                                   : `border-slate-700 bg-[#030912] opacity-35 grayscale hover:opacity-95 hover:grayscale-0 ${editable ? 'cursor-pointer hover:scale-105' : ''}`

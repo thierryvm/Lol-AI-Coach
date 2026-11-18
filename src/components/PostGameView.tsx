@@ -700,7 +700,7 @@ export function PostGameView({
                         onSelectMatchId(m.matchId);
                         setAiReview(null);
                       }}
-                      className={`group flex items-center gap-2.5 px-2.5 py-2 rounded-lg border text-left transition-all duration-150 hover:-translate-y-0.5 shrink-0 ${
+                      className={`group flex items-center gap-2.5 px-2.5 py-2 rounded-lg border text-left transition-[transform,border-color,background-color,box-shadow] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] [@media(hover:hover)]:hover:-translate-y-0.5 shrink-0 ${
                         isSelected
                           ? 'border-amber-500 bg-amber-500/10 shadow-sm'
                           : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] hover:border-slate-300 dark:hover:border-slate-700'
@@ -785,10 +785,17 @@ export function PostGameView({
       <AnimatePresence mode="wait">
         <motion.div
           key={`${subTab}-${activeMatch.matchId}`}
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: -6 }}
-          transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+          initial={{ opacity: 0, y: 6 }}
+          animate={{
+            opacity: 1,
+            y: 0,
+            transition: { duration: 0.17, ease: [0.23, 1, 0.32, 1] },
+          }}
+          exit={{
+            opacity: 0,
+            y: -4,
+            transition: { duration: 0.11, ease: [0.23, 1, 0.32, 1] },
+          }}
           className="space-y-6"
         >
       {subTab === 'tactical-map' ? (

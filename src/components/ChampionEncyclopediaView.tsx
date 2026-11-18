@@ -89,7 +89,7 @@ function ChampionPortraitTile({
     <button
       type="button"
       onClick={onSelect}
-      className={`group relative aspect-[3/4] rounded-xl overflow-hidden text-left transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 ${
+      className={`group relative aspect-[3/4] rounded-xl overflow-hidden text-left transition-[border-color,box-shadow] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 ${
         selected
           ? 'border-2 border-amber-400 shadow-lg shadow-amber-500/20'
           : 'border border-slate-200 dark:border-slate-800 hover:border-amber-500/60'
@@ -106,7 +106,7 @@ function ChampionPortraitTile({
           referrerPolicy="no-referrer"
           loading="lazy"
           onError={() => setImgStage((prev) => (prev === 'loading' ? 'square' : 'fallback'))}
-          className="w-full h-full object-cover object-top transition-transform duration-200 group-hover:scale-105"
+          className="w-full h-full object-cover object-top transition-transform duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] [@media(hover:hover)]:group-hover:scale-105"
         />
       )}
 

@@ -581,7 +581,7 @@ export function SettingsView({
                 key={prov.id}
                 type="button"
                 onClick={() => handleSelectProvider(prov.id)}
-                className={`p-3.5 rounded-xl border text-left transition-all space-y-2 flex flex-col justify-between ${
+                className={`p-3.5 rounded-xl border text-left transition-[border-color,background-color,box-shadow] duration-150 space-y-2 flex flex-col justify-between ${
                   isSelected
                     ? 'border-amber-500 bg-amber-500/10 ring-1 ring-amber-500/40'
                     : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] hover:border-amber-500/50'

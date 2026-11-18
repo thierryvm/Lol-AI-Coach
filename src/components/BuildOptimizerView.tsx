@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
 import {
   AlertTriangle,
   Ban,
@@ -194,7 +195,7 @@ function SlotPortraitCard({
 
   return (
     <div
-      className={`group relative aspect-[3/4] w-full rounded-xl overflow-hidden border transition-all bg-[#0B0E14] ${borderHover}`}
+      className={`group relative aspect-[3/4] w-full rounded-xl overflow-hidden border transition-[border-color,box-shadow] duration-150 bg-[#0B0E14] ${borderHover}`}
     >
       <button
         type="button"
@@ -212,7 +213,7 @@ function SlotPortraitCard({
             referrerPolicy="no-referrer"
             loading="lazy"
             onError={() => setImgStage((prev) => (prev === 'loading' ? 'square' : 'fallback'))}
-            className="w-full h-full object-cover object-top transition-transform duration-200 group-hover:scale-105"
+            className="w-full h-full object-cover object-top transition-transform duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] [@media(hover:hover)]:group-hover:scale-105"
           />
         )}
         <div
@@ -224,7 +225,7 @@ function SlotPortraitCard({
             {slotLabel}
           </span>
           <Pencil
-            className="w-3 h-3 text-white/70 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+            className="w-3 h-3 text-white/70 opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 transition-opacity duration-150 shrink-0"
             aria-hidden="true"
           />
         </div>
@@ -246,7 +247,7 @@ function SlotPortraitCard({
           }}
           title="Retirer le partenaire"
           aria-label="Retirer le partenaire"
-          className="absolute top-1.5 right-1.5 p-1 rounded-md bg-black/70 text-slate-200 hover:text-rose-400 opacity-0 group-hover:opacity-100 transition-opacity"
+          className="absolute top-1.5 right-1.5 p-1 rounded-md bg-black/70 text-slate-200 hover:text-rose-400 opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 transition-opacity duration-150"
         >
           <X className="w-3 h-3" />
         </button>
@@ -274,7 +275,7 @@ function PickerPortraitTile({
     <button
       type="button"
       onClick={onSelect}
-      className={`group relative aspect-[3/4] rounded-xl overflow-hidden text-left transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 ${
+      className={`group relative aspect-[3/4] rounded-xl overflow-hidden text-left transition-[border-color,box-shadow] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 ${
         selected
           ? 'border-2 border-amber-400 shadow-lg shadow-amber-500/20'
           : 'border border-slate-200 dark:border-slate-800 hover:border-amber-500/70'
@@ -291,7 +292,7 @@ function PickerPortraitTile({
           referrerPolicy="no-referrer"
           loading="lazy"
           onError={() => setImgStage((prev) => (prev === 'loading' ? 'square' : 'fallback'))}
-          className="w-full h-full object-cover object-top transition-transform duration-200 group-hover:scale-105"
+          className="w-full h-full object-cover object-top transition-transform duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] [@media(hover:hover)]:group-hover:scale-105"
         />
       )}
       <div
@@ -3976,8 +3977,12 @@ export function BuildOptimizerView({
       </section>
 
       {/* Modal Sélecteur Universel de Champion (Portraits Champion Select + filtres FR) */}
+      <AnimatePresence>
       {pickerTarget && (
-        <div
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1, transition: { duration: 0.16, ease: 'easeOut' } }}
+          exit={{ opacity: 0, transition: { duration: 0.11, ease: 'easeOut' } }}
           className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-4"
           role="dialog"
           aria-modal="true"
@@ -3986,7 +3991,22 @@ export function BuildOptimizerView({
             if (e.target === e.currentTarget) setPickerTarget(null);
           }}
         >
-          <div className="w-full max-w-4xl rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] overflow-hidden shadow-2xl">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.96, y: 6 }}
+            animate={{
+              opacity: 1,
+              scale: 1,
+              y: 0,
+              transition: { duration: 0.18, ease: [0.23, 1, 0.32, 1] },
+            }}
+            exit={{
+              opacity: 0,
+              scale: 0.97,
+              y: 4,
+              transition: { duration: 0.12, ease: [0.23, 1, 0.32, 1] },
+            }}
+            className="w-full max-w-4xl rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] overflow-hidden shadow-2xl"
+          >
             <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
               <div>
                 <div className="font-semibold text-base text-slate-900 dark:text-white">
@@ -4102,13 +4122,18 @@ export function BuildOptimizerView({
                 ))}
               </div>
             )}
-          </div>
-        </div>
+          </motion.div>
+        </motion.div>
       )}
+      </AnimatePresence>
 
       {/* Modal Sélecteur d'Objet Data Dragon (Atelier Équipement) */}
+      <AnimatePresence>
       {itemPickerSlotIdx !== null && (
-        <div
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1, transition: { duration: 0.16, ease: 'easeOut' } }}
+          exit={{ opacity: 0, transition: { duration: 0.11, ease: 'easeOut' } }}
           className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-4"
           role="dialog"
           aria-modal="true"
@@ -4117,7 +4142,22 @@ export function BuildOptimizerView({
             if (e.target === e.currentTarget) setItemPickerSlotIdx(null);
           }}
         >
-          <div className="w-full max-w-4xl rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] overflow-hidden shadow-2xl">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.96, y: 6 }}
+            animate={{
+              opacity: 1,
+              scale: 1,
+              y: 0,
+              transition: { duration: 0.18, ease: [0.23, 1, 0.32, 1] },
+            }}
+            exit={{
+              opacity: 0,
+              scale: 0.97,
+              y: 4,
+              transition: { duration: 0.12, ease: [0.23, 1, 0.32, 1] },
+            }}
+            className="w-full max-w-4xl rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] overflow-hidden shadow-2xl"
+          >
             <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
               <div>
                 <div className="font-semibold text-base text-slate-900 dark:text-white">
@@ -4220,9 +4260,10 @@ export function BuildOptimizerView({
                 );
               })}
             </div>
-          </div>
-        </div>
+          </motion.div>
+        </motion.div>
       )}
+      </AnimatePresence>
     </div>
   );
 }
