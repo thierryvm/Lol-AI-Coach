@@ -49,8 +49,8 @@ Application web full-stack (**React 19 + TypeScript + Tailwind CSS v4 + Express*
 
 ### 1. Cloner et installer les dépendances
 ```bash
-git clone <URL_DU_DEPOT_GITHUB>
-cd lol-ai-coach
+git clone https://github.com/thierryvm/Lol-AI-Coach.git
+cd Lol-AI-Coach
 npm install
 ```
 
