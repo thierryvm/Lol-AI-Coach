@@ -1,7 +1,9 @@
 {
-  "name": "react-example",
+  "name": "lol-ai-coach",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
+  "description": "Coach tactique League of Legends avec synchronisation Data Dragon & Riot API, optimisation de builds selon les compositions adverses, analyse post-game et coaching en temps réel.",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",

@@ -2,7 +2,16 @@ node_modules/
 build/
 dist/
 coverage/
+server.js
+.aistudio/
+.vscode/
+.idea/
 .DS_Store
+Thumbs.db
 *.log
+npm-debug.log*
+*.tmp
+*.tsbuildinfo
 .env*
 !.env.example
+
