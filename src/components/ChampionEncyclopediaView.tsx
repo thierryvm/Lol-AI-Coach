@@ -13,6 +13,7 @@ interface ChampionEncyclopediaViewProps {
   champions: ChampionSummary[];
   patchVersion: string;
   recentChampionIds?: string[];
+  initialChampionId?: string;
   onUseInBuilder: (championId: string) => void;
 }
 
@@ -139,6 +140,7 @@ export function ChampionEncyclopediaView({
   champions,
   patchVersion,
   recentChampionIds = [],
+  initialChampionId,
   onUseInBuilder,
 }: ChampionEncyclopediaViewProps) {
   const [search, setSearch] = useState('');
@@ -148,12 +150,22 @@ export function ChampionEncyclopediaView({
   const [onlyFreeRotation, setOnlyFreeRotation] = useState(false);
   const [freeRotationKeys, setFreeRotationKeys] = useState<Set<number>>(new Set());
   const [selectedId, setSelectedId] = useState<string>(
-    recentChampionIds[0] || champions[0]?.id || 'TahmKench',
+    initialChampionId || recentChampionIds[0] || champions[0]?.id || 'TahmKench',
   );
   const [level, setLevel] = useState<number>(11);
   const [activeSpellIdx, setActiveSpellIdx] = useState<number>(-1); // -1 = tous / passif en focus
   const [detail, setDetail] = useState<ChampionDetail | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
+
+  useEffect(() => {
+    if (initialChampionId) {
+      setSearch('');
+      setTagFilter('Tous');
+      setDamageFilter('Tous');
+      setOnlyFreeRotation(false);
+      setSelectedId(initialChampionId);
+    }
+  }, [initialChampionId]);
 
   useEffect(() => {
     let cancelled = false;

@@ -1,6 +1,7 @@
 import {
   Activity,
   ArrowRight,
+  Bell,
   BookOpen,
   CheckCircle2,
   ChevronDown,
@@ -11,19 +12,24 @@ import {
   History,
   Info,
   KeyRound,
+  Keyboard,
   LayoutDashboard,
+  Lightbulb,
   RotateCcw,
   Search,
   Settings,
   ShieldAlert,
   Sparkles,
   Swords,
+  Target,
   Users,
   Wrench,
+  Zap,
 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { getProviderDefinition, loadSavedAiSelection } from '../engines/aiConfig.ts';
-import type { RiotPlatform } from '../engines/types.ts';
+import type { RiotPlatform, SavedPlayerProfile } from '../engines/types.ts';
+import { OnboardingShareWizard } from './OnboardingShareWizard.tsx';
 
 export type GuideTargetTab =
   | 'dashboard'
@@ -44,6 +50,9 @@ interface GuideViewProps {
   geminiConfigured: boolean;
   archivedMatchesCount: number;
   savedProfilesCount: number;
+  savedProfiles: SavedPlayerProfile[];
+  onSaveProfile: (profile: Omit<SavedPlayerProfile, 'id'> & { id?: string }) => void;
+  onSwitchProfile: (profile: SavedPlayerProfile) => void;
   onNavigate: (tab: GuideTargetTab) => void;
 }
 
@@ -81,126 +90,130 @@ const WORKFLOW_STAGES: WorkflowStage[] = [
     targetLabel: 'Ouvrir Builds & Match-ups',
     steps: [
       {
-        title: 'Choisir votre champion (8 rôles dont Junglers) & les 5 adversaires',
+        title: 'Choisir votre champion & les 5 adversaires (dont les 5 cibles du simulateur)',
         detail:
-          'Sélectionnez votre champion parmi les 8 catégories (Tous, Combattants, Mages, Assassins, Tanks, Tireurs, Supports, Junglers) ou cliquez sur vos « Joués récemment ». En partie lancée, « Détecter partie en cours » pré-remplit les 10 champions.',
+          'Sélectionnez votre champion parmi les 8 catégories (dont Junglers). En bas dans le Simulateur d’impact, cliquez sur l’icône crayon de n’importe laquelle des 5 cibles ennemies pour la remplacer par le champion exact de votre choix.',
       },
       {
-        title: 'Comparer Recherche de Builds (U.GG / OP.GG) & Multi-Combinaisons',
+        title: 'Noter vos astuces dans le Carnet de mémos & voir les Contre-picks',
         detail:
-          'Lancez « Recherche de Builds » pour voir les objets populaires du moment (U.GG / OP.GG), puis choisissez le scénario adapté (Équilibré / Je me fais dominer / En avance) et ajustez vos vraies pages de runes visuelles.',
+          'Utilisez le champ « Mémo de duel » pour noter un réflexe précis (ex. « Respecter le niveau 2 »), cliquez sur « Enregistrer », et ouvrez « Mes mémos » à tout moment pour modifier, filtrer ou supprimer vos notes.',
       },
       {
-        title: 'Tester dans l’Atelier & inspecter les passifs avec le bouton (i)',
+        title: 'Comparer les builds, les runes et tester les passifs avec (i)',
         detail:
-          'Modifiez librement les 6 emplacements, ajustez le niveau (1 à 18) ou les PV Cœuracier, puis cliquez sur l’icône (i) « Passif IA » à côté d’un objet (ex. Aube de Haut-Lacère) pour voir sa formule mathématique exacte sur votre cible.',
+          'Lancez « Recherche de Builds » (U.GG / OP.GG), choisissez votre scénario (Équilibré / Retard / Snowball), puis cliquez sur (i) « Passif IA » à côté d’un objet pour connaître son impact réel.',
       },
     ],
     checklist: [
-      { id: 'before-comp', label: 'Renseigner mon champion + les 5 ennemis (ou preset rapide)' },
-      { id: 'before-popular', label: 'Consulter les items populaires U.GG / OP.GG et la page de runes' },
+      { id: 'before-comp', label: 'Renseigner mon champion + les 5 ennemis (ou modifier une cible via le crayon)' },
+      { id: 'before-memo', label: 'Créer ou relire un mémo dans « Mes mémos » de duel' },
+      { id: 'before-popular', label: 'Consulter les items U.GG / OP.GG et la page de runes' },
       { id: 'before-combo', label: 'Comparer les 4 builds du Calculateur Multi-Combinaisons' },
       { id: 'before-passive', label: 'Cliquer sur (i) « Passif IA » pour vérifier un passif clé' },
     ],
     proNote:
-      'Dans les pages de runes, basculez entre la vue compacte et la grille complète style client LoL pour éditer en 1 clic votre rune fondamentale, vos 2 arbres et les 3 rangées de fragments.',
+      'Vos mémos de duel enregistrés sont automatiquement injectés dans votre Plan Tactique IA et retrouvables en 2 secondes via Ctrl+K (ou ⌘K sur Mac).',
   },
   {
     id: 'during',
     stepNumber: '02',
-    title: 'Pendant la partie (Coach Temps Réel)',
-    subtitle: 'Gardez un œil sur les menaces adverses et recevez des appels macro adaptés à la minute.',
+    title: 'Pendant la partie (Zone isolée Coach Temps Réel)',
+    subtitle: 'Un espace vert dédié uniquement au jeu en direct, avec télémétrie live, bouton « Analyser » vocal Web Speech et micro.',
     targetTab: 'live',
     targetLabel: 'Ouvrir Coach Temps Réel',
     steps: [
       {
-        title: 'Connexion automatique ou Pont Windows local',
+        title: 'Cliquer sur « Analyser » pour entendre la synthèse vocale rapide (Web Speech)',
         detail:
-          'En partie normale/classée/ARAM, Spectator-V5 détecte votre match. Pour avoir l’or, le CS, les objets et les stats seconde par seconde (même en Outil d’entraînement), utilisez le petit script Pont Live Windows (127.0.0.1:2999).',
+          'En pleine partie, cliquez sur le bouton « Analyser » : le coach calcule votre priorité immédiate, la fenêtre de rappel et le danger principal, puis lit les points clés à voix haute grâce à l’API Web Speech (désactivable ou réécoutable en 1 clic).',
       },
       {
-        title: 'Surveiller la menace adverse et les rappels d’objectifs',
+        title: 'Détecter les moments clés au micro (Dragon, Baron, Gank)',
         detail:
-          'L’écran synthétise la répartition Physique/Magique ennemie, les timers Dragon/Héraut/Nashor et vos écarts de rythme sans bruit inutile.',
+          'Activez « Activer l’écoute micro » (ou « Extrait Audio Gemini ») : dès que vous prononcez « Dragon », « Baron Nashor », « Gank imminent » ou « Plus de flash », le coach déclenche une alerte visuelle et/ou vocale instantanée.',
       },
       {
-        title: 'Demander un appel tactique Gemini en 1 clic',
+        title: 'Déplier la connexion Live (Spectator-V5 ou Pont Windows) si besoin',
         detail:
-          'Cliquez sur le bouton de conseil IA pour obtenir une consigne courte et actionnable selon votre état de partie (jouer le peel, split, ou forcer un objectif).',
+          'La zone technique de connexion (Spectator-V5 / Pont Windows 127.0.0.1:2999) est repliable tout en bas pour laisser votre télémétrie KDA, CS, Or et timers Dragon/Baron bien en vue pendant le match.',
       },
     ],
     checklist: [
-      { id: 'during-detect', label: 'Vérifier la détection Spectator-V5 ou lancer le Pont Windows' },
-      { id: 'during-timers', label: 'Repérer la répartition de dégâts ennemie pour adapter mon prochain objet' },
-      { id: 'during-call', label: 'Générer un conseil tactique en direct' },
+      { id: 'during-checklist', label: 'Relire mes 3 règles de Checklist Entraînement avant de jouer' },
+      { id: 'during-call', label: 'Cliquer sur « Analyser » pour tester la synthèse vocale Web Speech' },
+      { id: 'during-mic', label: 'Tester la détection micro ou un déclencheur (« Dragon », « Gank »)' },
+      { id: 'during-timers', label: 'Repérer l’or en poche et les timers Dragon/Baron en haut du live' },
+      { id: 'during-detect', label: 'Vérifier la détection Spectator-V5 ou le Pont Windows si nécessaire' },
     ],
     proNote:
-      'En mode Simulation ou avec le Pont Windows, vous pouvez ajuster vos objets en direct si vous êtes derrière en or pour éviter de vous enfermer dans un build trop cher.',
+      'La section « En Partie · Temps Réel » est volontairement isolée tout en haut du menu gauche : vous ne risquez jamais de vous perdre dans les stats Post-Game au milieu d’un teamfight.',
   },
   {
     id: 'after',
     stepNumber: '03',
-    title: 'Après la partie (Analyse Post-Game)',
-    subtitle: 'Transformez chaque partie terminée en plan d’entraînement visuel et chiffré.',
+    title: 'Après la partie (Analyse Post-Game & Export)',
+    subtitle: 'Comprenez chaque mort sur la carte, suivez votre courbe de forme et exportez vos données hors-ligne.',
     targetTab: 'postgame',
     targetLabel: 'Ouvrir Analyse Post-Game',
     steps: [
       {
-        title: 'Sélectionner un match ou importer une partie personnalisée',
+        title: 'Filtrer l’historique & vérifier la validation du Programme',
         detail:
-          'Vos parties classées/normales/ARAM arrivent automatiquement. Pour l’Outil d’entraînement ou les parties privées (non exposées par Match-V5), utilisez l’import local LCU (/history) ou un Match ID.',
+          'Filtrez vos parties par Victoire/Défaite, Rôle ou Champion. Le bandeau « Validation du Programme d’Entraînement » indique instantanément quels objectifs (Survie, Rythme, Macro) sont réussis.',
       },
       {
-        title: 'Inspecter la Carte Tactique & Morts (22 tours, 34 buissons, 10 champions)',
+        title: 'Inspecter la Carte Tactique, la courbe & lancer le débriefing IA',
         detail:
-          'Cliquez sur « Ouvrir en grand format → » (ou l’onglet Carte Tactique & Morts) pour afficher les 22 tours avec leur portée, les 34 buissons calibrés 2026, le portrait réel de votre champion et des 9 autres joueurs, les flèches d’approche et la répartition des dégâts subis.',
+          'Ouvrez « Carte Tactique & Morts » en grand format (22 tours, 34 buissons, 10 champions) et parcourez le graphique d’évolution multi-matchs pour comprendre chaque tournant du match.',
       },
       {
-        title: 'Lancer le débriefing IA sur le match',
+        title: 'Exporter les 10 dernières parties en CSV ou JSON',
         detail:
-          'Votre assistant IA actif (Gemini, Claude ou OpenAI) croise vos temps morts, votre vision et votre équipement final pour pointer 2 à 3 actions simples à corriger dès la partie suivante.',
+          'Utilisez les boutons « Exporter (10) · CSV / JSON » dans Analyse Post-Game (ou en bas du Tableau de bord) pour ouvrir vos KDA, CS/min, dégâts et vision dans Excel ou votre propre outil hors-ligne.',
       },
     ],
     checklist: [
-      { id: 'after-map', label: 'Inspecter une mort dans « Carte Tactique & Morts » (tours, buissons, dégâts)' },
-      { id: 'after-timeline', label: 'Comparer ma courbe d’or/CS face à mon vis-à-vis' },
-      { id: 'after-ai', label: 'Lire la synthèse Post-Game IA' },
+      { id: 'after-goals', label: 'Vérifier mes objectifs validés (Survie, Rythme, Macro) sur le match' },
+      { id: 'after-trend', label: 'Tester le graphique d’évolution (10 ou 15 parties) sur mon champion' },
+      { id: 'after-map', label: 'Inspecter une mort dans « Carte Tactique & Morts »' },
+      { id: 'after-export', label: 'Tester l’export CSV ou JSON des 10 dernières parties' },
     ],
     proNote:
-      'Dans « Carte Tactique & Morts », utilisez les flèches ← et → pour enchaîner vos morts dans l’ordre et repérer les zones où vous mourez sans allié proche.',
+      'Dans « Carte Tactique & Morts », utilisez les flèches ← et → du clavier pour enchaîner vos morts dans l’ordre chronologique sans lâcher les yeux de la carte.',
   },
   {
     id: 'career',
     stepNumber: '04',
-    title: 'Long terme, Multi-IA & Famille',
-    subtitle: 'Suivez la progression multi-matchs, choisissez votre moteur IA préféré et gérez plusieurs comptes.',
+    title: 'Progrès quotidiens, Compte & Famille',
+    subtitle: 'Recevez un conseil du jour sur mesure, suivez votre Score de Forme et gérez votre compte en 1 clic.',
     targetTab: 'dashboard',
     targetLabel: 'Ouvrir Tableau de bord',
     steps: [
       {
-        title: 'Cumuler les matchs dans l’archive locale & Synthèse Globale IA',
+        title: 'Consulter le Conseil Tactique Contextuel & le Score de Forme',
         detail:
-          'Chaque synchronisation enrichit automatiquement votre archive (jusqu’à 45 parties conservées par compte). La Synthèse Globale analyse vos tendances sur toute la durée : placements, CS/min et plan d’action sur 3 parties.',
+          'Chaque jour, une astuce ciblée issue de votre Synthèse Globale IA apparaît en haut du Dashboard. Passez le Programme d’Entraînement en mode « Standard » ou « Exigeant » et cliquez sur les pastilles (✓ / ×) pour revoir un match précis.',
       },
       {
-        title: 'Connecter votre abonnement IA favori & choisir le modèle',
+        title: 'Basculer de compte en 1 clic depuis le menu en haut à droite',
         detail:
-          'Dans Paramètres, sélectionnez Gemini, Claude Code (abonnement Anthropic), Anthropic API, OpenAI (GPT / o-series), OpenRouter, Mistral, Groq ou un modèle local, puis choisissez le modèle précis à utiliser.',
+          'Plus besoin de quitter votre page : cliquez sur votre Pseudo#TAG en haut à droite pour changer de profil Famille/Amis, modifier votre Riot ID ou activer Auto-sync et le thème clair/sombre instantanément.',
       },
       {
-        title: 'Basculer entre les comptes Famille & Amis',
+        title: 'Configurer votre moteur IA & vos services dans Compte & Réglages',
         detail:
-          'Ajoutez les Riot ID de vos enfants ou amis dans Paramètres : le menu déroulant en haut de page permet ensuite de changer de joueur en 1 clic sans jamais retoucher aux clés API.',
+          'La page « Compte & Réglages » est organisée en 3 onglets clairs (« Compte & Famille », « Moteur IA », « Services & PC ») pour éviter de mélanger vos comptes Riot avec les lanceurs Windows/Mac.',
       },
     ],
     checklist: [
-      { id: 'career-sync', label: 'Synchroniser mon Riot ID avec la clé API définitive' },
-      { id: 'career-synth', label: 'Lancer la Synthèse Globale IA sur mes matchs archivés' },
-      { id: 'career-ai', label: 'Vérifier mon fournisseur et modèle IA actif dans Paramètres' },
-      { id: 'career-family', label: 'Ajouter au moins un profil secondaire dans Paramètres' },
+      { id: 'career-daily', label: 'Valider mon « Conseil Tactique du jour » sur le Dashboard' },
+      { id: 'career-cmd', label: 'Tester la recherche rapide Ctrl+K ou le menu Compte en haut à droite' },
+      { id: 'career-synth', label: 'Générer ma Synthèse Globale IA sur mes matchs archivés' },
+      { id: 'career-family', label: 'Explorer les 3 onglets de « Compte & Réglages »' },
     ],
     proNote:
-      'L’Encyclopédie Champions affiche désormais 8 catégories (avec Junglers) sur une ligne épurée, le filtre par type de dégâts et les stats exactes niveau par niveau.',
+      'Lorsque vous synchronisez un nouveau match ou que vous atteignez un palier d’entraînement, une notification toast en bas à droite vous donne accès au bilan en 1 clic.',
   },
 ];
 
@@ -217,16 +230,100 @@ interface FeatureGuideCard {
 
 const FEATURE_CARDS: FeatureGuideCard[] = [
   {
+    id: 'contextual-advice',
+    category: 'ai',
+    title: 'Conseil Tactique Contextuel (Astuce du jour) & Boutons (i)',
+    where: 'Tableau de bord → Tout en haut sous le profil',
+    summary:
+      'Croise votre Synthèse Globale IA et vos statistiques par classe de champion pour afficher chaque jour une priorité claire (ex. vision en mid-game sur les initiateurs). Chaque titre du Dashboard dispose aussi d’une icône (i) explicative.',
+    howToUse:
+      'Lisez l’astuce du jour dès l’ouverture, naviguez entre les conseils avec < >, cliquez sur « Appliquer aujourd’hui » pour verrouiller votre focus ou cliquez sur « Optimiser [Champion] ».',
+    targetTab: 'dashboard',
+    keywords: 'conseil tactique contextuel astuce jour synthese ia info bulle aide',
+  },
+  {
+    id: 'voice-mic-coach',
+    category: 'live',
+    title: 'Bouton « Analyser » Web Speech & Coach Vocal au Micro',
+    where: 'Coach Temps Réel → Analyse instantanée & Micro',
+    summary:
+      'Cliquer sur « Analyser » génère vos 3 priorités live et les lit immédiatement à voix haute via l’API Web Speech (réécoutable en 1 clic). Le micro détecte aussi vos appels (« Dragon », « Baron », « Gank imminent », « Plus de flash »).',
+    howToUse:
+      'En partie, cliquez sur « Analyser » (activez « Synthèse vocale auto » si souhaité) pour entendre les points clés sans quitter le jeu des yeux, ou activez le micro pour détecter vos annonces vocales.',
+    targetTab: 'live',
+    keywords: 'micro microphone voix vocal web speech analyser synthese audio gemini dragon baron gank flash live',
+  },
+  {
+    id: 'lobby-scout-spells',
+    category: 'live',
+    title: 'Scouting de Lobby (style Porofessor) & Chrono Sorts d’Invocateur',
+    where: 'Coach Temps Réel → Panneau Connexion Live & Barre Sorts Adverses',
+    summary:
+      'En partie détectée par Spectator-V5, cliquez sur « Scanner le lobby (Rangs & Maîtrises) » pour afficher le rang, le winrate, la maîtrise sur le champion joué et les tags tactiques (Main, En série) des 10 joueurs, plus des chronomètres en 1 clic pour Flash (300s), TP (360s) et sorts adverses.',
+    howToUse:
+      'Pendant la partie, cliquez sur « Scanner le lobby » pour repérer les joueurs les plus dangereux, puis cliquez sur « Flash » ou « TP » sous un ennemi dès qu’il dépense son sort.',
+    targetTab: 'live',
+    keywords: 'porofessor lobby scout rang maitrise hot streak flash tp teleportation sort invocateur timer live',
+  },
+  {
+    id: 'gpi-radar-duo',
+    category: 'ai',
+    title: 'Profil de Performance 5 Axes (GPI) & Synergie Coéquipiers / Famille',
+    where: 'Tableau de bord → Sous les 4 indicateurs principaux',
+    summary:
+      'Calcule un radar à 5 axes (Combat & Part de dégâts, Farm, Vision, Survie, Objectifs) comparé aux cibles de votre rôle, affiche vos Défis officiels Riot (Challenges-V1) et détecte automatiquement vos partenaires de jeu réguliers (ex. parties en duo familial).',
+    howToUse:
+      'Repérez votre « Point fort » et votre « Axe prioritaire » sur le radar, puis consultez le tableau de droite pour voir votre taux de victoire avec vos coéquipiers fréquents.',
+    targetTab: 'dashboard',
+    keywords: 'gpi mobalytics radar performance 5 axes combat farm vision survie objectifs duo famille coequipier challenges',
+  },
+  {
+    id: 'training-program',
+    category: 'live',
+    title: 'Programme d’Entraînement Actif, Score de Forme & Notifications Toast',
+    where: 'Dashboard · Analyse Post-Game · Coach Live',
+    summary:
+      'Calcule votre Score de Forme (/100) et suit 3 objectifs adaptés à votre rôle (Survie, Rythme/Vision, Macro) en mode Standard ou Exigeant. Des notifications animées vous avertissent en bas à droite dès qu’une nouvelle analyse est prête ou qu’un objectif est atteint.',
+    howToUse:
+      'Dans le Dashboard, choisissez Standard ou Exigeant et cliquez sur une pastille (✓ / ×) pour inspecter le match concerné. En Post-Game et en Coach Live, vos mêmes objectifs sont vérifiés automatiquement.',
+    targetTab: 'dashboard',
+    keywords: 'programme entrainement score forme objectif standard exigeant notification toast alerte',
+  },
+  {
+    id: 'postgame-trend',
+    category: 'live',
+    title: 'Courbe d’Évolution & Export CSV / JSON (10 dernières parties)',
+    where: 'Analyse Post-Game → Barre du haut & Sous la carte tactique',
+    summary:
+      'Visualise votre progression courbe par courbe (KDA, Or/min, Vision) sur 5 à 20+ matchs, et permet d’exporter instantanément les statistiques des 10 dernières parties en CSV (Excel) ou JSON pour analyse hors-ligne.',
+    howToUse:
+      'Sélectionnez la plage de parties puis cliquez sur un point pour ouvrir ce match, ou utilisez les boutons « Exporter (10) · CSV / JSON » dans Analyse Post-Game ou en bas du Tableau de bord.',
+    targetTab: 'postgame',
+    keywords: 'graphique evolution tendance kda or vision 10 parties export csv json excel hors-ligne',
+  },
+  {
+    id: 'command-palette',
+    category: 'account',
+    title: 'Palette de Commande Universelle (Ctrl+K / ⌘K)',
+    where: 'Barre supérieure → Bouton Rechercher ⌘K (partout dans l’app)',
+    summary:
+      'Permet de sauter en 1 seconde vers un onglet, un champion (Build ou Fiche Encyclopédie), une partie archivée, un mémo de duel ou le mode clair/sombre sans toucher à la souris.',
+    howToUse:
+      'Appuyez sur Ctrl+K (Windows) ou ⌘K (Mac), tapez quelques lettres (ex. « Sona », « Leona », « Post-Game »), naviguez avec ↑ / ↓ et validez avec Entrée.',
+    targetTab: 'dashboard',
+    keywords: 'ctrl k cmd palette commande recherche rapide raccourci clavier navigation',
+  },
+  {
     id: 'multi-combo',
     category: 'builds',
-    title: 'Calculateur Multi-Combinaisons, Conseiller Draft & Carnet Match-ups',
-    where: 'Builds & Match-ups → En-tête Match-up & Milieu de page',
+    title: 'Carnet de Mémos complet, Contre-picks & Multi-Combinaisons',
+    where: 'Builds & Match-ups → Zone Mémo de duel & Scénarios',
     summary:
-      'Suggère 3 contre-picks adaptés à votre rôle et à la composition ennemie (« Conseiller mon pick »), sauvegarde vos mémos personnels par duo de lane et calcule 4 builds prêts à jouer (Équilibré, Retard, Snowball, Anti-Comp).',
+      'Propose 3 contre-picks en draft (« Suggérer des contre-picks »), offre un vrai gestionnaire de mémos (« Enregistrer » + « Mes mémos » pour éditer, corriger, filtrer et supprimer vos notes) et calcule 4 builds prêts à jouer.',
     howToUse:
-      'Notez vos réflexes de lane dans le Mémo en haut, cliquez sur « Conseiller mon pick » en draft, ou cliquez sur « Charger ce build + runes » sur l’un des 4 scénarios.',
+      'Écrivez votre note de match-up puis cliquez sur « Enregistrer ». Ouvrez « Mes mémos » pour modifier ou supprimer d’anciens duels, ou recharger un match-up en 1 clic.',
     targetTab: 'builds',
-    keywords: 'calculateur combinaisons dominé retard snowball anti soin runes conseiller pick draft memo carnet matchup',
+    keywords: 'calculateur combinaisons dominé retard snowball anti soin runes conseiller pick draft memo carnet matchup editer supprimer',
   },
   {
     id: 'atelier-sandbox',
@@ -255,38 +352,38 @@ const FEATURE_CARDS: FeatureGuideCard[] = [
   {
     id: 'passive-ai',
     category: 'ai',
-    title: 'Bouton (i) « Passif IA » & Simulateur d’impact en temps réel',
-    where: 'Builds & Match-ups → Icône (i) à côté des objets + Simulateur en bas',
+    title: 'Bouton (i) « Passif IA » & Simulateur sur 5 cibles modifiables',
+    where: 'Builds & Match-ups → Simulateur d’impact en bas',
     summary:
-      'Calcule les dégâts bruts et mitigés contre un ennemi réel sur une durée d’échange (3s/6s/10s) et explique par IA comment un passif unique (ex. Aube de Haut-Lacère / Aube et crépuscule) modifie vos formules.',
+      'Calcule les dégâts bruts et mitigés sur 3s/6s/10s contre 5 champions ennemis (modifiables chacun directement via l’icône crayon) et explique par IA comment un passif unique (ex. Aube et crépuscule) agit sur vos stats.',
     howToUse:
-      'Cliquez sur (i) à côté d’un objet ou « Formule IA » dans l’inspecteur Data Dragon pour obtenir les équations chiffrées sur votre build et cible actuels.',
+      'Cliquez sur une des 5 cibles pour simuler vos dégâts, cliquez sur son petit crayon pour la remplacer par un autre champion de la liste, ou cliquez sur (i) « Formule IA » à côté d’un objet.',
     targetTab: 'builds',
-    keywords: 'aube crepuscule haut-lacere passif ia formule simulateur degats data dragon',
+    keywords: 'aube crepuscule haut-lacere passif ia formule simulateur degats cibles modifier crayon data dragon',
   },
   {
     id: 'multi-ai-providers',
     category: 'ai',
     title: 'Multi-Fournisseurs IA & Choix du Modèle (Claude, OpenAI, Gemini, Local)',
-    where: 'Paramètres → Fournisseur IA, Abonnements & Choix du Modèle',
+    where: 'Compte & Réglages → Onglet Moteur IA',
     summary:
-      'Permet de brancher votre abonnement ou clé préférée : Google Gemini, Claude Code (CLI Anthropic), Anthropic Claude API, OpenAI (GPT / o-series), OpenRouter, Mistral, Groq, DeepSeek ou Ollama local.',
+      'Permet de brancher votre abonnement ou clé préférée : Google Gemini, Claude Code (CLI Anthropic), Anthropic API, OpenAI (GPT / o-series), OpenRouter, Mistral, Groq, DeepSeek ou Ollama local.',
     howToUse:
-      'Choisissez votre fournisseur et le modèle exact dans Paramètres, puis cliquez sur « Tester la connexion ». Ce modèle pilote alors toutes les analyses de l’application.',
+      'Ouvrez « Compte & Réglages » puis l’onglet « Moteur IA », choisissez votre fournisseur et le modèle exact, puis cliquez sur « Tester la connexion ».',
     targetTab: 'settings',
-    keywords: 'claude code anthropic openai chatgpt gemini mistral groq modele ia abonnement parametres',
+    keywords: 'claude code anthropic openai chatgpt gemini mistral groq modele ia abonnement compte reglages',
   },
   {
     id: 'career-synthesis',
     category: 'ai',
-    title: 'ADN Gameplay, Champions recommandés & Synthèse Globale',
-    where: 'Tableau de bord → Juste sous les 4 KPIs principaux',
+    title: 'ADN Gameplay, Champions recommandés & Synergie Duo',
+    where: 'Tableau de bord → Milieu de page',
     summary:
-      'Analyse toutes vos parties archivées et vos maîtrises officielles Riot (CHAMPION-MASTERY-V4) pour définir votre profil de joueur, recommander des champions ou pépites oubliées, puis générer un plan IA sur 3 parties.',
+      'Analyse toutes vos parties archivées et vos maîtrises officielles Riot pour définir votre profil de joueur, recommander des champions adaptés, visualiser vos meilleurs duos et générer un plan IA sur 3 parties.',
     howToUse:
       'Filtrez les suggestions par rôle (Auto, Top, Jungle, Mid, ADC, Support) puis cliquez sur « Préparer le build » pour ouvrir le champion directement dans l’Optimiseur.',
     targetTab: 'dashboard',
-    keywords: 'adn gameplay recommandation champions nouveau champion decouvrir maitrise mastery synthese globale tableau de bord',
+    keywords: 'adn gameplay recommandation champions duo synergie maitrise mastery synthese globale tableau de bord',
   },
   {
     id: 'postgame-map',
@@ -294,9 +391,9 @@ const FEATURE_CARDS: FeatureGuideCard[] = [
     title: 'Carte Tactique, Morts & Heatmap Multi-Matchs',
     where: 'Analyse Post-Game → Vue d’ensemble ou onglet Carte Tactique & Morts',
     summary:
-      'Superpose les 22 tours officielles (portée ~775), les 34 buissons calibrés 2026, les portraits des champions autour de chaque mort et un calque « Heatmap » agrégeant toutes vos morts de l’archive pour repérer vos zones critiques récurrentes.',
+      'Superpose les 22 tours officielles (portée ~775), les 34 buissons calibrés 2026, les portraits des 10 champions autour de chaque mort et un calque « Heatmap » agrégeant toutes vos morts de l’archive.',
     howToUse:
-      'Dans Analyse Post-Game, activez « Heatmap » pour voir vos zones les plus punitives sur l’ensemble de vos matchs, ou ouvrez la carte en grand format et parcourez vos morts avec ← / →.',
+      'Dans Analyse Post-Game, activez « Heatmap » pour voir vos zones les plus punitives, ou ouvrez la carte en grand format et parcourez vos morts avec ← / →.',
     targetTab: 'postgame',
     keywords: 'post-game carte tactique morts heatmap zones critiques tours portee buissons champions timeline courbes or cs',
   },
@@ -327,14 +424,14 @@ const FEATURE_CARDS: FeatureGuideCard[] = [
   {
     id: 'profiles-settings',
     category: 'account',
-    title: 'Profils Famille & Amis + Auto-Synchronisation',
-    where: 'Paramètres & Barre supérieure',
+    title: 'Menu Compte Rapide, Profils Famille & Onglets Réglages',
+    where: 'Menu Compte (haut à droite) & Compte & Réglages',
     summary:
-      'Enregistrez plusieurs comptes Riot (les vôtres, vos enfants, vos amis) avec chacun leur archive isolée, et activez la synchro silencieuse toutes les 5 minutes.',
+      'Changez de joueur Famille/Amis, modifiez votre Riot ID ou activez Auto-sync et le thème sombre directement depuis le menu en haut à droite, sans quitter votre écran. La page Compte & Réglages sépare Compte & Famille, Moteur IA et Services & PC.',
     howToUse:
-      'Ajoutez un compte dans Paramètres, puis basculez à tout moment via la liste déroulante en haut de l’écran.',
+      'Cliquez sur votre Pseudo#TAG tout en haut à droite pour basculer de profil en 1 clic, ou ouvrez « Compte & Réglages » pour ajouter un proche ou télécharger un lanceur PC.',
     targetTab: 'settings',
-    keywords: 'profils famille amis comptes parametres sync cle riot',
+    keywords: 'profils famille amis comptes reglages menu rapide sync cle riot',
   },
 ];
 
@@ -348,6 +445,26 @@ interface TroubleshootingItem {
 }
 
 const TROUBLESHOOTING_ITEMS: TroubleshootingItem[] = [
+  {
+    id: 'quick-find',
+    question: 'Comment retrouver vite un champion, un ancien match ou un mémo de duel ?',
+    cause:
+      'Avec 170+ champions, jusqu’à 45 parties archivées et vos notes personnelles, naviguer onglet par onglet peut sembler long.',
+    solution:
+      'Appuyez sur Ctrl+K (ou ⌘K sur Mac), ou cliquez sur « Rechercher ⌘K » tout en haut : tapez le nom d’un champion, d’un match ou d’un mémo pour sauter directement dessus.',
+    targetTab: 'dashboard',
+    actionLabel: 'Aller sur le Tableau de bord',
+  },
+  {
+    id: 'memo-manage',
+    question: 'Où sont enregistrés mes mémos de duel et comment les modifier ou supprimer ?',
+    cause:
+      'Les notes sont sauvegardées localement par paire de champions (ex. Tahm Kench vs Leona) et ne doivent pas se perdre entre deux parties.',
+    solution:
+      'Dans Builds & Match-ups, cliquez sur « Enregistrer » à droite du champ mémo pour sauvegarder, puis cliquez sur « Mes mémos » pour consulter, éditer, filtrer, recharger ou supprimer toutes vos notes.',
+    targetTab: 'builds',
+    actionLabel: 'Ouvrir Builds & Match-ups',
+  },
   {
     id: 'practice-tool',
     question: 'Ma partie Outil d’entraînement ou Personnalisée n’apparaît pas dans l’historique',
@@ -394,9 +511,19 @@ const TROUBLESHOOTING_ITEMS: TroubleshootingItem[] = [
     cause:
       'Par défaut, l’application démarre sur Google Gemini, mais vous pouvez piloter les analyses avec votre propre abonnement ou clé (Claude Code en local, Anthropic API, OpenAI, Mistral, Groq, etc.).',
     solution:
-      'Allez dans Paramètres → Fournisseur IA, Abonnements & Choix du Modèle, sélectionnez votre fournisseur et le modèle souhaité, puis cliquez sur « Tester la connexion ». En ligne (Cloud), utilisez une clé API via Settings > Secrets ; en local sur votre PC, `claude login` connecte votre abonnement Claude Code.',
+      'Ouvrez Compte & Réglages → onglet « Moteur IA », sélectionnez votre fournisseur et le modèle souhaité, puis cliquez sur « Tester la connexion ». En ligne (Cloud), utilisez une clé API via Settings > Secrets ; en local sur votre PC, `claude login` connecte votre abonnement Claude Code.',
     targetTab: 'settings',
     actionLabel: 'Configurer mon fournisseur IA',
+  },
+  {
+    id: 'live-voice-analyser',
+    question: 'Comment entendre la synthèse vocale rapide Web Speech pendant ma partie ?',
+    cause:
+      'En pleine partie, lire un pavé de texte fait perdre du temps sur la mini-carte : le module Coach Temps Réel permet d’écouter les 3 points clés directement via l’API Web Speech du navigateur.',
+    solution:
+      'Allez dans la zone verte « En Partie · Coach Temps Réel », cliquez sur « Analyser » : la priorité immédiate, la fenêtre de rappel et le danger ennemi sont lus à voix haute (avec bouton « Réécouter » et interrupteur « Synthèse vocale auto »).',
+    targetTab: 'live',
+    actionLabel: 'Tester dans Coach Temps Réel',
   },
   {
     id: 'api-key-personal',
@@ -404,9 +531,19 @@ const TROUBLESHOOTING_ITEMS: TroubleshootingItem[] = [
     cause:
       'Contrairement à une clé de développement temporaire (valable 24h), votre application approuvée « LOL AI COACH » (Personal API Key) n’expire plus chaque jour.',
     solution:
-      'Si vous venez de la mettre à jour dans Settings > Secrets, cliquez simplement sur « Synchroniser » en haut à droite (ou vérifiez le voyant vert ci-dessus). Pensez simplement à ne jamais diffuser de capture où votre clé RGAPI apparaît en clair.',
+      'Si vous venez de la mettre à jour dans Settings > Secrets, cliquez simplement sur « Synchroniser » en haut à droite (ou vérifiez le voyant dans Compte & Réglages → Services & PC). Ne diffusez jamais une capture où votre clé RGAPI apparaît en clair.',
     targetTab: 'settings',
     actionLabel: 'Vérifier l’état des services',
+  },
+  {
+    id: 'share-family-repo',
+    question: 'Pour partager avec mon fils : doit-il cloner le repo GitHub et créer sa propre clé Riot ?',
+    cause:
+      'Si vous lui partagez le lien web de votre app hébergée, votre clé serveur permanente suffit déjà pour vous deux ! En revanche, s’il clone le repo GitHub sur son PC, le fichier .env (contenant votre clé) est volontairement exclu de GitHub par sécurité.',
+    solution:
+      'Suivez l’assistant Onboarding juste au-dessus : choisissez « Partager votre lien web » (0 installation, 0 clé à créer pour lui) ou « Cloner le repo sur son PC » (avec téléchargement de l’assistant double-clic Windows/Mac).',
+    targetTab: 'settings',
+    actionLabel: 'Ouvrir Compte & Réglages',
   },
 ];
 
@@ -458,26 +595,34 @@ const RIOT_API_CAPABILITIES: RiotApiCapability[] = [
   {
     name: 'CHAMPION-V3 (Rotation gratuite)',
     endpoint: 'platform/v3/champion-rotations',
-    status: 'opportunity',
-    usage: 'Non encore branché · Champions gratuits de la semaine',
+    status: 'active',
+    usage: 'Champions gratuits de la semaine intégrés dans l’Encyclopédie',
     benefitForYou:
-      'Très pratique dans l’Encyclopédie pour repérer en 1 coup d’œil les champions gratuits pour vos enfants.',
+      'Affiche directement quels champions sont gratuits cette semaine pour vos tests ou pour vos enfants.',
   },
   {
-    name: 'LEAGUE-V4 (File Flexible)',
-    endpoint: 'RANKED_FLEX_SR',
-    status: 'opportunity',
-    usage: 'Actuellement centré sur Solo/Duo uniquement',
+    name: 'LEAGUE-V4 (Solo/Duo & File Flexible)',
+    endpoint: 'entries/by-puuid (RANKED_SOLO_5x5 & RANKED_FLEX_SR)',
+    status: 'active',
+    usage: 'Rang, LP, Winrate et séries en Solo/Duo et en Flex + Scouting de lobby',
     benefitForYou:
-      'Permettrait d’afficher votre rang en équipe/Flex quand vous jouez à 3 ou 5 en famille.',
+      'Affiche vos deux rangs sur le Tableau de bord et permet le scan des 10 joueurs en partie Live.',
   },
   {
-    name: 'LOL-STATUS-V4 & CHALLENGES-V1',
-    endpoint: 'platform-data · challenges/v1',
-    status: 'opportunity',
-    usage: 'Non encore branché · État des serveurs Riot & Défis',
+    name: 'CHALLENGES-V1 & LOL-STATUS-V4',
+    endpoint: 'challenges/v1/player-data · status/v4/platform-data',
+    status: 'active',
+    usage: 'Palier de cristal des Défis Riot & surveillance en direct des incidents serveur',
     benefitForYou:
-      'Préviendrait en cas de maintenance serveur EUW et afficherait les jalons de défis débloqués.',
+      'Affiche vos points/paliers de Défis et vous prévient immédiatement en cas de panne ou maintenance EUW1.',
+  },
+  {
+    name: 'TOURNAMENT / CLASH-V1',
+    endpoint: 'lol/clash/v1/players/by-puuid',
+    status: 'opportunity',
+    usage: 'Non encore branché · Tournois Clash du week-end',
+    benefitForYou:
+      'Permettrait de scouter automatiquement les équipes adverses lors des soirées Clash en famille ou entre amis.',
   },
 ];
 
@@ -491,15 +636,20 @@ export function GuideView({
   geminiConfigured,
   archivedMatchesCount,
   savedProfilesCount,
+  savedProfiles,
+  onSaveProfile,
+  onSwitchProfile,
   onNavigate,
 }: GuideViewProps) {
   const [activeStageId, setActiveStageId] = useState<WorkflowStageId>('before');
   const [featureCategory, setFeatureCategory] = useState<FeatureCategory>('all');
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedIssueId, setSelectedIssueId] = useState<string>('practice-tool');
+  const [selectedIssueId, setSelectedIssueId] = useState<string>('quick-find');
   const [apiFilter, setApiFilter] = useState<ApiFilter>('all');
+  const [showApiDetails, setShowApiDetails] = useState(false);
   const [expandedFeatureIds, setExpandedFeatureIds] = useState<Record<string, boolean>>({
-    'passive-ai': true,
+    'contextual-advice': true,
+    'training-program': true,
   });
 
   const [completedChecklist, setCompletedChecklist] = useState<Record<string, boolean>>(() => {
@@ -708,7 +858,103 @@ export function GuideView({
             </div>
           </div>
         </div>
+
+        {/* Démarrage Express en 60 secondes (ultra-lisible pour aller à l'essentiel) */}
+        <div className="pt-2 border-t border-slate-200 dark:border-slate-800 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
+              <Zap className="w-4 h-4 text-amber-500 shrink-0" aria-hidden="true" />
+              <span>Démarrage Express en 60 secondes — Votre routine en 3 réflexes</span>
+            </div>
+            <span className="text-[11px] text-slate-500 dark:text-slate-400">
+              Astuce : cliquez sur les icônes <strong className="text-slate-700 dark:text-slate-200">(i)</strong> du Dashboard si vous avez un doute.
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <button
+              type="button"
+              onClick={() => onNavigate('dashboard')}
+              className="text-left rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] p-3.5 hover:border-amber-500/50 transition-colors space-y-1.5"
+            >
+              <div className="flex items-center justify-between gap-2 text-xs font-bold text-slate-900 dark:text-white">
+                <span className="flex items-center gap-1.5">
+                  <Lightbulb className="w-3.5 h-3.5 text-amber-500 shrink-0" aria-hidden="true" />
+                  1. À l’ouverture
+                </span>
+                <ArrowRight className="w-3.5 h-3.5 text-slate-400" aria-hidden="true" />
+              </div>
+              <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                Lisez votre <strong>Conseil Tactique du jour</strong> et vos 3 objectifs du <strong>Score de Forme</strong> avant de lancer la file.
+              </p>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => onNavigate('builds')}
+              className="text-left rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] p-3.5 hover:border-amber-500/50 transition-colors space-y-1.5"
+            >
+              <div className="flex items-center justify-between gap-2 text-xs font-bold text-slate-900 dark:text-white">
+                <span className="flex items-center gap-1.5">
+                  <Swords className="w-3.5 h-3.5 text-sky-500 shrink-0" aria-hidden="true" />
+                  2. En sélection (Draft)
+                </span>
+                <ArrowRight className="w-3.5 h-3.5 text-slate-400" aria-hidden="true" />
+              </div>
+              <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                Relisez votre <strong>Mémo de duel</strong>, regardez les contre-picks et choisissez votre scénario (Équilibré / Retard / Snowball).
+              </p>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => onNavigate('postgame')}
+              className="text-left rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] p-3.5 hover:border-amber-500/50 transition-colors space-y-1.5"
+            >
+              <div className="flex items-center justify-between gap-2 text-xs font-bold text-slate-900 dark:text-white">
+                <span className="flex items-center gap-1.5">
+                  <Target className="w-3.5 h-3.5 text-emerald-500 shrink-0" aria-hidden="true" />
+                  3. Après la partie
+                </span>
+                <ArrowRight className="w-3.5 h-3.5 text-slate-400" aria-hidden="true" />
+              </div>
+              <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                Cliquez sur la <strong>notification toast</strong> en bas à droite pour inspecter vos morts sur la carte et votre courbe d’évolution.
+              </p>
+            </button>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 rounded-lg border border-slate-200/80 dark:border-slate-800 bg-slate-50/70 dark:bg-[#0B0E14] px-3.5 py-2.5 text-[11px] text-slate-600 dark:text-slate-300">
+            <span className="inline-flex items-center gap-1.5 font-semibold text-slate-800 dark:text-slate-200">
+              <Keyboard className="w-3.5 h-3.5 text-amber-500 shrink-0" aria-hidden="true" />
+              Raccourcis pratiques :
+            </span>
+            <span>
+              <kbd className="px-1.5 py-0.5 rounded bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 font-mono text-[10px]">
+                Ctrl+K
+              </kbd>{' '}
+              / ⌘K : recherche rapide partout
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <Bell className="w-3 h-3 text-sky-500" aria-hidden="true" />
+              Toasts automatiques : alertes Post-Game &amp; objectifs validés
+            </span>
+          </div>
+        </div>
       </section>
+
+      {/* 1bis. Assistant Onboarding & Partage Famille pas à pas */}
+      <OnboardingShareWizard
+        activeRiotId={riotId}
+        activeRegion={region}
+        riotConfigured={riotConfigured}
+        riotKeyStartsWithRgapi={riotKeyStartsWithRgapi}
+        geminiConfigured={geminiConfigured}
+        savedProfiles={savedProfiles}
+        onSaveProfile={onSaveProfile}
+        onSwitchProfile={onSwitchProfile}
+        onNavigateTab={(tab) => onNavigate(tab)}
+      />
 
       {/* 2. Parcours Interactif en 4 étapes */}
       <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-6 space-y-5">
@@ -856,7 +1102,7 @@ export function GuideView({
               <span>2. Où trouver chaque outil ? (Recherche instantanée)</span>
             </h2>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              Tapez un mot-clé (ex. « U.GG », « runes », « buissons », « Claude », « Junglers ») pour trouver immédiatement l’outil.
+              Tapez un mot-clé (ex. « memo », « toast », « ctrl k », « évolution », « U.GG », « buissons ») pour trouver immédiatement l’outil.
             </p>
           </div>
 
@@ -1000,7 +1246,7 @@ export function GuideView({
                 {selectedIssue.question}
               </div>
               <div className="space-y-1">
-                <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                <div className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
                   Pourquoi cela arrive
                 </div>
                 <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
@@ -1008,7 +1254,7 @@ export function GuideView({
                 </p>
               </div>
               <div className="space-y-1">
-                <div className="text-[11px] font-semibold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
+                <div className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
                   La solution immédiate
                 </div>
                 <p className="text-xs text-slate-700 dark:text-slate-200 leading-relaxed">
@@ -1035,97 +1281,121 @@ export function GuideView({
         </div>
       </section>
 
-      {/* 5. Audit Portail Riot Developer & Prochaines APIs exploitables */}
+      {/* 5. État technique & Services Riot API (dépliable pour garder le guide léger) */}
       <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-6 space-y-5">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div>
             <h2 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
               <Cpu className="w-4 h-4 text-emerald-500" aria-hidden="true" />
-              <span>4. Bilan de votre Clé Riot Définitive &amp; Améliorations API possibles</span>
+              <span>4. Connexions Riot API &amp; Raccourcis vers les écrans</span>
             </h2>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              Votre application approuvée (Personal API Key · 20 req/s · 100 req/2 min) reste valide sans expiration de 24h et ouvre l’accès à d’autres endpoints Riot utiles.
+              Votre clé personnelle Riot reste sécurisée côté serveur. Ouvrez les détails techniques uniquement si vous souhaitez voir les flux utilisés.
             </p>
           </div>
 
-          <div className="flex items-center gap-1.5 shrink-0">
-            {[
-              { id: 'all', label: 'Toutes' },
-              { id: 'active', label: 'Déjà actives' },
-              { id: 'opportunity', label: 'À ajouter ensuite' },
-            ].map((tab) => (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => setApiFilter(tab.id as ApiFilter)}
-                className={`px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-colors ${
-                  apiFilter === tab.id
-                    ? 'border-emerald-500/60 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 font-semibold'
-                    : 'border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300 hover:border-emerald-500/40'
-                }`}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
+          <button
+            type="button"
+            onClick={() => setShowApiDetails((v) => !v)}
+            aria-expanded={showApiDetails}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0D121C] text-slate-700 dark:text-slate-200 hover:border-emerald-500/60 transition-colors whitespace-nowrap shrink-0"
+          >
+            {showApiDetails ? (
+              <ChevronUp className="w-3.5 h-3.5" aria-hidden="true" />
+            ) : (
+              <ChevronDown className="w-3.5 h-3.5" aria-hidden="true" />
+            )}
+            <span>
+              {showApiDetails ? 'Masquer les détails techniques' : 'Voir les flux Riot API (technique)'}
+            </span>
+          </button>
         </div>
 
-        {/* Note sécurité importante suite à la capture */}
-        <div className="rounded-xl border border-amber-500/35 bg-amber-500/5 p-4 flex items-start gap-3 text-xs">
-          <ShieldAlert className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" aria-hidden="true" />
-          <div className="space-y-1 text-slate-700 dark:text-slate-300">
-            <div className="font-semibold text-slate-900 dark:text-white">
-              Bon réflexe sécurité avec votre clé définitive
+        {showApiDetails && (
+          <div className="space-y-4 pt-2 border-t border-slate-200 dark:border-slate-800">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-xs text-slate-500 dark:text-slate-400">
+                Filtrer les services Riot connectés ou envisageables :
+              </span>
+              <div className="flex items-center gap-1.5 shrink-0">
+                {[
+                  { id: 'all', label: 'Toutes' },
+                  { id: 'active', label: 'Déjà actives' },
+                  { id: 'opportunity', label: 'À ajouter ensuite' },
+                ].map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setApiFilter(tab.id as ApiFilter)}
+                    className={`px-2.5 py-1 text-xs font-medium rounded-lg border transition-colors ${
+                      apiFilter === tab.id
+                        ? 'border-emerald-500/60 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 font-semibold'
+                        : 'border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300 hover:border-emerald-500/40'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
             </div>
-            <p className="leading-relaxed">
-              Votre clé est bien protégée côté serveur via les Secrets. Évitez simplement de partager publiquement une capture d’écran du portail Riot où la ligne <code className="font-mono">API Key (RGAPI-...)</code> apparaît en clair ; si besoin, le bouton rouge <strong className="text-slate-900 dark:text-white">NEW API KEY</strong> sur votre portail permet d’en générer une nouvelle en 1 clic.
-            </p>
-          </div>
-        </div>
 
-        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800">
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] text-slate-500 dark:text-slate-400">
-                <th className="py-2.5 px-3 text-left font-medium">API Riot</th>
-                <th className="py-2.5 px-3 text-left font-medium">Statut</th>
-                <th className="py-2.5 px-3 text-left font-medium">Rôle technique</th>
-                <th className="py-2.5 px-3 text-left font-medium">Bénéfice concret pour vous</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-200/70 dark:divide-slate-800/70">
-              {filteredApis.map((api) => (
-                <tr key={api.name} className="hover:bg-slate-50 dark:hover:bg-slate-800/30">
-                  <td className="py-2.5 px-3 align-top">
-                    <div className="font-semibold text-slate-900 dark:text-white">{api.name}</div>
-                    <div className="text-[10px] font-mono text-slate-500 dark:text-slate-400">
-                      {api.endpoint}
-                    </div>
-                  </td>
-                  <td className="py-2.5 px-3 align-top whitespace-nowrap">
-                    {api.status === 'active' ? (
-                      <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
-                        <CheckCircle2 className="w-3.5 h-3.5" aria-hidden="true" />
-                        Actif
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-600 dark:text-amber-400">
-                        <Sparkles className="w-3.5 h-3.5" aria-hidden="true" />
-                        Opportunité
-                      </span>
-                    )}
-                  </td>
-                  <td className="py-2.5 px-3 align-top text-slate-600 dark:text-slate-300">
-                    {api.usage}
-                  </td>
-                  <td className="py-2.5 px-3 align-top text-slate-700 dark:text-slate-200">
-                    {api.benefitForYou}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+            <div className="rounded-xl border border-amber-500/35 bg-amber-500/5 p-4 flex items-start gap-3 text-xs">
+              <ShieldAlert className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" aria-hidden="true" />
+              <div className="space-y-1 text-slate-700 dark:text-slate-300">
+                <div className="font-semibold text-slate-900 dark:text-white">
+                  Bon réflexe sécurité avec votre clé API
+                </div>
+                <p className="leading-relaxed">
+                  Votre clé est protégée côté serveur via les Secrets. Évitez simplement de partager publiquement une capture d’écran du portail Riot où la ligne <code className="font-mono">RGAPI-...</code> apparaît en clair.
+                </p>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] text-slate-500 dark:text-slate-400">
+                    <th className="py-2.5 px-3 text-left font-medium">API Riot</th>
+                    <th className="py-2.5 px-3 text-left font-medium">Statut</th>
+                    <th className="py-2.5 px-3 text-left font-medium">Rôle</th>
+                    <th className="py-2.5 px-3 text-left font-medium">Ce que ça vous apporte</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200/70 dark:divide-slate-800/70">
+                  {filteredApis.map((api) => (
+                    <tr key={api.name} className="hover:bg-slate-50 dark:hover:bg-slate-800/30">
+                      <td className="py-2.5 px-3 align-top">
+                        <div className="font-semibold text-slate-900 dark:text-white">{api.name}</div>
+                        <div className="text-[10px] font-mono text-slate-500 dark:text-slate-400">
+                          {api.endpoint}
+                        </div>
+                      </td>
+                      <td className="py-2.5 px-3 align-top whitespace-nowrap">
+                        {api.status === 'active' ? (
+                          <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
+                            <CheckCircle2 className="w-3.5 h-3.5" aria-hidden="true" />
+                            Actif
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-600 dark:text-amber-400">
+                            <Sparkles className="w-3.5 h-3.5" aria-hidden="true" />
+                            Opportunité
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-2.5 px-3 align-top text-slate-600 dark:text-slate-300">
+                        {api.usage}
+                      </td>
+                      <td className="py-2.5 px-3 align-top text-slate-700 dark:text-slate-200">
+                        {api.benefitForYou}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
 
         {/* Raccourcis rapides vers les écrans */}
         <div className="flex flex-wrap gap-2.5 pt-1">
@@ -1135,7 +1405,7 @@ export function GuideView({
             { tab: 'postgame' as GuideTargetTab, label: 'Analyse Post-Game', icon: History },
             { tab: 'live' as GuideTargetTab, label: 'Coach Temps Réel', icon: Activity },
             { tab: 'champions' as GuideTargetTab, label: 'Champions', icon: BookOpen },
-            { tab: 'settings' as GuideTargetTab, label: 'Paramètres', icon: Settings },
+            { tab: 'settings' as GuideTargetTab, label: 'Compte & Réglages', icon: Settings },
           ].map((btn) => {
             const Icon = btn.icon;
             return (

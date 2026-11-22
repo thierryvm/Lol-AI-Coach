@@ -1,12 +1,14 @@
 import {
   Bot,
   Check,
+  Compass,
   Copy,
   Cpu,
   Download,
   ExternalLink,
   Globe,
   KeyRound,
+  Pencil,
   RefreshCw,
   Save,
   Settings,
@@ -16,8 +18,11 @@ import {
   Trash2,
   UserPlus,
   Users,
+  X,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
+
+type SettingsSectionTab = 'account' | 'ai' | 'services';
 import {
   AI_PROVIDER_CATALOG,
   getProviderDefinition,
@@ -53,6 +58,7 @@ interface SettingsViewProps {
   onSwitchProfile: (profile: SavedPlayerProfile) => void;
   onRefreshDataDragon: () => Promise<void>;
   onAiSelectionChange?: (selection: AiUserSelection) => void;
+  onOpenOnboarding?: () => void;
 }
 
 const REGIONS: RiotPlatform[] = [
@@ -111,7 +117,9 @@ export function SettingsView({
   onSwitchProfile,
   onRefreshDataDragon,
   onAiSelectionChange,
+  onOpenOnboarding,
 }: SettingsViewProps) {
+  const [settingsSection, setSettingsSection] = useState<SettingsSectionTab>('account');
   const [riotId, setRiotId] = useState(defaultRiotId);
   const [region, setRegion] = useState<RiotPlatform>(defaultRegion);
   const [role, setRole] = useState<Role>(defaultRole);
@@ -137,12 +145,20 @@ export function SettingsView({
     latencyMs?: number;
   } | null>(null);
 
-  // Formulaire ajout profil Famille / Amis
+  // Formulaire ajout / édition profil Famille / Amis
   const [newLabel, setNewLabel] = useState('');
   const [newRiotId, setNewRiotId] = useState('');
   const [newRegion, setNewRegion] = useState<RiotPlatform>('EUW1');
   const [newRole, setNewRole] = useState<Role>('MID');
-  const [profileAddedNotice, setProfileAddedNotice] = useState(false);
+  const [addingProfile, setAddingProfile] = useState(false);
+  const [profileAddedNotice, setProfileAddedNotice] = useState<string | null>(null);
+  const [profileAddError, setProfileAddError] = useState<string | null>(null);
+
+  const [editingProfileId, setEditingProfileId] = useState<string | null>(null);
+  const [editLabel, setEditLabel] = useState('');
+  const [editRiotId, setEditRiotId] = useState('');
+  const [editRegion, setEditRegion] = useState<RiotPlatform>('EUW1');
+  const [editRole, setEditRole] = useState<Role>('MID');
 
   const [copiedBlock, setCopiedBlock] = useState<'env' | 'cmd' | null>(null);
 
@@ -186,19 +202,157 @@ export function SettingsView({
     window.setTimeout(() => setSavedNotice(false), 2500);
   };
 
-  const handleAddProfile = (e: React.FormEvent) => {
+  const normalizeRiotIdWithOptionalLabel = (
+    rawRiotId: string,
+    rawLabel: string,
+  ): { canonical: string; gameName: string; tagLine: string; error?: string } => {
+    const cleanLabel = rawLabel.replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
+    let cleanInput = rawRiotId
+      .replace(/[\u200B-\u200D\uFEFF]/g, '')
+      .replace(/＃/g, '#')
+      .trim();
+
+    // Cas malin : si l'utilisateur a mis le pseudo dans Surnom (ex: "jeanculderetour2")
+    // et seulement "#3842" ou "3842" dans le champ Riot ID, on les combine proprement !
+    if (
+      cleanLabel &&
+      !cleanLabel.includes('#') &&
+      (cleanInput.startsWith('#') || (/^[0-9]{2,5}$/.test(cleanInput) && !cleanInput.includes('#')))
+    ) {
+      const strippedTag = cleanInput.replace(/^#+/, '').trim();
+      cleanInput = `${cleanLabel}#${strippedTag}`;
+    }
+
+    const hashIdx = cleanInput.indexOf('#');
+    if (hashIdx === -1) {
+      return {
+        canonical: cleanInput,
+        gameName: cleanInput,
+        tagLine: '',
+        error:
+          'Format incomplet : saisissez le Pseudo et le #TAG ensemble dans « Riot ID complet » (exemple : jeanculderetour2#3842).',
+      };
+    }
+
+    const gameName = cleanInput.slice(0, hashIdx).trim();
+    const tagLine = cleanInput.slice(hashIdx + 1).replace(/^#+/, '').trim();
+    if (!gameName || !tagLine) {
+      return {
+        canonical: cleanInput,
+        gameName,
+        tagLine,
+        error:
+          'Il manque le pseudo avant le « # » ou le TAG après le « # » (exemple : jeanculderetour2#3842).',
+      };
+    }
+
+    return {
+      canonical: `${gameName}#${tagLine}`,
+      gameName,
+      tagLine,
+    };
+  };
+
+  const handleAddProfile = async (e: React.FormEvent, activateAfterSave = true) => {
     e.preventDefault();
-    if (!newRiotId.trim()) return;
-    onSaveProfile({
-      label: newLabel.trim() || newRiotId.split('#')[0],
-      riotId: newRiotId.trim(),
-      region: newRegion,
+    setProfileAddError(null);
+    setProfileAddedNotice(null);
+
+    const parsed = normalizeRiotIdWithOptionalLabel(newRiotId, newLabel);
+    if (parsed.error) {
+      setProfileAddError(parsed.error);
+      return;
+    }
+
+    let finalRiotId = parsed.canonical;
+    let finalRegion = newRegion;
+    let verifiedInfo = '';
+
+    if (riotConfigured) {
+      setAddingProfile(true);
+      try {
+        const res = await fetch(
+          `/api/riot/player?gameName=${encodeURIComponent(
+            parsed.gameName,
+          )}&tagLine=${encodeURIComponent(parsed.tagLine)}&region=${encodeURIComponent(
+            newRegion,
+          )}&count=15`,
+        );
+        const data = (await res.json()) as {
+          riotId?: string;
+          region?: RiotPlatform;
+          level?: number;
+          matches?: unknown[];
+          error?: string;
+        };
+        if (!res.ok) {
+          throw new Error(data.error || 'Compte Riot introuvable.');
+        }
+        finalRiotId = data.riotId || parsed.canonical;
+        finalRegion = data.region || newRegion;
+        verifiedInfo = ` · Niv. ${data.level || 30} (${data.matches?.length || 0} matchs trouvés)`;
+      } catch (err) {
+        setProfileAddError(
+          err instanceof Error
+            ? err.message
+            : `Impossible de vérifier « ${parsed.canonical} » sur Riot API.`,
+        );
+        setAddingProfile(false);
+        return;
+      } finally {
+        setAddingProfile(false);
+      }
+    }
+
+    const finalLabel = newLabel.trim() || finalRiotId.split('#')[0];
+    const profileToSave = {
+      label: finalLabel,
+      riotId: finalRiotId,
+      region: finalRegion,
       role: newRole,
-    });
+    };
+    onSaveProfile(profileToSave);
+
     setNewLabel('');
     setNewRiotId('');
-    setProfileAddedNotice(true);
-    window.setTimeout(() => setProfileAddedNotice(false), 2500);
+    setProfileAddedNotice(
+      `Profil « ${finalLabel} » (${finalRiotId} · ${finalRegion}${verifiedInfo}) enregistré !`,
+    );
+
+    if (activateAfterSave) {
+      onSwitchProfile({
+        id: `prof-${Date.now()}`,
+        ...profileToSave,
+      });
+    } else {
+      window.setTimeout(() => setProfileAddedNotice(null), 4000);
+    }
+  };
+
+  const startEditingProfile = (prof: SavedPlayerProfile) => {
+    setEditingProfileId(prof.id);
+    setEditLabel(prof.label);
+    setEditRiotId(prof.riotId);
+    setEditRegion(prof.region);
+    setEditRole(prof.role);
+  };
+
+  const handleSaveEditedProfile = (e: React.FormEvent, id: string) => {
+    e.preventDefault();
+    const parsed = normalizeRiotIdWithOptionalLabel(editRiotId, editLabel);
+    if (parsed.error) {
+      setProfileAddError(parsed.error);
+      return;
+    }
+    setProfileAddError(null);
+    onSaveProfile({
+      id,
+      label: editLabel.trim() || parsed.gameName,
+      riotId: parsed.canonical,
+      region: editRegion,
+      role: editRole,
+    });
+    setEditingProfileId(null);
   };
 
   const handleCopySnippet = async (kind: 'env' | 'cmd', text: string) => {
@@ -292,20 +446,69 @@ export function SettingsView({
   };
 
   return (
-    <div className="space-y-8 max-w-4xl">
-      {/* 1. Préférences du joueur actif */}
-      <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-6 space-y-6">
+    <div className="space-y-6 max-w-4xl">
+      {/* En-tête & navigation par onglets épurée */}
+      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
           <h1 className="text-xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
-            <Settings className="w-5 h-5 text-amber-500" aria-hidden="true" />
-            Paramètres du profil &amp; préférences
+            <Settings className="w-5 h-5 text-amber-500 shrink-0" aria-hidden="true" />
+            <span>Compte &amp; Réglages</span>
           </h1>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-            Enregistrées localement dans votre navigateur (et dans votre archive multi-parties personnelle).
+            Gérez votre Riot ID actif, vos profils Famille &amp; Amis, votre moteur IA et les lanceurs PC sans tout mélanger.
           </p>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-5">
+        <div
+          role="tablist"
+          aria-label="Sections des réglages"
+          className="inline-flex items-center gap-1 p-1 rounded-xl bg-slate-100 dark:bg-[#0B0E14] border border-slate-200 dark:border-slate-800 shrink-0"
+        >
+          {(
+            [
+              { id: 'account', label: 'Compte & Famille', icon: Users },
+              { id: 'ai', label: 'Moteur IA', icon: Bot },
+              { id: 'services', label: 'Services & PC', icon: KeyRound },
+            ] as Array<{ id: SettingsSectionTab; label: string; icon: typeof Users }>
+          ).map((tab) => {
+            const Icon = tab.icon;
+            const active = settingsSection === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                onClick={() => setSettingsSection(tab.id)}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap shrink-0 ${
+                  active
+                    ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-sm font-semibold'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                <Icon className="w-3.5 h-3.5 text-amber-500 shrink-0" aria-hidden="true" />
+                <span>{tab.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* ONGLET 1 : COMPTE & FAMILLE */}
+      {settingsSection === 'account' && (
+        <div className="space-y-6">
+          {/* 1. Préférences du joueur actif */}
+          <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-6 space-y-6">
+            <div>
+              <h2 className="text-base font-semibold text-slate-900 dark:text-white">
+                Compte Riot actif &amp; préférences
+              </h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                Enregistrées localement dans votre navigateur (et dans votre archive multi-parties personnelle).
+              </p>
+            </div>
+
+            <form onSubmit={handleSubmit} className="space-y-5">
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div className="space-y-1.5">
               <label
@@ -409,14 +612,26 @@ export function SettingsView({
 
       {/* 2. Profils Famille & Amis (changement en 1 clic) */}
       <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-6 space-y-5">
-        <div>
-          <h2 className="text-base font-semibold text-slate-900 dark:text-white flex items-center gap-2">
-            <Users className="w-4 h-4 text-sky-500" aria-hidden="true" />
-            Profils Famille &amp; Amis (changement rapide en 1 clic)
-          </h2>
-          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-            Ajoutez vos comptes, ceux de vos enfants ou de vos amis. Chaque profil conserve son propre historique cumulé et ses tendances de coaching.
-          </p>
+        <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+          <div>
+            <h2 className="text-base font-semibold text-slate-900 dark:text-white flex items-center gap-2">
+              <Users className="w-4 h-4 text-sky-500" aria-hidden="true" />
+              Profils Famille &amp; Amis (changement rapide en 1 clic)
+            </h2>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+              Ajoutez vos comptes, ceux de vos enfants ou de vos amis. Chaque profil conserve son propre historique cumulé et ses tendances de coaching.
+            </p>
+          </div>
+          {onOpenOnboarding && (
+            <button
+              type="button"
+              onClick={onOpenOnboarding}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-300 hover:bg-sky-500/15 transition-colors whitespace-nowrap shrink-0"
+            >
+              <Compass className="w-3.5 h-3.5" aria-hidden="true" />
+              Guide pas à pas · Partager avec mon fils
+            </button>
+          )}
         </div>
 
         <div className="divide-y divide-slate-200 dark:divide-slate-800 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
@@ -424,6 +639,78 @@ export function SettingsView({
             const isActive =
               prof.riotId.toLowerCase() === defaultRiotId.trim().toLowerCase() &&
               prof.region === defaultRegion;
+            const isEditing = editingProfileId === prof.id;
+
+            if (isEditing) {
+              return (
+                <form
+                  key={prof.id}
+                  onSubmit={(e) => handleSaveEditedProfile(e, prof.id)}
+                  className="p-4 bg-slate-50 dark:bg-[#0D121C] space-y-3"
+                >
+                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5">
+                    <input
+                      type="text"
+                      value={editLabel}
+                      onChange={(e) => setEditLabel(e.target.value)}
+                      placeholder="Surnom"
+                      aria-label="Surnom du profil"
+                      className="px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0B0E14] text-slate-900 dark:text-white"
+                    />
+                    <input
+                      type="text"
+                      value={editRiotId}
+                      onChange={(e) => setEditRiotId(e.target.value)}
+                      placeholder="Pseudo#TAG"
+                      aria-label="Riot ID complet"
+                      className="px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0B0E14] text-slate-900 dark:text-white"
+                    />
+                    <select
+                      value={editRegion}
+                      onChange={(e) => setEditRegion(e.target.value as RiotPlatform)}
+                      aria-label="Région du profil"
+                      className="px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0B0E14] text-slate-900 dark:text-white"
+                    >
+                      {REGIONS.map((r) => (
+                        <option key={r} value={r}>
+                          {r}
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      value={editRole}
+                      onChange={(e) => setEditRole(e.target.value as Role)}
+                      aria-label="Rôle favori"
+                      className="px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0B0E14] text-slate-900 dark:text-white"
+                    >
+                      {ROLES.map((r) => (
+                        <option key={r} value={r}>
+                          {r}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="flex items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setEditingProfileId(null)}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-lg border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-300"
+                    >
+                      <X className="w-3.5 h-3.5" aria-hidden="true" />
+                      Annuler
+                    </button>
+                    <button
+                      type="submit"
+                      className="inline-flex items-center gap-1 px-3 py-1 text-xs font-semibold rounded-lg bg-amber-600 dark:bg-amber-500 text-white dark:text-slate-950"
+                    >
+                      <Save className="w-3.5 h-3.5" aria-hidden="true" />
+                      Enregistrer
+                    </button>
+                  </div>
+                </form>
+              );
+            }
+
             return (
               <div
                 key={prof.id}
@@ -455,6 +742,15 @@ export function SettingsView({
                       Activer &amp; synchroniser
                     </button>
                   )}
+                  <button
+                    type="button"
+                    onClick={() => startEditingProfile(prof)}
+                    aria-label={`Modifier le profil ${prof.label}`}
+                    title="Corriger le Pseudo#TAG ou le serveur"
+                    className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-500 hover:text-amber-600 dark:hover:text-amber-400 hover:border-amber-500/40 transition-colors"
+                  >
+                    <Pencil className="w-3.5 h-3.5" aria-hidden="true" />
+                  </button>
                   {savedProfiles.length > 1 && (
                     <button
                       type="button"
@@ -472,79 +768,139 @@ export function SettingsView({
         </div>
 
         <form
-          onSubmit={handleAddProfile}
-          className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] p-4 space-y-3"
+          onSubmit={(e) => void handleAddProfile(e, true)}
+          className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] p-4 space-y-3.5"
         >
           <div className="text-xs font-semibold text-slate-900 dark:text-white flex items-center gap-1.5">
             <UserPlus className="w-3.5 h-3.5 text-amber-500" aria-hidden="true" />
             Ajouter un membre de la famille ou un ami
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
-            <input
-              type="text"
-              value={newLabel}
-              onChange={(e) => setNewLabel(e.target.value)}
-              placeholder="Prénom / Surnom (ex: Léo)"
-              aria-label="Prénom ou surnom"
-              className="px-3 py-2 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0B0E14] text-slate-900 dark:text-white"
-            />
-            <input
-              type="text"
-              value={newRiotId}
-              onChange={(e) => setNewRiotId(e.target.value)}
-              placeholder="Pseudo#TAG (obligatoire)"
-              aria-label="Riot ID du joueur"
-              className="px-3 py-2 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0B0E14] text-slate-900 dark:text-white"
-            />
-            <select
-              value={newRegion}
-              onChange={(e) => setNewRegion(e.target.value as RiotPlatform)}
-              aria-label="Région du profil"
-              className="px-3 py-2 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0B0E14] text-slate-900 dark:text-white"
-            >
-              {REGIONS.map((r) => (
-                <option key={r} value={r}>
-                  {r}
-                </option>
-              ))}
-            </select>
-            <select
-              value={newRole}
-              onChange={(e) => setNewRole(e.target.value as Role)}
-              aria-label="Rôle favori du profil"
-              className="px-3 py-2 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0B0E14] text-slate-900 dark:text-white"
-            >
-              {ROLES.map((r) => (
-                <option key={r} value={r}>
-                  {r}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="flex items-center justify-between gap-3">
-            {profileAddedNotice ? (
-              <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400">
-                Profil ajouté ! Sélectionnable dans la barre du haut ou ci-dessus.
-              </span>
-            ) : (
-              <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                Astuce : une seule clé Riot API suffit pour synchroniser tous vos comptes.
-              </span>
-            )}
-            <button
-              type="submit"
-              disabled={!newRiotId.trim()}
-              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-amber-600 dark:bg-amber-500 text-white dark:text-slate-950 hover:bg-amber-500 disabled:opacity-50 whitespace-nowrap"
-            >
-              <UserPlus className="w-3.5 h-3.5" aria-hidden="true" />
-              Ajouter le profil
-            </button>
-          </div>
-        </form>
-      </section>
 
-      {/* 3. Fournisseurs IA, Abonnements & Choix du Modèle */}
-      <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-6 space-y-5">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            <div className="space-y-1">
+              <label
+                htmlFor="new-prof-label"
+                className="block text-[11px] font-medium text-slate-600 dark:text-slate-300"
+              >
+                Surnom affiché (libre)
+              </label>
+              <input
+                id="new-prof-label"
+                type="text"
+                value={newLabel}
+                onChange={(e) => setNewLabel(e.target.value)}
+                placeholder="Ex : Mon fils, Léo"
+                className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0B0E14] text-slate-900 dark:text-white"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label
+                htmlFor="new-prof-riot-id"
+                className="block text-[11px] font-medium text-slate-600 dark:text-slate-300"
+              >
+                Riot ID complet : Pseudo#TAG
+              </label>
+              <input
+                id="new-prof-riot-id"
+                type="text"
+                value={newRiotId}
+                onChange={(e) => {
+                  setNewRiotId(e.target.value);
+                  if (profileAddError) setProfileAddError(null);
+                }}
+                placeholder="Ex : jeanculderetour2#3842"
+                className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0B0E14] text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label
+                htmlFor="new-prof-region"
+                className="block text-[11px] font-medium text-slate-600 dark:text-slate-300"
+              >
+                Serveur
+              </label>
+              <select
+                id="new-prof-region"
+                value={newRegion}
+                onChange={(e) => setNewRegion(e.target.value as RiotPlatform)}
+                className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0B0E14] text-slate-900 dark:text-white"
+              >
+                {REGIONS.map((r) => (
+                  <option key={r} value={r}>
+                    {r}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="space-y-1">
+              <label
+                htmlFor="new-prof-role"
+                className="block text-[11px] font-medium text-slate-600 dark:text-slate-300"
+              >
+                Rôle favori
+              </label>
+              <select
+                id="new-prof-role"
+                value={newRole}
+                onChange={(e) => setNewRole(e.target.value as Role)}
+                className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0B0E14] text-slate-900 dark:text-white"
+              >
+                {ROLES.map((r) => (
+                  <option key={r} value={r}>
+                    {r}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {profileAddError && (
+            <div className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-700 dark:text-rose-300">
+              {profileAddError}
+            </div>
+          )}
+
+          {profileAddedNotice && (
+            <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs font-medium text-emerald-700 dark:text-emerald-300">
+              {profileAddedNotice}
+            </div>
+          )}
+
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <span className="text-[11px] text-slate-500 dark:text-slate-400">
+              Le serveur réel est détecté automatiquement si vous hésitez entre EUW1, EUN1 ou NA1.
+            </span>
+
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              <button
+                type="button"
+                disabled={addingProfile || !newRiotId.trim()}
+                onClick={(e) => void handleAddProfile(e, false)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-50 whitespace-nowrap"
+              >
+                Ajouter à la liste
+              </button>
+              <button
+                type="submit"
+                disabled={addingProfile || !newRiotId.trim()}
+                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-amber-600 dark:bg-amber-500 text-white dark:text-slate-950 hover:bg-amber-500 disabled:opacity-50 whitespace-nowrap"
+              >
+                <UserPlus className="w-3.5 h-3.5" aria-hidden="true" />
+                {addingProfile ? 'Vérification Riot...' : 'Vérifier, ajouter & ouvrir'}
+              </button>
+            </div>
+          </div>
+            </form>
+          </section>
+        </div>
+      )}
+
+      {/* ONGLET 2 : MOTEUR IA */}
+      {settingsSection === 'ai' && (
+        <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-6 space-y-5">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div>
             <h2 className="text-base font-semibold text-slate-900 dark:text-white flex items-center gap-2">
@@ -840,10 +1196,14 @@ export function SettingsView({
             </p>
           </div>
         </details>
-      </section>
+        </section>
+      )}
 
-      {/* 4. État des services serveur */}
-      <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-6 space-y-5">
+      {/* ONGLET 3 : SERVICES & INSTALLATION PC */}
+      {settingsSection === 'services' && (
+        <div className="space-y-6">
+          {/* 4. État des services serveur */}
+          <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-6 space-y-5">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div>
             <h2 className="text-base font-semibold text-slate-900 dark:text-white">
@@ -923,14 +1283,26 @@ export function SettingsView({
 
       {/* 4. Configuration facile pour non-techniciens (Famille & Amis) */}
       <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-6 space-y-5">
-        <div>
-          <h2 className="text-base font-semibold text-slate-900 dark:text-white flex items-center gap-2">
-            <KeyRound className="w-4 h-4 text-amber-500" aria-hidden="true" />
-            Configuration facile des clés API (Sans toucher au code ni au fichier .env)
-          </h2>
-          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">
-            Par sécurité, aucune clé secrète ne se saisit directement dans la page web (afin qu’un visiteur ne puisse jamais lire ou écraser les clés du serveur). Deux solutions ultra-simples existent pour vos enfants et vos amis :
-          </p>
+        <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+          <div>
+            <h2 className="text-base font-semibold text-slate-900 dark:text-white flex items-center gap-2">
+              <KeyRound className="w-4 h-4 text-amber-500" aria-hidden="true" />
+              Partage Famille &amp; Clés API (Sans toucher au code)
+            </h2>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">
+              Votre clé permanente <code className="font-mono">RIOT_API_KEY</code> reste toujours côté serveur (jamais dans GitHub ni dans le navigateur). Selon la façon dont vous partagez avec votre fils, voici la règle :
+            </p>
+          </div>
+          {onOpenOnboarding && (
+            <button
+              type="button"
+              onClick={onOpenOnboarding}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-300 hover:bg-sky-500/15 transition-colors whitespace-nowrap shrink-0"
+            >
+              <Compass className="w-3.5 h-3.5" aria-hidden="true" />
+              Ouvrir l’Onboarding pas à pas
+            </button>
+          )}
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -938,13 +1310,13 @@ export function SettingsView({
           <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-4 space-y-2.5">
             <div className="flex items-center gap-2 text-xs font-bold text-slate-900 dark:text-white">
               <Globe className="w-4 h-4 text-emerald-500 shrink-0" aria-hidden="true" />
-              Option 1 · Via le lien partagé (0 installation)
+              Option 1 · Lien web partagé (Votre clé permanente suffit !)
             </div>
             <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-              <strong>La plus simple pour la famille :</strong> vous configurez <code className="font-mono">RIOT_API_KEY</code> (et <code className="font-mono">GEMINI_API_KEY</code>) une seule fois dans <strong>Settings &gt; Secrets</strong> de Google AI Studio.
+              <strong>La plus simple pour votre fils :</strong> comme <code className="font-mono">RIOT_API_KEY</code> est déjà configurée sur votre serveur (<strong>Settings &gt; Secrets</strong>), vous n’avez rien à cloner ni aucune autre clé à créer.
             </p>
             <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-              Ensuite, vos enfants et amis ouvrent simplement le lien de l’application et utilisent le sélecteur de profils ci-dessus : <strong>ils n’ont rien à installer ni aucune clé à créer</strong> !
+              Il ouvre simplement le lien de l’app, ajoute son <code className="font-mono">Pseudo#TAG</code> dans le sélecteur de profils et synchronise ses parties (100 req/2 min avec votre clé permanente).
             </p>
           </div>
 
@@ -952,10 +1324,10 @@ export function SettingsView({
           <div className="rounded-xl border border-amber-500/35 bg-amber-500/5 p-4 space-y-3">
             <div className="flex items-center gap-2 text-xs font-bold text-slate-900 dark:text-white">
               <ShieldCheck className="w-4 h-4 text-amber-500 shrink-0" aria-hidden="true" />
-              Option 2 · Sur leur PC depuis GitHub (Double-clic)
+              Option 2 · S’il clone le repo sur son propre PC (GitHub)
             </div>
             <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-              Après avoir téléchargé le projet depuis GitHub, il suffit de <strong>double-cliquer</strong> sur l’assistant inclus dans le dossier (aucune commande à taper, aucun fichier <code className="font-mono">.env</code> à éditer) :
+              Le fichier <code className="font-mono">.env</code> n’est jamais envoyé sur GitHub. S’il lance l’app en local sur son PC, il lui faut un <code className="font-mono">.env</code> chez lui (avec sa propre clé gratuite Riot, ou une copie privée de votre <code className="font-mono">.env</code>) :
             </p>
             <ul className="text-[11px] text-slate-600 dark:text-slate-300 space-y-1">
               <li>1. L’assistant installe l’application tout seul au premier lancement.</li>
@@ -1074,7 +1446,9 @@ export function SettingsView({
             </div>
           </div>
         </details>
-      </section>
+          </section>
+        </div>
+      )}
     </div>
   );
 }

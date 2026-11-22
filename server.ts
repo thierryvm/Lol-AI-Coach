@@ -5,6 +5,7 @@ import { createServer as createViteServer } from 'vite';
 import { parseLiveClientSnapshot } from './src/engines/liveCoachEngine.ts';
 import type { LiveClientAllGameData, LiveCoachSnapshot, RiotPlatform, Role } from './src/engines/types.ts';
 import {
+  analyzeVoiceMomentWithAi,
   generateBuildCoachingRationale,
   generateCareerGlobalSynthesis,
   generateItemPassiveFormulaExplanation,
@@ -16,13 +17,16 @@ import { getAiProvidersStatus, testAiProviderConnection } from './server/aiProvi
 import { SAMPLE_LIVE_CLIENT_PAYLOAD } from './server/referenceData.ts';
 import {
   checkActiveRiotGame,
+  computeRiotLaneMatchupWinRates,
   fetchRiotMatchById,
   getChampionDetail,
   getDDragonBootstrap,
   getFreeChampionRotation,
   getRiotKeyDiagnostics,
+  getRiotServerStatus,
   normalizeRiotMatch,
   resolveDDragonItemsByNames,
+  scoutSpectatorLobby,
   syncRiotPlayerProfile,
 } from './server/riotService.ts';
 
@@ -37,7 +41,7 @@ let latestLiveSnapshot: LiveCoachSnapshot = parseLiveClientSnapshot(
 
 async function startServer() {
   const app = express();
-  app.use(express.json({ limit: '4mb' }));
+  app.use(express.json({ limit: '10mb' }));
 
   // --- Statut système & configuration API ---
   app.get('/api/riot/status', async (_req, res) => {
@@ -87,10 +91,22 @@ async function startServer() {
 
   // --- Synchronisation Joueur & Match-V5 ---
   app.get('/api/riot/player', async (req, res) => {
+    const cleanParam = (val: unknown) =>
+      String(val || '')
+        .replace(/[\u200B-\u200D\uFEFF]/g, '')
+        .trim();
+    const gameName = cleanParam(req.query.gameName);
+    const tagLine = cleanParam(req.query.tagLine).replace(/^#+/, '');
+    const region = (cleanParam(req.query.region || 'EUW1').toUpperCase() as RiotPlatform) || 'EUW1';
+
+    if (!gameName || !tagLine) {
+      return res.status(400).json({
+        error:
+          'Format Riot ID incomplet : saisissez bien « Pseudo#TAG » (exemple : jeanculderetour2#3842).',
+      });
+    }
+
     try {
-      const gameName = String(req.query.gameName || 'Faker').trim();
-      const tagLine = String(req.query.tagLine || 'EUW').trim();
-      const region = (String(req.query.region || 'EUW1').toUpperCase() as RiotPlatform) || 'EUW1';
       const force = req.query.force === '1';
       const count = req.query.count ? Number(req.query.count) : 15;
 
@@ -101,7 +117,7 @@ async function startServer() {
       const keyDiag = getRiotKeyDiagnostics();
       let message = err instanceof Error ? err.message : 'Erreur lors de la synchronisation Riot.';
       if (status === 404) {
-        message = 'Riot ID introuvable sur cette région. Vérifiez le format Pseudo#TAG et le serveur.';
+        message = `Riot ID « ${gameName}#${tagLine} » introuvable sur le serveur ${region} (ni sur les autres régions LoL). Vérifiez l’orthographe exacte et le #TAG.`;
       } else if (status === 403 || status === 401) {
         if (!keyDiag.startsWithRgapi) {
           message = `La variable RIOT_API_KEY détectée (longueur ${keyDiag.length}) ne commence pas par "RGAPI-". Vérifiez que vous avez bien collé votre Development API Key depuis developer.riotgames.com (et non votre mot de passe ou un autre identifiant), puis redémarrez le serveur.`;
@@ -137,6 +153,54 @@ async function startServer() {
     } catch (err) {
       res.status(500).json({
         error: err instanceof Error ? err.message : 'Erreur CHAMPION-V3.',
+      });
+    }
+  });
+
+  app.get('/api/riot/server-status', async (req, res) => {
+    try {
+      const region = (String(req.query.region || 'EUW1').toUpperCase() as RiotPlatform) || 'EUW1';
+      const status = await getRiotServerStatus(region);
+      res.json(status);
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Erreur LOL-STATUS-V4.',
+      });
+    }
+  });
+
+  app.post('/api/riot/lobby-scout', async (req, res) => {
+    try {
+      const { participants, region } = req.body || {};
+      const targetRegion = (String(region || 'EUW1').toUpperCase() as RiotPlatform) || 'EUW1';
+      const scouted = await scoutSpectatorLobby(
+        Array.isArray(participants) ? participants : [],
+        targetRegion,
+      );
+      res.json({ participants: scouted });
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Erreur de scouting du lobby.',
+      });
+    }
+  });
+
+  app.post('/api/riot/lane-matchups', async (req, res) => {
+    try {
+      const { gameName, tagLine, region, playerChampion, targetLane, enemies } = req.body || {};
+      const targetRegion = (String(region || 'EUW1').toUpperCase() as RiotPlatform) || 'EUW1';
+      const result = await computeRiotLaneMatchupWinRates({
+        gameName: typeof gameName === 'string' ? gameName.trim() : '',
+        tagLine: typeof tagLine === 'string' ? tagLine.trim() : '',
+        platform: targetRegion,
+        playerChampion: String(playerChampion || '').trim(),
+        targetLane: String(targetLane || 'MIDDLE').trim(),
+        enemies: Array.isArray(enemies) ? enemies : [],
+      });
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Erreur calcul Win Rate lane (Riot API).',
       });
     }
   });
@@ -272,6 +336,32 @@ async function startServer() {
     } catch (err) {
       res.status(500).json({
         error: err instanceof Error ? err.message : 'Erreur lors du coaching temps réel IA.',
+      });
+    }
+  });
+
+  app.post('/api/coach/voice-moment', async (req, res) => {
+    try {
+      const { audioBase64, mimeType, transcript, snapshot, aiConfig } = req.body || {};
+      if (!audioBase64 && !transcript) {
+        return res.status(400).json({
+          error: 'audioBase64 ou transcript est requis pour analyser le moment vocal.',
+        });
+      }
+      const result = await analyzeVoiceMomentWithAi({
+        audioBase64: typeof audioBase64 === 'string' ? audioBase64 : undefined,
+        mimeType: typeof mimeType === 'string' ? mimeType : undefined,
+        transcript: typeof transcript === 'string' ? transcript : undefined,
+        snapshot: snapshot || latestLiveSnapshot,
+        aiConfig,
+      });
+      return res.json(result);
+    } catch (err) {
+      return res.status(500).json({
+        error:
+          err instanceof Error
+            ? err.message
+            : 'Erreur lors de l’analyse audio Gemini du moment clé.',
       });
     }
   });

@@ -666,19 +666,37 @@ export function recommendCounterPicksForEnemyComp(params: {
 
       if (burstCount >= 2 && (prof.tankinessScore >= 65 || prof.ccScore >= 72 || champ.tags.includes('Support'))) {
         score += 14;
-        reasons.push('freine le burst et protège la backline');
+        if (prof.tankinessScore >= 68) {
+          reasons.push(`absorbe le burst ennemi (${prof.tankinessScore}/100 tenue)`);
+        } else if (prof.sustainScore >= 70) {
+          reasons.push('protège la backline avec soins/boucliers contre le burst');
+        } else {
+          reasons.push('interrompt les assassins avec du contrôle ciblé');
+        }
       }
       if (tankCount >= 2 && (prof.sustainScore >= 65 || champ.tags.includes('Marksman') || prof.primaryDamage === 'Hybride')) {
         score += 12;
-        reasons.push('tient ou perce les compositions à plusieurs tanks');
+        if (prof.primaryDamage === 'Hybride') {
+          reasons.push('pression mixte AP/AD efficace face aux tanks');
+        } else if (champ.tags.includes('Marksman')) {
+          reasons.push('DPS soutenu idéal pour tomber la frontline');
+        } else {
+          reasons.push('tient les combats prolongés face aux tanks');
+        }
       }
       if (highHealCount >= 2 && (prof.ccScore >= 68 || prof.burstScore >= 75)) {
         score += 9;
-        reasons.push('bloque les champions à fort soin via CC/burst');
+        if (prof.burstScore >= 75 && champ.info.magic >= 7) {
+          reasons.push(`pression magique à distance (${champ.stats.attackrange} u.)`);
+        } else if (prof.ccScore >= 72) {
+          reasons.push('verrouille les cibles à fort soin via CC');
+        } else {
+          reasons.push('punit le soin ennemi par une pression constante');
+        }
       }
       if (avgEnemyPhys >= 62 && prof.tankinessScore >= 66) {
         score += 8;
-        reasons.push('rentabilise fortement l’armure face aux dégâts AD');
+        reasons.push(`rentabilise l’armure (défense ${champ.info.defense}/10)`);
       } else if (avgEnemyMag >= 62 && (prof.sustainScore >= 65 || champ.stats.attackrange >= 525)) {
         score += 7;
         reasons.push('gère bien les échanges contre les mages');
@@ -696,6 +714,7 @@ export function recommendCounterPicksForEnemyComp(params: {
           reasons.push(`dans votre pool (${poolEntry.winRate}% WR)`);
         } else {
           score += 4;
+          reasons.push(`déjà joué (${poolEntry.games}p)`);
         }
       }
 
@@ -706,16 +725,21 @@ export function recommendCounterPicksForEnemyComp(params: {
       const styleLabel =
         prof.ccScore >= 72 && prof.tankinessScore >= 65
           ? 'Frontline & Peel'
-          : prof.ccScore >= 72
-            ? 'Contrôle d’équipe'
-            : prof.sustainScore >= 70
-              ? 'Sustain / Tenue'
-              : prof.primaryDamage;
+          : prof.ccScore >= 72 && champ.info.magic >= 7
+            ? 'Contrôle & Poke'
+            : prof.ccScore >= 72
+              ? 'Contrôle d’équipe'
+              : prof.sustainScore >= 70 && champ.info.magic >= 7
+                ? 'Sustain & Poke'
+                : prof.sustainScore >= 70
+                  ? 'Sustain / Tenue'
+                  : prof.primaryDamage;
 
+      const uniqueReasons = Array.from(new Set(reasons));
       const counterReason =
-        reasons.length > 0
-          ? `${reasons.slice(0, 2).join(' · ')}.`
-          : `Profil ${prof.primaryDamage.toLowerCase()} polyvalent contre cette composition.`;
+        uniqueReasons.length > 0
+          ? `${uniqueReasons.slice(0, 2).join(' · ')}.`
+          : `Profil ${prof.primaryDamage.toLowerCase()} (${champ.stats.attackrange} u.) adapté à ce match.`;
 
       return {
         champion: champ,

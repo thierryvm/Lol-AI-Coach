@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   Brain,
   CheckCircle2,
+  Download,
   FileUp,
   LayoutGrid,
   MapPin,
@@ -12,13 +13,23 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
+  Target,
 } from 'lucide-react';
 import { postCoachJson } from '../engines/aiConfig.ts';
+import { downloadRecentMatchesExport } from '../engines/matchExportEngine.ts';
 import { analyzePostGameMatch } from '../engines/postGameEngine.ts';
+import {
+  evaluateMatchAgainstGoals,
+  type TrainingIntensity,
+} from '../engines/trainingGoalsEngine.ts';
 import type { ChampionSummary, ItemData, MatchRecord, RiotPlatform } from '../engines/types.ts';
 import { SafeGameIcon } from './SafeGameIcon.tsx';
+import { PostGameTrendChart } from './PostGameTrendChart.tsx';
 import { SummonersRiftMap, type ArchiveDeathPoint } from './SummonersRiftMap.tsx';
 import { TimelineCurveChart } from './TimelineCurveChart.tsx';
+import type { ToastItem } from './ToastContainer.tsx';
+import { formatChampionDisplayName, resolveChampionDisplay } from '../utils/championDisplay.ts';
+import { getSummonerSpellById, getSummonerSpellIconUrl } from '../utils/summonerSpells.ts';
 
 type MatchResultFilter = 'ALL' | 'WIN' | 'LOSS';
 type MatchRoleFilter = 'ALL' | 'TOP' | 'JUNGLE' | 'MID' | 'ADC' | 'SUPPORT';
@@ -52,8 +63,10 @@ interface PostGameViewProps {
   patchVersion: string;
   riotId?: string;
   region?: RiotPlatform;
+  trainingIntensity?: TrainingIntensity;
   onSelectMatchId: (id: string) => void;
   onImportMatch: (match: MatchRecord) => void;
+  onNotify?: (toast: Omit<ToastItem, 'id'>) => void;
 }
 
 function parseRiotId(riotId: string): { gameName: string; tagLine: string } {
@@ -73,8 +86,10 @@ export function PostGameView({
   patchVersion,
   riotId = 'Boulvae#EUW',
   region = 'EUW1',
+  trainingIntensity = 'standard',
   onSelectMatchId,
   onImportMatch,
+  onNotify,
 }: PostGameViewProps) {
   const activeMatch = useMemo(
     () => matches.find((m) => m.matchId === selectedMatchId) || matches[0] || null,
@@ -84,6 +99,11 @@ export function PostGameView({
   const analysis = useMemo(
     () => (activeMatch ? analyzePostGameMatch(activeMatch) : null),
     [activeMatch],
+  );
+
+  const matchGoalChecks = useMemo(
+    () => (activeMatch ? evaluateMatchAgainstGoals(activeMatch, matches, trainingIntensity) : []),
+    [activeMatch, matches, trainingIntensity],
   );
 
   const itemMap = useMemo(() => {
@@ -121,9 +141,13 @@ export function PostGameView({
       counts.set(name, (counts.get(name) || 0) + 1);
     }
     return Array.from(counts.entries())
-      .map(([name, count]) => ({ name, count }))
-      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
-  }, [matches]);
+      .map(([name, count]) => ({
+        name,
+        displayName: formatChampionDisplayName(champions, name),
+        count,
+      }))
+      .sort((a, b) => b.count - a.count || a.displayName.localeCompare(b.displayName, 'fr'));
+  }, [matches, champions]);
 
   const filteredMatches = useMemo(() => {
     const list = matches.filter((m) => {
@@ -179,6 +203,7 @@ export function PostGameView({
   }, [filteredMatches, activeMatch, onSelectMatchId]);
 
   const [subTab, setSubTab] = useState<'overview' | 'tactical-map'>('overview');
+  const [overviewSection, setOverviewSection] = useState<'coaching' | 'map-curves' | 'players' | 'all'>('coaching');
   const [selectedMapTimestampMs, setSelectedMapTimestampMs] = useState<number | null>(null);
 
   const [matchIdQuery, setMatchIdQuery] = useState('');
@@ -245,11 +270,7 @@ export function PostGameView({
   } | null>(null);
 
   const getChampIcon = (championName: string) =>
-    champions.find(
-      (c) =>
-        c.id.toLowerCase() === championName.toLowerCase() ||
-        c.name.toLowerCase() === championName.toLowerCase(),
-    )?.imageUrl;
+    resolveChampionDisplay(champions, championName).imageUrl;
 
   const handleLoadMatchById = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -299,6 +320,22 @@ export function PostGameView({
     }
   };
 
+  const exportCount = Math.min(10, matches.length);
+
+  const handleExportMatches = (format: 'csv' | 'json') => {
+    if (matches.length === 0) return;
+    const { count, filename } = downloadRecentMatchesExport(format, matches, {
+      riotId,
+      items,
+      limit: 10,
+    });
+    onNotify?.({
+      variant: 'info',
+      title: `Export ${format.toUpperCase()} généré (${count} ${count > 1 ? 'parties' : 'partie'})`,
+      description: `Fichier prêt pour analyse hors-ligne : ${filename}`,
+    });
+  };
+
   const handleGenerateAiReview = async () => {
     if (!activeMatch || !analysis) return;
     setAiLoading(true);
@@ -311,6 +348,14 @@ export function PostGameView({
         nextMatchFocus: string[];
       }>('/api/coach/postgame-review', { match: activeMatch, analysis });
       setAiReview(data);
+      const champLabel = formatChampionDisplayName(champions, activeMatch.player.championName);
+      onNotify?.({
+        variant: 'postgame',
+        title: `Débriefing IA Post-Game prêt (${champLabel})`,
+        description:
+          data.verdict ||
+          'Synthèse stratégique, zones de mort et objectifs pour la prochaine partie disponibles.',
+      });
     } catch (err) {
       setAiError(err instanceof Error ? err.message : 'Erreur lors du débriefing IA.');
     } finally {
@@ -436,6 +481,7 @@ export function PostGameView({
   }
 
   const p = activeMatch.player;
+  const pDisp = resolveChampionDisplay(champions, p.championName);
 
   return (
     <div className="space-y-6">
@@ -444,14 +490,14 @@ export function PostGameView({
         <div className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4">
           <div className="flex items-center gap-3.5">
             <SafeGameIcon
-              src={getChampIcon(p.championName)}
-              alt={p.championName}
-              fallbackLabel={p.championName}
+              src={pDisp.imageUrl}
+              alt={pDisp.displayName}
+              fallbackLabel={pDisp.displayName}
               sizeClass="w-12 h-12"
             />
             <div>
               <h1 className="text-xl font-bold text-slate-900 dark:text-white">
-                Analyse Post-Game · {p.championName} ({p.kills}/{p.deaths}/{p.assists})
+                Analyse Post-Game · {pDisp.displayName} ({p.kills}/{p.deaths}/{p.assists})
               </h1>
               <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
                 <span className={p.win ? 'text-emerald-600 dark:text-emerald-400 font-semibold' : 'text-rose-600 dark:text-rose-400 font-semibold'}>
@@ -481,7 +527,7 @@ export function PostGameView({
             >
               {(filteredMatches.length > 0 ? filteredMatches : matches).map((m) => (
                 <option key={m.matchId} value={m.matchId}>
-                  {m.player.championName} ({m.player.win ? 'V' : 'D'} · {m.player.kills}/{m.player.deaths}/{m.player.assists})
+                  {formatChampionDisplayName(champions, m.player.championName)} ({m.player.win ? 'V' : 'D'} · {m.player.kills}/{m.player.deaths}/{m.player.assists})
                 </option>
               ))}
             </select>
@@ -516,6 +562,33 @@ export function PostGameView({
               <FileUp className="w-3.5 h-3.5" aria-hidden="true" />
               Importer JSON
             </button>
+
+            <div
+              role="group"
+              aria-label="Exporter les 10 dernières parties"
+              className="inline-flex items-center rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B0E14] overflow-hidden shrink-0"
+            >
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-2 text-[11px] font-medium text-slate-600 dark:text-slate-300 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap">
+                <Download className="w-3.5 h-3.5 text-amber-500 shrink-0" aria-hidden="true" />
+                Exporter ({exportCount})
+              </span>
+              <button
+                type="button"
+                onClick={() => handleExportMatches('csv')}
+                title="Exporter les statistiques des 10 dernières parties au format CSV (Excel / Google Sheets)"
+                className="px-2.5 py-2 text-[11px] font-semibold text-slate-700 dark:text-slate-200 hover:bg-amber-500/15 hover:text-amber-600 dark:hover:text-amber-400 border-r border-slate-200 dark:border-slate-700 transition-colors whitespace-nowrap"
+              >
+                CSV
+              </button>
+              <button
+                type="button"
+                onClick={() => handleExportMatches('json')}
+                title="Exporter les statistiques complètes des 10 dernières parties au format JSON"
+                className="px-2.5 py-2 text-[11px] font-semibold text-slate-700 dark:text-slate-200 hover:bg-amber-500/15 hover:text-amber-600 dark:hover:text-amber-400 transition-colors whitespace-nowrap"
+              >
+                JSON
+              </button>
+            </div>
           </div>
         </div>
 
@@ -558,94 +631,18 @@ export function PostGameView({
           </div>
         )}
 
-        {/* Panneau de filtres de l'historique archivé (Résultat, Rôle, Champion & Tri) */}
+        {/* Sélecteur & filtres de l'historique archivé (Résultat, Rôle, Champion & Tri) */}
         {matches.length > 1 && (
           <div className="pt-3.5 border-t border-slate-200 dark:border-slate-800 space-y-3">
-            <div className="flex flex-wrap items-center justify-between gap-2.5">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700 dark:text-slate-300 mr-1">
-                  <SlidersHorizontal className="w-3.5 h-3.5 text-amber-500" aria-hidden="true" />
-                  <span>Filtrer l’historique</span>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center gap-x-2.5 gap-y-0.5">
+                <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-800 dark:text-slate-200">
+                  <SlidersHorizontal className="w-3.5 h-3.5 text-amber-500 shrink-0" aria-hidden="true" />
+                  <span>Historique des parties · Sélectionner un match à analyser</span>
                 </span>
-
-                {/* Filtre Résultat */}
-                <div className="flex items-center gap-0.5 p-0.5 rounded-lg bg-slate-100 dark:bg-[#0B0E14] border border-slate-200 dark:border-slate-800">
-                  {(
-                    [
-                      { id: 'ALL', label: 'Toutes' },
-                      { id: 'WIN', label: 'Victoires' },
-                      { id: 'LOSS', label: 'Défaites' },
-                    ] as Array<{ id: MatchResultFilter; label: string }>
-                  ).map((opt) => (
-                    <button
-                      key={opt.id}
-                      type="button"
-                      onClick={() => setResultFilter(opt.id)}
-                      className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors whitespace-nowrap ${
-                        resultFilter === opt.id
-                          ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-sm'
-                          : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-                      }`}
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
-                </div>
-
-                {/* Filtre Rôle */}
-                <div className="flex items-center gap-0.5 p-0.5 rounded-lg bg-slate-100 dark:bg-[#0B0E14] border border-slate-200 dark:border-slate-800 overflow-x-auto max-w-full">
-                  {(
-                    [
-                      { id: 'ALL', label: 'Tous rôles' },
-                      { id: 'TOP', label: 'Top' },
-                      { id: 'JUNGLE', label: 'Jungle' },
-                      { id: 'MID', label: 'Mid' },
-                      { id: 'ADC', label: 'ADC' },
-                      { id: 'SUPPORT', label: 'Support' },
-                    ] as Array<{ id: MatchRoleFilter; label: string }>
-                  ).map((opt) => (
-                    <button
-                      key={opt.id}
-                      type="button"
-                      onClick={() => setRoleFilter(opt.id)}
-                      className={`px-2 py-1 text-[11px] font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
-                        roleFilter === opt.id
-                          ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-sm'
-                          : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-                      }`}
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
-                </div>
-
-                {/* Filtre Champion */}
-                <select
-                  value={championFilter}
-                  onChange={(e) => setChampionFilter(e.target.value)}
-                  aria-label="Filtrer par champion"
-                  className="px-2.5 py-1 text-[11px] font-medium rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#0B0E14] text-slate-800 dark:text-slate-200"
-                >
-                  <option value="ALL">Tous les champions ({matches.length})</option>
-                  {championFilterOptions.map((c) => (
-                    <option key={c.name} value={c.name}>
-                      {c.name} ({c.count})
-                    </option>
-                  ))}
-                </select>
-
-                {/* Tri */}
-                <select
-                  value={sortBy}
-                  onChange={(e) => setSortBy(e.target.value as MatchSortMode)}
-                  aria-label="Trier les parties"
-                  className="px-2.5 py-1 text-[11px] font-medium rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#0B0E14] text-slate-800 dark:text-slate-200"
-                >
-                  <option value="RECENT">Tri : Plus récentes</option>
-                  <option value="KDA">Tri : Meilleur KDA</option>
-                  <option value="CS">Tri : Meilleur CS/min</option>
-                  <option value="DURATION">Tri : Durée</option>
-                </select>
+                <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                  Filtrez ci-dessous puis cliquez sur une carte pour charger son débriefing complet.
+                </span>
               </div>
 
               <div className="flex items-center gap-2.5 shrink-0">
@@ -671,6 +668,87 @@ export function PostGameView({
               </div>
             </div>
 
+            <div className="flex flex-wrap items-center gap-2">
+              {/* Filtre Résultat */}
+              <div className="flex items-center gap-0.5 p-0.5 rounded-lg bg-slate-100 dark:bg-[#0B0E14] border border-slate-200 dark:border-slate-800">
+                {(
+                  [
+                    { id: 'ALL', label: 'Toutes' },
+                    { id: 'WIN', label: 'Victoires' },
+                    { id: 'LOSS', label: 'Défaites' },
+                  ] as Array<{ id: MatchResultFilter; label: string }>
+                ).map((opt) => (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => setResultFilter(opt.id)}
+                    className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors whitespace-nowrap ${
+                      resultFilter === opt.id
+                        ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-sm'
+                        : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Filtre Rôle */}
+              <div className="flex items-center gap-0.5 p-0.5 rounded-lg bg-slate-100 dark:bg-[#0B0E14] border border-slate-200 dark:border-slate-800 overflow-x-auto max-w-full">
+                {(
+                  [
+                    { id: 'ALL', label: 'Tous rôles' },
+                    { id: 'TOP', label: 'Top' },
+                    { id: 'JUNGLE', label: 'Jungle' },
+                    { id: 'MID', label: 'Mid' },
+                    { id: 'ADC', label: 'ADC' },
+                    { id: 'SUPPORT', label: 'Support' },
+                  ] as Array<{ id: MatchRoleFilter; label: string }>
+                ).map((opt) => (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => setRoleFilter(opt.id)}
+                    className={`px-2 py-1 text-[11px] font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
+                      roleFilter === opt.id
+                        ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-sm'
+                        : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Filtre Champion */}
+              <select
+                value={championFilter}
+                onChange={(e) => setChampionFilter(e.target.value)}
+                aria-label="Filtrer par champion"
+                className="px-2.5 py-1 text-[11px] font-medium rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#0B0E14] text-slate-800 dark:text-slate-200"
+              >
+                <option value="ALL">Tous les champions ({matches.length})</option>
+                {championFilterOptions.map((c) => (
+                  <option key={c.name} value={c.name}>
+                    {c.displayName} ({c.count})
+                  </option>
+                ))}
+              </select>
+
+              {/* Tri */}
+              <select
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value as MatchSortMode)}
+                aria-label="Trier les parties"
+                className="px-2.5 py-1 text-[11px] font-medium rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#0B0E14] text-slate-800 dark:text-slate-200"
+              >
+                <option value="RECENT">Tri : Plus récentes</option>
+                <option value="KDA">Tri : Meilleur KDA</option>
+                <option value="CS">Tri : Meilleur CS/min</option>
+                <option value="DURATION">Tri : Durée</option>
+              </select>
+            </div>
+
             {filteredMatches.length === 0 ? (
               <div className="rounded-lg border border-dashed border-slate-300 dark:border-slate-700 px-4 py-3 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400">
                 <span>Aucune partie archivée ne correspond à cette combinaison de filtres.</span>
@@ -688,10 +766,11 @@ export function PostGameView({
                 </button>
               </div>
             ) : (
-              <div className="flex items-center gap-2 overflow-x-auto pb-1.5 thin-scrollbar">
+              <div className="flex items-center gap-2.5 overflow-x-auto pt-1.5 pb-2 px-0.5 thin-scrollbar">
                 {filteredMatches.slice(0, 20).map((m) => {
                   const isSelected = m.matchId === activeMatch.matchId;
                   const durMin = Math.round(m.gameDurationSec / 60);
+                  const mChampDisp = resolveChampionDisplay(champions, m.player.championName);
                   return (
                     <button
                       key={m.matchId}
@@ -707,14 +786,14 @@ export function PostGameView({
                       }`}
                     >
                       <SafeGameIcon
-                        src={getChampIcon(m.player.championName)}
-                        alt={m.player.championName}
-                        fallbackLabel={m.player.championName}
+                        src={mChampDisp.imageUrl}
+                        alt={mChampDisp.displayName}
+                        fallbackLabel={mChampDisp.displayName}
                         sizeClass="w-7 h-7"
                       />
                       <div className="min-w-0">
                         <div className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-900 dark:text-white whitespace-nowrap">
-                          <span>{m.player.championName}</span>
+                          <span>{mChampDisp.displayName}</span>
                           <span
                             className={`font-mono ${
                               m.player.win
@@ -743,34 +822,34 @@ export function PostGameView({
           aria-label="Sous-vues de l'analyse Post-Game"
           className="pt-3 border-t border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3"
         >
-          <div className="grid grid-cols-2 gap-1.5 p-1 rounded-lg bg-slate-100 dark:bg-[#0B0E14] border border-slate-200 dark:border-slate-800 w-full sm:w-auto">
+          <div className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-slate-200/70 dark:bg-[#0D0F14] border border-black/[0.05] dark:border-white/[0.07] w-full sm:w-auto">
             <button
               type="button"
               role="tab"
               aria-selected={subTab === 'overview'}
               onClick={() => setSubTab('overview')}
-              className={`inline-flex items-center justify-center gap-1.5 px-3.5 py-1.5 text-xs rounded-md transition-colors whitespace-nowrap ${
+              className={`inline-flex items-center justify-center gap-1.5 px-3.5 py-1.5 text-xs rounded-lg transition-all whitespace-nowrap ${
                 subTab === 'overview'
-                  ? 'bg-amber-600 dark:bg-amber-500 text-white dark:text-slate-950 font-semibold shadow-sm'
+                  ? 'bg-white dark:bg-[#1E222D] text-slate-900 dark:text-white font-semibold shadow-xs'
                   : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white font-medium'
               }`}
             >
               <LayoutGrid className="w-3.5 h-3.5" aria-hidden="true" />
-              Vue d’ensemble &amp; Stats
+              Débriefing &amp; Stats
             </button>
             <button
               type="button"
               role="tab"
               aria-selected={subTab === 'tactical-map'}
               onClick={() => setSubTab('tactical-map')}
-              className={`inline-flex items-center justify-center gap-1.5 px-3.5 py-1.5 text-xs rounded-md transition-colors whitespace-nowrap ${
+              className={`inline-flex items-center justify-center gap-1.5 px-3.5 py-1.5 text-xs rounded-lg transition-all whitespace-nowrap ${
                 subTab === 'tactical-map'
-                  ? 'bg-amber-600 dark:bg-amber-500 text-white dark:text-slate-950 font-semibold shadow-sm'
+                  ? 'bg-white dark:bg-[#1E222D] text-slate-900 dark:text-white font-semibold shadow-xs'
                   : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white font-medium'
               }`}
             >
               <MapPin className="w-3.5 h-3.5" aria-hidden="true" />
-              Carte Tactique &amp; Morts ({activeMatch.mapEvents.length})
+              Carte Tactique ({activeMatch.mapEvents.length})
             </button>
           </div>
 
@@ -856,13 +935,111 @@ export function PostGameView({
         ))}
       </section>
 
+      {/* Sélecteur d'étape Apple pour lire le débriefing sans surcharge */}
+      <div className="rounded-2xl apple-surface px-4 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2.5">
+        <span className="text-xs font-medium text-slate-600 dark:text-slate-300">
+          Choisissez l’angle d’analyse de cette partie :
+        </span>
+        <div
+          role="tablist"
+          aria-label="Sections du débriefing de partie"
+          className="inline-flex flex-wrap items-center gap-1 p-1 rounded-xl bg-slate-200/70 dark:bg-[#0D0F14] border border-black/[0.05] dark:border-white/[0.07]"
+        >
+          {(
+            [
+              { id: 'coaching', label: '1. Bilan & Coaching' },
+              { id: 'map-curves', label: '2. Carte & Courbes' },
+              { id: 'players', label: '3. 10 Joueurs' },
+              { id: 'all', label: 'Tout voir' },
+            ] as const
+          ).map((tab) => {
+            const active = overviewSection === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                onClick={() => setOverviewSection(tab.id)}
+                className={`px-3 py-1.5 text-xs rounded-lg transition-all whitespace-nowrap ${
+                  active
+                    ? 'bg-white dark:bg-[#1E222D] text-slate-900 dark:text-white font-semibold shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white font-medium'
+                }`}
+              >
+                {tab.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Validation des objectifs du programme d'entraînement sur cette partie */}
+      {(overviewSection === 'coaching' || overviewSection === 'all') && matchGoalChecks.length > 0 && (
+        <section className="rounded-2xl apple-surface p-5 space-y-3.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Target className="w-4 h-4 text-amber-500 shrink-0" aria-hidden="true" />
+              <h2 className="text-sm font-semibold text-slate-900 dark:text-white">
+                Validation du Programme d’Entraînement sur cette partie
+              </h2>
+            </div>
+            <div className="text-xs font-mono tabular-nums text-slate-500 dark:text-slate-400">
+              {matchGoalChecks.filter((g) => g.passed).length}/{matchGoalChecks.length} validés · Mode{' '}
+              <span className="font-semibold text-slate-700 dark:text-slate-200">
+                {trainingIntensity === 'strict' ? 'Exigeant' : 'Standard'}
+              </span>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">
+            {matchGoalChecks.map((check) => (
+              <div
+                key={check.goalId}
+                className={`rounded-lg border p-3.5 flex items-start justify-between gap-3 ${
+                  check.passed
+                    ? 'border-emerald-500/25 bg-emerald-500/5'
+                    : 'border-amber-500/30 bg-amber-500/5'
+                }`}
+              >
+                <div className="min-w-0 space-y-1">
+                  <div className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                    {check.category}
+                  </div>
+                  <div className="text-xs font-semibold text-slate-900 dark:text-white leading-snug">
+                    {check.title}
+                  </div>
+                  <div className="text-[11px] font-mono tabular-nums text-slate-600 dark:text-slate-300">
+                    Mesuré : {check.measuredLabel} · Cible : {check.targetLabel}
+                  </div>
+                </div>
+                <span
+                  className={`inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-semibold rounded-md shrink-0 ${
+                    check.passed
+                      ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                      : 'bg-amber-500/15 text-amber-700 dark:text-amber-300'
+                  }`}
+                >
+                  {check.passed ? (
+                    <CheckCircle2 className="w-3 h-3" aria-hidden="true" />
+                  ) : (
+                    <AlertTriangle className="w-3 h-3" aria-hidden="true" />
+                  )}
+                  {check.passed ? 'Validé' : 'À corriger'}
+                </span>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
       {/* Bilan Stuff & Synergie Build vs Composition adverse */}
-      {itemAudit && itemAudit.ownedItems.length > 0 && (
-        <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5 space-y-4">
+      {(overviewSection === 'coaching' || overviewSection === 'all') && itemAudit && itemAudit.ownedItems.length > 0 && (
+        <section className="rounded-2xl apple-surface p-5 space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
             <h2 className="text-base font-semibold text-slate-900 dark:text-white flex items-center gap-2">
               <ShieldCheck className="w-4 h-4 text-emerald-500" aria-hidden="true" />
-              Bilan de votre équipement final ({p.championName})
+              Bilan de votre équipement final ({pDisp.displayName})
             </h2>
             <div className="text-xs font-mono tabular-nums text-slate-500 dark:text-slate-400">
               Bonus objets : +{itemAudit.totalHp} PV · +{itemAudit.totalArmor} Armure · +{itemAudit.totalMr} RM
@@ -922,6 +1099,8 @@ export function PostGameView({
       )}
 
       {/* Carte de placement & Courbe de farming */}
+      {(overviewSection === 'map-curves' || overviewSection === 'all') && (
+      <>
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-stretch">
         <section className="xl:col-span-7 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5 space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -968,7 +1147,22 @@ export function PostGameView({
         </section>
       </div>
 
+      {/* Évolution KDA, Or/min et Vision sur la fenêtre de parties choisie */}
+      <PostGameTrendChart
+        matches={matches}
+        activeMatchId={activeMatch.matchId}
+        champions={champions}
+        getChampIcon={getChampIcon}
+        onSelectMatchId={(id) => {
+          onSelectMatchId(id);
+          setAiReview(null);
+        }}
+      />
+      </>
+      )}
+
       {/* Erreurs détectées & Débriefing IA */}
+      {(overviewSection === 'coaching' || overviewSection === 'all') && (
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
         <section className="lg:col-span-6 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-6 space-y-4">
           <h2 className="text-base font-semibold text-slate-900 dark:text-white">
@@ -1099,9 +1293,11 @@ export function PostGameView({
           )}
         </section>
       </div>
+      )}
 
       {/* Tableau complet des 10 joueurs et équipements */}
-      <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] overflow-hidden">
+      {(overviewSection === 'players' || overviewSection === 'all') && (
+      <section className="rounded-2xl apple-surface overflow-hidden">
         <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
           <div>
             <h2 className="text-base font-semibold text-slate-900 dark:text-white">
@@ -1155,10 +1351,13 @@ export function PostGameView({
                     {teamPlayers.map((part, idx) => {
                       const isSelf = part.puuid === p.puuid;
                       const validItems = (part.items || []).filter((id) => id > 0);
+                      const partDisp = resolveChampionDisplay(champions, part.championName);
+                      const spell1 = getSummonerSpellById(part.summoner1Id || 4);
+                      const spell2 = getSummonerSpellById(part.summoner2Id || 14);
                       const displayRiotId =
                         part.riotIdGameName && part.riotIdTagline
                           ? `${part.riotIdGameName}#${part.riotIdTagline}`
-                          : part.riotIdGameName || part.championName;
+                          : part.riotIdGameName || partDisp.displayName;
                       return (
                         <tr
                           key={`${part.puuid}-${idx}`}
@@ -1172,14 +1371,32 @@ export function PostGameView({
                             <div className="flex items-center gap-2.5">
                               <SafeGameIcon
                                 key={`pg-champ-${activeMatch.matchId}-${part.puuid}-${idx}`}
-                                src={getChampIcon(part.championName)}
-                                alt={part.championName}
-                                fallbackLabel={part.championName}
+                                src={partDisp.imageUrl}
+                                alt={partDisp.displayName}
+                                fallbackLabel={partDisp.displayName}
                                 sizeClass="w-8 h-8"
                               />
+                              <div className="flex flex-col gap-0.5 shrink-0">
+                                <span title={`${spell1.nameFr} (${spell1.cooldownSec}s)`}>
+                                  <SafeGameIcon
+                                    src={getSummonerSpellIconUrl(spell1.id, patchVersion)}
+                                    alt={spell1.nameFr}
+                                    fallbackLabel={spell1.shortLabel}
+                                    sizeClass="w-3.5 h-3.5"
+                                  />
+                                </span>
+                                <span title={`${spell2.nameFr} (${spell2.cooldownSec}s)`}>
+                                  <SafeGameIcon
+                                    src={getSummonerSpellIconUrl(spell2.id, patchVersion)}
+                                    alt={spell2.nameFr}
+                                    fallbackLabel={spell2.shortLabel}
+                                    sizeClass="w-3.5 h-3.5"
+                                  />
+                                </span>
+                              </div>
                               <div className="min-w-0">
                                 <div className="font-semibold text-slate-900 dark:text-white truncate">
-                                  {part.championName}{' '}
+                                  {partDisp.displayName}{' '}
                                   <span className="text-[11px] font-mono font-normal text-slate-400">
                                     Niv.{part.champLevel}
                                   </span>
@@ -1248,6 +1465,7 @@ export function PostGameView({
           })}
         </div>
       </section>
+      )}
         </>
       )}
         </motion.div>

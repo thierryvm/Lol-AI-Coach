@@ -12,7 +12,9 @@ import {
   YAxis,
 } from 'recharts';
 import { SafeGameIcon } from './SafeGameIcon.tsx';
+import { SectionInfoTooltip } from './SectionInfoTooltip.tsx';
 import type { ChampionCareerStat, ChampionSummary, MatchParticipantSummary, MatchRecord } from '../engines/types.ts';
+import { formatChampionDisplayName, resolveChampionDisplay } from '../utils/championDisplay.ts';
 
 interface DuoSynergyAnalysisProps {
   matches: MatchRecord[];
@@ -24,6 +26,7 @@ interface DuoSynergyAnalysisProps {
 
 interface MainChampionBaseline {
   championName: string;
+  displayName: string;
   games: number;
   wins: number;
   winRate: number;
@@ -33,7 +36,9 @@ interface MainChampionBaseline {
 interface DuoSynergyPair {
   key: string;
   myChampion: string;
+  myChampionDisplay: string;
   allyChampion: string;
+  allyChampionDisplay: string;
   pairLabel: string;
   shortPairLabel: string;
   games: number;
@@ -144,20 +149,20 @@ function SynergyTooltip({ active, payload, getChampIcon }: SynergyChartTooltipPr
         <div className="flex items-center -space-x-2 shrink-0">
           <SafeGameIcon
             src={getChampIcon(row.myChampion)}
-            alt={row.myChampion}
-            fallbackLabel={row.myChampion}
+            alt={row.myChampionDisplay}
+            fallbackLabel={row.myChampionDisplay}
             sizeClass="w-7 h-7 ring-2 ring-white dark:ring-[#0D121C]"
           />
           <SafeGameIcon
             src={getChampIcon(row.allyChampion)}
-            alt={row.allyChampion}
-            fallbackLabel={row.allyChampion}
+            alt={row.allyChampionDisplay}
+            fallbackLabel={row.allyChampionDisplay}
             sizeClass="w-7 h-7 ring-2 ring-white dark:ring-[#0D121C]"
           />
         </div>
         <div className="min-w-0">
           <div className="text-xs font-bold text-slate-900 dark:text-white truncate">
-            {row.myChampion} + {row.allyChampion}
+            {row.myChampionDisplay} + {row.allyChampionDisplay}
           </div>
           <div className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
             {row.games} partie{row.games > 1 ? 's' : ''} ({row.wins}V - {row.losses}D) · {row.allyMainRole}
@@ -167,7 +172,7 @@ function SynergyTooltip({ active, payload, getChampIcon }: SynergyChartTooltipPr
 
       <div className="pt-2 border-t border-slate-200/80 dark:border-slate-800 space-y-1 text-xs">
         <div className="flex items-center justify-between gap-4">
-          <span className="text-slate-500 dark:text-slate-400">Winrate avec {row.allyChampion}</span>
+          <span className="text-slate-500 dark:text-slate-400">Winrate avec {row.allyChampionDisplay}</span>
           <span
             className={`font-mono tabular-nums font-bold ${
               row.duoWinRate >= 50
@@ -179,7 +184,7 @@ function SynergyTooltip({ active, payload, getChampIcon }: SynergyChartTooltipPr
           </span>
         </div>
         <div className="flex items-center justify-between gap-4">
-          <span className="text-slate-500 dark:text-slate-400">Winrate global ({row.myChampion})</span>
+          <span className="text-slate-500 dark:text-slate-400">Winrate global ({row.myChampionDisplay})</span>
           <span className="font-mono tabular-nums text-slate-700 dark:text-slate-300">
             {row.myBaselineWinRate}% ({row.myBaselineGames}p)
           </span>
@@ -252,6 +257,7 @@ export function DuoSynergyAnalysis({
       championStats && championStats.length > 0
         ? championStats.map((cs) => ({
             championName: cs.championName,
+            displayName: formatChampionDisplayName(champions, cs.championName),
             games: cs.games,
             wins: cs.wins,
             winRate: cs.winRate,
@@ -260,6 +266,7 @@ export function DuoSynergyAnalysis({
         : Array.from(mainAcc.entries())
             .map(([championName, s]) => ({
               championName,
+              displayName: formatChampionDisplayName(champions, championName),
               games: s.games,
               wins: s.wins,
               winRate: Math.round((s.wins / s.games) * 100),
@@ -388,15 +395,18 @@ export function DuoSynergyAnalysis({
         }
       }
 
-      const shortMy = p.myChampion.length > 7 ? `${p.myChampion.slice(0, 6)}…` : p.myChampion;
-      const shortAlly =
-        p.allyChampion.length > 7 ? `${p.allyChampion.slice(0, 6)}…` : p.allyChampion;
+      const myDisplay = formatChampionDisplayName(champions, p.myChampion);
+      const allyDisplay = formatChampionDisplayName(champions, p.allyChampion);
+      const shortMy = myDisplay.length > 7 ? `${myDisplay.slice(0, 6)}…` : myDisplay;
+      const shortAlly = allyDisplay.length > 7 ? `${allyDisplay.slice(0, 6)}…` : allyDisplay;
 
       return {
         key,
         myChampion: p.myChampion,
+        myChampionDisplay: myDisplay,
         allyChampion: p.allyChampion,
-        pairLabel: `${p.myChampion} + ${p.allyChampion}`,
+        allyChampionDisplay: allyDisplay,
+        pairLabel: `${myDisplay} + ${allyDisplay}`,
         shortPairLabel: `${shortMy} + ${shortAlly}`,
         games: p.games,
         wins: p.wins,
@@ -447,7 +457,7 @@ export function DuoSynergyAnalysis({
           }
         : null,
     };
-  }, [matches, championStats, championLookup]);
+  }, [matches, championStats, championLookup, champions]);
 
   // Si aucune paire n'a 2+ parties dans l'historique actuel, basculer automatiquement sur 1+ partie
   useEffect(() => {
@@ -535,6 +545,11 @@ export function DuoSynergyAnalysis({
           <h2 className="text-base font-semibold text-slate-900 dark:text-white flex items-center gap-2">
             <Users className="w-4 h-4 text-amber-500 shrink-0" aria-hidden="true" />
             <span>Analyse de synergie — Vos Mains vs Meilleurs Duos</span>
+            <SectionInfoTooltip
+              title="Analyse de synergie Duo"
+              description="Mesure avec quels champions alliés (ou partenaires récurrents) vous gagnez nettement plus souvent par rapport à votre winrate habituel."
+              usageTip="Cliquez sur « Optimiser duo » pour ouvrir directement le duo dans Builds & Match-ups."
+            />
           </h2>
           <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
             Compare le taux de victoire global de vos champions les plus joués avec les champions alliés qui vous offrent le meilleur winrate en équipe ({matches.length} parties analysées).
@@ -596,6 +611,7 @@ export function DuoSynergyAnalysis({
 
           {topMains.map((main) => {
             const active = selectedMainChamp === main.championName;
+            const mainDisp = resolveChampionDisplay(champions, main.championName);
             return (
               <button
                 key={main.championName}
@@ -608,12 +624,12 @@ export function DuoSynergyAnalysis({
                 }`}
               >
                 <SafeGameIcon
-                  src={getChampIcon(main.championName)}
-                  alt={main.championName}
-                  fallbackLabel={main.championName}
+                  src={mainDisp.imageUrl || getChampIcon(main.championName)}
+                  alt={main.displayName}
+                  fallbackLabel={main.displayName}
                   sizeClass="w-4 h-4"
                 />
-                <span>{main.championName}</span>
+                <span>{main.displayName}</span>
                 <span className="font-mono tabular-nums text-[11px] text-slate-400">
                   {main.games}p · {main.winRate}%
                 </span>
@@ -636,7 +652,7 @@ export function DuoSynergyAnalysis({
                 <div className="text-xs font-semibold text-slate-700 dark:text-slate-300">
                   {selectedMainChamp === 'ALL'
                     ? 'Winrate global de vos mains vs meilleur duo allié'
-                    : `Winrate global sur ${selectedMainChamp} vs vos meilleurs duos`}
+                    : `Winrate global sur ${formatChampionDisplayName(champions, selectedMainChamp)} vs vos meilleurs duos`}
                 </div>
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-500 dark:text-slate-400">
                   <span className="inline-flex items-center gap-1.5">
@@ -741,20 +757,20 @@ export function DuoSynergyAnalysis({
                         <div className="flex items-center -space-x-2 shrink-0">
                           <SafeGameIcon
                             src={getChampIcon(pair.myChampion)}
-                            alt={pair.myChampion}
-                            fallbackLabel={pair.myChampion}
+                            alt={pair.myChampionDisplay}
+                            fallbackLabel={pair.myChampionDisplay}
                             sizeClass="w-8 h-8 ring-2 ring-white dark:ring-[#121722]"
                           />
                           <SafeGameIcon
                             src={getChampIcon(pair.allyChampion)}
-                            alt={pair.allyChampion}
-                            fallbackLabel={pair.allyChampion}
+                            alt={pair.allyChampionDisplay}
+                            fallbackLabel={pair.allyChampionDisplay}
                             sizeClass="w-8 h-8 ring-2 ring-white dark:ring-[#121722]"
                           />
                         </div>
                         <div className="min-w-0">
                           <div className="text-xs font-semibold text-slate-900 dark:text-white truncate">
-                            {pair.myChampion} + {pair.allyChampion}
+                            {pair.myChampionDisplay} + {pair.allyChampionDisplay}
                             <span className="font-normal text-slate-500 dark:text-slate-400">
                               {' '}
                               · {pair.allyMainRole}
@@ -821,7 +837,7 @@ export function DuoSynergyAnalysis({
                   Main le plus performant (volume)
                 </div>
                 <div className="mt-0.5 font-semibold text-slate-900 dark:text-white font-mono tabular-nums">
-                  {bestMainChampion.championName} · {bestMainChampion.winRate}% WR ({bestMainChampion.games}p)
+                  {bestMainChampion.displayName} · {bestMainChampion.winRate}% WR ({bestMainChampion.games}p)
                 </div>
               </div>
             )}
@@ -832,7 +848,7 @@ export function DuoSynergyAnalysis({
                   Meilleure synergie duo mesurée
                 </div>
                 <div className="mt-0.5 font-semibold text-emerald-600 dark:text-emerald-400 font-mono tabular-nums">
-                  {bestSynergyOverall.myChampion} + {bestSynergyOverall.allyChampion} ·{' '}
+                  {bestSynergyOverall.myChampionDisplay} + {bestSynergyOverall.allyChampionDisplay} ·{' '}
                   {bestSynergyOverall.duoWinRate}% WR ({bestSynergyOverall.synergyDelta > 0 ? '+' : ''}
                   {bestSynergyOverall.synergyDelta} pts)
                 </div>

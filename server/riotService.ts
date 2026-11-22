@@ -5,14 +5,21 @@ import type {
   ChampionSummary,
   DDragonBootstrap,
   ItemData,
+  LaneMatchupWinRateResponse,
+  LaneMatchupWinRateRow,
+  LobbyScoutParticipant,
   MapCoordinateEvent,
   MapDamageSource,
   MapParticipantSnapshot,
   MatchParticipantSummary,
   MatchRecord,
   PlayerProfileResponse,
+  RankedQueueSummary,
+  RiotChallengeSummary,
   RiotPlatform,
+  RiotServerStatusSummary,
   RuneTree,
+  SpectatorParticipant,
   TimelineSplitPoint,
 } from '../src/engines/types.ts';
 import { buildReferenceProfile } from './referenceData.ts';
@@ -648,61 +655,134 @@ export async function syncRiotPlayerProfile(
   const runSync = async (): Promise<PlayerProfileResponse> => {
     const apiKey = getCleanRiotApiKey();
     const headers = { 'X-Riot-Token': apiKey };
-    const regional = PLATFORM_TO_REGIONAL[platform] || 'europe';
-    const platformHost = `${platform.toLowerCase()}.api.riotgames.com`;
-    const regionalHost = `${regional}.api.riotgames.com`;
+    let resolvedPlatform: RiotPlatform = platform;
+    let regional = PLATFORM_TO_REGIONAL[resolvedPlatform] || 'europe';
+    let platformHost = `${resolvedPlatform.toLowerCase()}.api.riotgames.com`;
+    let regionalHost = `${regional}.api.riotgames.com`;
 
-    // 1. Account-V1 (mis en cache 30 min)
+    // 1. Account-V1 (mis en cache 30 min, avec secours multi-régions si mauvais continent sélectionné)
     const accountCacheKey = `${platform}:${gameName.toLowerCase()}#${tagLine.toLowerCase()}`;
     let account = riotCaches.accounts.get(accountCacheKey)?.value;
     const accountEntry = riotCaches.accounts.get(accountCacheKey);
     if (!account || !accountEntry || accountEntry.expiresAt <= Date.now()) {
-      account = await fetchRiotWithRetry<{ puuid: string; gameName: string; tagLine: string }>(
-        `https://${regionalHost}/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(
-          gameName,
-        )}/${encodeURIComponent(tagLine)}`,
-        headers,
-      );
+      const shardsToTry: Array<'europe' | 'americas' | 'asia' | 'sea'> = [
+        regional,
+        ...(['europe', 'americas', 'asia', 'sea'] as const).filter((s) => s !== regional),
+      ];
+      let lastAccountErr: unknown = null;
+      for (const shard of shardsToTry) {
+        try {
+          account = await fetchRiotWithRetry<{ puuid: string; gameName: string; tagLine: string }>(
+            `https://${shard}.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(
+              gameName,
+            )}/${encodeURIComponent(tagLine)}`,
+            headers,
+          );
+          regional = shard;
+          regionalHost = `${shard}.api.riotgames.com`;
+          break;
+        } catch (err) {
+          lastAccountErr = err;
+          if ((err as Error & { status?: number }).status !== 404) {
+            throw err;
+          }
+        }
+      }
+      if (!account) {
+        throw lastAccountErr || new Error('Riot ID introuvable.');
+      }
       riotCaches.accounts.set(accountCacheKey, {
         value: account,
         expiresAt: Date.now() + ACCOUNT_TTL_MS,
       });
     }
 
-    // 2. Summoner-V4, League-V4, Spectator-V5 & Liste Match-V5 (appels légers)
-    const summoner = await fetchRiotWithRetry<{
+    // 2. Summoner-V4 (avec auto-détection du serveur réel si 404 sur la région sélectionnée)
+    let summoner: {
       id?: string;
       puuid: string;
       profileIconId: number;
       summonerLevel: number;
-    }>(`https://${platformHost}/lol/summoner/v4/summoners/by-puuid/${account.puuid}`, headers);
-
-    const [leagueEntries, activeGameRes, matchIds, masteryRaw] = await Promise.all([
-      fetchRiotWithRetry<any[]>(
-        `https://${platformHost}/lol/league/v4/entries/by-puuid/${account.puuid}`,
-        headers,
-      ).catch(async () => {
-        if (summoner.id) {
-          return fetchRiotWithRetry<any[]>(
-            `https://${platformHost}/lol/league/v4/entries/by-summoner/${summoner.id}`,
-            headers,
-          ).catch(() => []);
+    } | null = null;
+    const platformsToProbe: RiotPlatform[] = [
+      resolvedPlatform,
+      ...(
+        [
+          'EUW1',
+          'EUN1',
+          'NA1',
+          'TR1',
+          'BR1',
+          'KR',
+          'JP1',
+          'OC1',
+          'LA1',
+          'LA2',
+          'ME1',
+          'SG2',
+          'TW2',
+          'VN2',
+        ] as RiotPlatform[]
+      ).filter((p) => p !== resolvedPlatform),
+    ];
+    let lastSummonerErr: unknown = null;
+    for (const candidatePlatform of platformsToProbe) {
+      const candidateHost = `${candidatePlatform.toLowerCase()}.api.riotgames.com`;
+      try {
+        summoner = await fetchRiotWithRetry<{
+          id?: string;
+          puuid: string;
+          profileIconId: number;
+          summonerLevel: number;
+        }>(`https://${candidateHost}/lol/summoner/v4/summoners/by-puuid/${account.puuid}`, headers);
+        resolvedPlatform = candidatePlatform;
+        platformHost = candidateHost;
+        regional = PLATFORM_TO_REGIONAL[candidatePlatform] || regional;
+        regionalHost = `${regional}.api.riotgames.com`;
+        break;
+      } catch (err) {
+        lastSummonerErr = err;
+        if ((err as Error & { status?: number }).status !== 404) {
+          throw err;
         }
-        return [];
-      }),
-      fetchRiotWithRetry<any>(
-        `https://${platformHost}/lol/spectator/v5/active-games/by-summoner/${account.puuid}`,
-        headers,
-      ).catch(() => null),
-      fetchRiotWithRetry<string[]>(
-        `https://${regionalHost}/lol/match/v5/matches/by-puuid/${account.puuid}/ids?start=0&count=${clampedCount}`,
-        headers,
-      ),
-      fetchRiotWithRetry<any[]>(
-        `https://${platformHost}/lol/champion-mastery/v4/champion-masteries/by-puuid/${account.puuid}/top?count=12`,
-        headers,
-      ).catch(() => []),
-    ]);
+      }
+    }
+    if (!summoner) {
+      throw lastSummonerErr || new Error('Profil invocateur introuvable sur League of Legends.');
+    }
+
+    const [leagueEntries, activeGameRes, matchIds, masteryRaw, challengeRaw, serverStatus] =
+      await Promise.all([
+        fetchRiotWithRetry<any[]>(
+          `https://${platformHost}/lol/league/v4/entries/by-puuid/${account.puuid}`,
+          headers,
+        ).catch(async () => {
+          if (summoner.id) {
+            return fetchRiotWithRetry<any[]>(
+              `https://${platformHost}/lol/league/v4/entries/by-summoner/${summoner.id}`,
+              headers,
+            ).catch(() => []);
+          }
+          return [];
+        }),
+        fetchRiotWithRetry<any>(
+          `https://${platformHost}/lol/spectator/v5/active-games/by-summoner/${account.puuid}`,
+          headers,
+        ).catch(() => null),
+        fetchRiotWithRetry<string[]>(
+          `https://${regionalHost}/lol/match/v5/matches/by-puuid/${account.puuid}/ids?start=0&count=${clampedCount}`,
+          headers,
+        ),
+        fetchRiotWithRetry<any[]>(
+          `https://${platformHost}/lol/champion-mastery/v4/champion-masteries/by-puuid/${account.puuid}/top?count=12`,
+          headers,
+        ).catch(() => []),
+        fetchRiotWithRetry<any>(
+          `https://${platformHost}/lol/challenges/v1/player-data/${account.puuid}`,
+          headers,
+        ).catch(() => null),
+        getRiotServerStatus(resolvedPlatform),
+      ]);
 
     const championMasteries: ChampionMasteryEntry[] = Array.isArray(masteryRaw)
       ? masteryRaw
@@ -714,8 +794,9 @@ export async function syncRiotPlayerProfile(
           .filter((m) => m.championId > 0)
       : [];
 
-    const soloEntry =
-      leagueEntries.find((e) => e.queueType === 'RANKED_SOLO_5x5') || leagueEntries[0] || null;
+    const soloEntry = leagueEntries.find((e) => e.queueType === 'RANKED_SOLO_5x5') || null;
+    const flexEntry = leagueEntries.find((e) => e.queueType === 'RANKED_FLEX_SR') || null;
+    const challenges = formatChallengeSummary(challengeRaw);
 
     // 3. Match-V5 détails + timelines cadencés (avec réutilisation du cache immuable)
     const matches: MatchRecord[] = [];
@@ -763,18 +844,13 @@ export async function syncRiotPlayerProfile(
     const profile: PlayerProfileResponse = {
       source: 'Riot API Live',
       riotId: `${account.gameName}#${account.tagLine}`,
-      region: platform,
+      region: resolvedPlatform,
       level: summoner.summonerLevel,
       profileIconId: summoner.profileIconId,
-      rankedSolo: soloEntry
-        ? {
-            tier: soloEntry.tier,
-            rank: soloEntry.rank,
-            lp: soloEntry.leaguePoints,
-            wins: soloEntry.wins,
-            losses: soloEntry.losses,
-          }
-        : null,
+      rankedSolo: toRankedQueueSummary(soloEntry),
+      rankedFlex: toRankedQueueSummary(flexEntry),
+      challenges,
+      serverStatus,
       championMasteries,
       activeGame,
       matches,
@@ -1095,4 +1171,529 @@ export async function getFreeChampionRotation(platform: RiotPlatform = 'EUW1'): 
     };
   }
 }
+
+function toRankedQueueSummary(entry: any): RankedQueueSummary | null {
+  if (!entry || !entry.tier) return null;
+  return {
+    tier: String(entry.tier),
+    rank: String(entry.rank || ''),
+    lp: Number(entry.leaguePoints || 0),
+    wins: Number(entry.wins || 0),
+    losses: Number(entry.losses || 0),
+    hotStreak: Boolean(entry.hotStreak),
+    veteran: Boolean(entry.veteran),
+  };
+}
+
+const CHALLENGE_CATEGORY_LABELS: Record<string, string> = {
+  TEAMWORK: 'Jeu d’équipe',
+  EXPERTISE: 'Maîtrise & Skill',
+  VETERANCY: 'Vétéran',
+  IMAGINATION: 'Créativité',
+  COLLECTION: 'Collection',
+};
+
+function formatChallengeSummary(raw: any): RiotChallengeSummary | null {
+  const total = raw?.totalPoints;
+  if (!total || typeof total.current !== 'number') return null;
+
+  const catRaw = raw?.categoryPoints || {};
+  const categories = Object.entries(catRaw)
+    .map(([key, val]: [string, any]) => ({
+      key,
+      label: CHALLENGE_CATEGORY_LABELS[key] || key,
+      level: String(val?.level || 'NONE'),
+      current: Number(val?.current || 0),
+      max: Number(val?.max || 1),
+      percentile: Number(val?.percentile || 0),
+    }))
+    .filter((c) => c.current > 0)
+    .sort((a, b) => b.current - a.current)
+    .slice(0, 4);
+
+  return {
+    level: String(total.level || 'IRON'),
+    currentPoints: Number(total.current || 0),
+    maxPoints: Number(total.max || 0),
+    percentile: Number(total.percentile || 0),
+    categories,
+  };
+}
+
+const serverStatusCache = new Map<string, CacheEntry<RiotServerStatusSummary>>();
+const lobbyScoutCache = new Map<string, CacheEntry<LobbyScoutParticipant>>();
+
+function pickLocalizedTitle(titles: any[] | undefined, fallback: string): string {
+  if (!Array.isArray(titles) || titles.length === 0) return fallback;
+  const fr = titles.find((t) => String(t?.locale || '').startsWith('fr'));
+  const en = titles.find((t) => String(t?.locale || '').startsWith('en'));
+  return String(fr?.content || en?.content || titles[0]?.content || fallback);
+}
+
+export async function getRiotServerStatus(
+  platform: RiotPlatform = 'EUW1',
+): Promise<RiotServerStatusSummary> {
+  const cached = serverStatusCache.get(platform);
+  const now = Date.now();
+  if (cached && cached.expiresAt > now) {
+    return cached.value;
+  }
+
+  if (!hasRiotApiKey()) {
+    return { platform, healthy: true, incidents: [], maintenances: [] };
+  }
+
+  try {
+    const apiKey = getCleanRiotApiKey();
+    const platformHost = `${platform.toLowerCase()}.api.riotgames.com`;
+    const data = await fetchJson<any>(
+      `https://${platformHost}/lol/status/v4/platform-data`,
+      { 'X-Riot-Token': apiKey },
+    );
+
+    const incidents = Array.isArray(data?.incidents)
+      ? data.incidents
+          .filter((inc: any) => {
+            const sev = String(inc?.incident_severity || 'info').toLowerCase();
+            return sev === 'warning' || sev === 'critical';
+          })
+          .slice(0, 3)
+          .map((inc: any) => ({
+            id: Number(inc?.id || 0),
+            severity: String(inc?.incident_severity || 'warning'),
+            title: pickLocalizedTitle(inc?.titles, 'Incident signalé sur le serveur Riot'),
+          }))
+      : [];
+
+    const maintenances = Array.isArray(data?.maintenances)
+      ? data.maintenances
+          .filter((m: any) => {
+            const st = String(m?.maintenance_status || '').toLowerCase();
+            return st === 'in_progress' || st === 'scheduled';
+          })
+          .slice(0, 3)
+          .map((m: any) => ({
+            id: Number(m?.id || 0),
+            status: String(m?.maintenance_status || 'scheduled'),
+            title: pickLocalizedTitle(m?.titles, 'Maintenance planifiée'),
+          }))
+      : [];
+
+    const value: RiotServerStatusSummary = {
+      platform,
+      healthy:
+        incidents.length === 0 &&
+        maintenances.every((m: { status: string }) => m.status !== 'in_progress'),
+      incidents,
+      maintenances,
+    };
+    serverStatusCache.set(platform, { value, expiresAt: now + 1000 * 60 * 5 });
+    return value;
+  } catch {
+    return { platform, healthy: true, incidents: [], maintenances: [] };
+  }
+}
+
+export async function scoutSpectatorLobby(
+  participants: SpectatorParticipant[],
+  platform: RiotPlatform = 'EUW1',
+): Promise<LobbyScoutParticipant[]> {
+  if (!Array.isArray(participants) || participants.length === 0) return [];
+  if (!hasRiotApiKey()) return [];
+
+  const apiKey = getCleanRiotApiKey();
+  const headers = { 'X-Riot-Token': apiKey };
+  const platformHost = `${platform.toLowerCase()}.api.riotgames.com`;
+  const now = Date.now();
+
+  const limited = participants.slice(0, 10);
+  const results: LobbyScoutParticipant[] = [];
+
+  for (let i = 0; i < limited.length; i += 3) {
+    const chunk = limited.slice(i, i + 3);
+    const chunkRes = await Promise.all(
+      chunk.map(async (p) => {
+        const puuid = String(p.puuid || '').trim();
+        const cacheKey = `${platform}:${puuid}:${p.championId}`;
+        const hit = puuid ? lobbyScoutCache.get(cacheKey) : undefined;
+        if (hit && hit.expiresAt > now) {
+          return hit.value;
+        }
+
+        if (!puuid) {
+          return {
+            riotId: p.riotId,
+            championId: p.championId,
+            teamId: p.teamId,
+            soloRank: null,
+            flexRank: null,
+            championMasteryLevel: 0,
+            championMasteryPoints: 0,
+            tags: ['Mode anonyme / Bot'],
+          } satisfies LobbyScoutParticipant;
+        }
+
+        const [entries, mastery] = await Promise.all([
+          fetchRiotWithRetry<any[]>(
+            `https://${platformHost}/lol/league/v4/entries/by-puuid/${puuid}`,
+            headers,
+            1,
+          ).catch(() => []),
+          fetchRiotWithRetry<any>(
+            `https://${platformHost}/lol/champion-mastery/v4/champion-masteries/by-puuid/${puuid}/by-champion/${p.championId}`,
+            headers,
+            1,
+          ).catch(() => null),
+        ]);
+
+        const soloRank = toRankedQueueSummary(
+          entries.find((e) => e.queueType === 'RANKED_SOLO_5x5'),
+        );
+        const flexRank = toRankedQueueSummary(
+          entries.find((e) => e.queueType === 'RANKED_FLEX_SR'),
+        );
+        const masteryLvl = Number(mastery?.championLevel || 0);
+        const masteryPts = Number(mastery?.championPoints || 0);
+
+        const tags: string[] = [];
+        if (masteryLvl >= 10 || masteryPts >= 100000) {
+          tags.push(`Main Niv. ${masteryLvl}`);
+        } else if (masteryLvl >= 5) {
+          tags.push(`Maîtrise ${masteryLvl}`);
+        } else if (masteryLvl <= 2 && masteryPts < 4000) {
+          tags.push('Champion peu joué');
+        }
+
+        const mainRank = soloRank || flexRank;
+        if (mainRank) {
+          const totalGames = mainRank.wins + mainRank.losses;
+          const wr = totalGames > 0 ? Math.round((mainRank.wins / totalGames) * 100) : 0;
+          if (mainRank.hotStreak) tags.push('En série (Hot Streak)');
+          if (totalGames >= 12 && wr >= 56) tags.push(`Haut Winrate (${wr}%)`);
+          else if (totalGames >= 15 && wr <= 44) tags.push(`Winrate fragile (${wr}%)`);
+          if (mainRank.veteran) tags.push('Vétéran');
+        } else {
+          tags.push('Non classé');
+        }
+
+        const scouted: LobbyScoutParticipant = {
+          puuid,
+          riotId: p.riotId,
+          championId: p.championId,
+          teamId: p.teamId,
+          soloRank,
+          flexRank,
+          championMasteryLevel: masteryLvl,
+          championMasteryPoints: masteryPts,
+          tags: tags.slice(0, 3),
+        };
+
+        lobbyScoutCache.set(cacheKey, { value: scouted, expiresAt: now + 1000 * 60 * 3 });
+        return scouted;
+      }),
+    );
+
+    results.push(...chunkRes);
+    if (i + 3 < limited.length) {
+      await sleep(75);
+    }
+  }
+
+  return results;
+}
+
+const laneMatchupCache = new Map<string, CacheEntry<LaneMatchupWinRateResponse>>();
+
+function normalizeMatchupChampKey(raw: string): string {
+  const clean = String(raw || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
+  if (clean === 'wukong') return 'monkeyking';
+  return clean;
+}
+
+function normalizeMatchupLane(raw?: string): string {
+  const upper = String(raw || '').trim().toUpperCase();
+  if (upper === 'MID' || upper === 'MIDDLE') return 'MIDDLE';
+  if (upper === 'ADC' || upper === 'BOT' || upper === 'BOTTOM') return 'BOTTOM';
+  if (upper === 'SUP' || upper === 'SUPPORT' || upper === 'UTILITY') return 'UTILITY';
+  if (upper === 'JGL' || upper === 'JUNGLE') return 'JUNGLE';
+  if (upper === 'TOP') return 'TOP';
+  return '';
+}
+
+export interface LaneMatchupRequestEnemy {
+  championName: string;
+  position?: string;
+  puuid?: string;
+  championId?: number;
+}
+
+/**
+ * Calcule le Win Rate comparatif des champions ennemis face au champion du joueur
+ * dans la voie actuelle via Riot Match-V5 (historique réel) et League-V4 (rang/WR joueur).
+ */
+export async function computeRiotLaneMatchupWinRates(params: {
+  gameName?: string;
+  tagLine?: string;
+  platform?: RiotPlatform;
+  playerChampion: string;
+  targetLane: string;
+  enemies: LaneMatchupRequestEnemy[];
+}): Promise<LaneMatchupWinRateResponse> {
+  const platform: RiotPlatform = params.platform || 'EUW1';
+  const targetLane = normalizeMatchupLane(params.targetLane) || 'MIDDLE';
+  const playerChampKey = normalizeMatchupChampKey(params.playerChampion);
+  const enemies = Array.isArray(params.enemies) ? params.enemies.slice(0, 5) : [];
+
+  if (!playerChampKey || enemies.length === 0) {
+    return {
+      available: false,
+      targetLane,
+      playerChampion: params.playerChampion,
+      scannedMatchesCount: 0,
+      rows: [],
+      note: 'Champion joueur ou adversaires manquants pour analyser le matchup.',
+    };
+  }
+
+  const enemySignature = enemies
+    .map((e) => `${normalizeMatchupChampKey(e.championName)}:${normalizeMatchupLane(e.position)}`)
+    .join('|');
+  const cacheKey = `${platform}:${(params.gameName || '').toLowerCase()}#${(
+    params.tagLine || ''
+  ).toLowerCase()}:${targetLane}:${playerChampKey}:${enemySignature}`;
+
+  const now = Date.now();
+  const cached = laneMatchupCache.get(cacheKey);
+  if (cached && cached.expiresAt > now) {
+    return cached.value;
+  }
+
+  const apiKeyConfigured = hasRiotApiKey();
+  const apiKey = getCleanRiotApiKey();
+  const headers = { 'X-Riot-Token': apiKey };
+  const regional = PLATFORM_TO_REGIONAL[platform] || 'europe';
+  const regionalHost = `${regional}.api.riotgames.com`;
+  const platformHost = `${platform.toLowerCase()}.api.riotgames.com`;
+
+  let newMatchFetches = 0;
+  const MAX_NEW_MATCH_FETCHES = 12;
+
+  const pullRecentMatchesByPuuid = async (puuid: string, count: number) => {
+    if (!apiKeyConfigured || !puuid) return;
+    const ids = await fetchRiotWithRetry<string[]>(
+      `https://${regionalHost}/lol/match/v5/matches/by-puuid/${encodeURIComponent(puuid)}/ids?start=0&count=${count}`,
+      headers,
+      1,
+    ).catch(() => []);
+
+    for (const matchId of ids) {
+      if (riotCaches.matches.has(matchId)) continue;
+      if (newMatchFetches >= MAX_NEW_MATCH_FETCHES) break;
+      const matchData = await fetchRiotWithRetry<any>(
+        `https://${regionalHost}/lol/match/v5/matches/${encodeURIComponent(matchId)}`,
+        headers,
+        1,
+      ).catch(() => null);
+      if (matchData?.info?.participants) {
+        if (riotCaches.matches.size > 320) {
+          const oldest = riotCaches.matches.keys().next().value;
+          if (oldest) riotCaches.matches.delete(oldest);
+        }
+        riotCaches.matches.set(matchId, matchData);
+        newMatchFetches += 1;
+        await sleep(65);
+      }
+    }
+  };
+
+  // 1. Récupérer les matchs Match-V5 récents du joueur connecté
+  if (apiKeyConfigured && params.gameName && params.tagLine) {
+    const accKey = `${platform}:${params.gameName.toLowerCase()}#${params.tagLine.toLowerCase()}`;
+    let playerPuuid = riotCaches.accounts.get(accKey)?.value?.puuid || '';
+    if (!playerPuuid) {
+      const acc = await fetchRiotWithRetry<{ puuid: string; gameName: string; tagLine: string }>(
+        `https://${regionalHost}/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(
+          params.gameName,
+        )}/${encodeURIComponent(params.tagLine)}`,
+        headers,
+        1,
+      ).catch(() => null);
+      if (acc?.puuid) {
+        playerPuuid = acc.puuid;
+        riotCaches.accounts.set(accKey, {
+          value: acc,
+          expiresAt: Date.now() + ACCOUNT_TTL_MS,
+        });
+      }
+    }
+    if (playerPuuid) {
+      await pullRecentMatchesByPuuid(playerPuuid, 20);
+    }
+  }
+
+  // 2. Récupérer quelques matchs Match-V5 récents du vis-à-vis direct (si PUUID Spectator connu)
+  const directEnemy = enemies.find(
+    (e) => e.puuid && normalizeMatchupLane(e.position) === targetLane,
+  );
+  if (apiKeyConfigured && directEnemy?.puuid) {
+    await pullRecentMatchesByPuuid(directEnemy.puuid, 8);
+  }
+
+  // 3. Récupérer le Win Rate Ranked (League-V4) des adversaires ayant un PUUID Spectator
+  const rankedByPuuid = new Map<
+    string,
+    { winRate: number | null; games: number; label: string | null }
+  >();
+
+  const enemiesWithPuuid = enemies.filter((e) => Boolean(e.puuid));
+  await Promise.all(
+    enemiesWithPuuid.map(async (e) => {
+      const puuid = String(e.puuid || '').trim();
+      if (!puuid) return;
+
+      // Vérifier si déjà présent dans lobbyScoutCache
+      for (const [k, cachedScout] of lobbyScoutCache.entries()) {
+        if (k.startsWith(`${platform}:${puuid}:`) && cachedScout.expiresAt > now) {
+          const mainRank = cachedScout.value.soloRank || cachedScout.value.flexRank;
+          if (mainRank) {
+            const total = mainRank.wins + mainRank.losses;
+            rankedByPuuid.set(puuid, {
+              winRate: total > 0 ? Math.round((mainRank.wins / total) * 100) : null,
+              games: total,
+              label: `${mainRank.tier} ${mainRank.rank}`.trim(),
+            });
+            return;
+          }
+        }
+      }
+
+      if (!apiKeyConfigured) return;
+      const entries = await fetchRiotWithRetry<any[]>(
+        `https://${platformHost}/lol/league/v4/entries/by-puuid/${encodeURIComponent(puuid)}`,
+        headers,
+        1,
+      ).catch(() => []);
+      const solo = toRankedQueueSummary(entries.find((x) => x.queueType === 'RANKED_SOLO_5x5'));
+      const flex = toRankedQueueSummary(entries.find((x) => x.queueType === 'RANKED_FLEX_SR'));
+      const mainRank = solo || flex;
+      if (mainRank) {
+        const total = mainRank.wins + mainRank.losses;
+        rankedByPuuid.set(puuid, {
+          winRate: total > 0 ? Math.round((mainRank.wins / total) * 100) : null,
+          games: total,
+          label: `${mainRank.tier} ${mainRank.rank}`.trim(),
+        });
+      }
+    }),
+  );
+
+  // 4. Agréger tous les matchs Summoner's Rift disponibles en cache Match-V5
+  const srMatches: any[] = [];
+  for (const rawMatch of riotCaches.matches.values()) {
+    const participants = rawMatch?.info?.participants;
+    if (!Array.isArray(participants) || participants.length === 0) continue;
+    const mapId = Number(rawMatch?.info?.mapId || 11);
+    if (mapId !== 11 && mapId !== 0) continue;
+    srMatches.push(rawMatch);
+  }
+
+  const rows: LaneMatchupWinRateRow[] = enemies.map((enemy) => {
+    const enemyKey = normalizeMatchupChampKey(enemy.championName);
+    const enemyLane = normalizeMatchupLane(enemy.position);
+    const isDirectLaneOpponent = Boolean(enemyLane && enemyLane === targetLane);
+
+    let laneH2HGames = 0;
+    let laneH2HEnemyWins = 0;
+    let overallH2HGames = 0;
+    let overallH2HEnemyWins = 0;
+    let enemyChampInLaneGames = 0;
+    let enemyChampInLaneWins = 0;
+
+    for (const rawMatch of srMatches) {
+      const participants: any[] = rawMatch.info.participants;
+      const enemyParts = participants.filter(
+        (p) => normalizeMatchupChampKey(p?.championName) === enemyKey,
+      );
+      const playerParts = participants.filter(
+        (p) => normalizeMatchupChampKey(p?.championName) === playerChampKey,
+      );
+
+      for (const ep of enemyParts) {
+        const epLane = normalizeMatchupLane(ep?.teamPosition || ep?.individualPosition);
+        if (epLane === targetLane) {
+          enemyChampInLaneGames += 1;
+          if (ep?.win) enemyChampInLaneWins += 1;
+        }
+      }
+
+      // Confrontation directe entre le champion ennemi et le champion du joueur (équipes opposées)
+      for (const pp of playerParts) {
+        const oppEnemy = enemyParts.find((ep) => ep?.teamId !== pp?.teamId);
+        if (!oppEnemy) continue;
+
+        overallH2HGames += 1;
+        if (oppEnemy.win) overallH2HEnemyWins += 1;
+
+        const ppLane = normalizeMatchupLane(pp?.teamPosition || pp?.individualPosition);
+        const epLane = normalizeMatchupLane(oppEnemy?.teamPosition || oppEnemy?.individualPosition);
+        if (ppLane === targetLane && epLane === targetLane) {
+          laneH2HGames += 1;
+          if (oppEnemy.win) laneH2HEnemyWins += 1;
+        }
+      }
+    }
+
+    const rankedInfo = enemy.puuid ? rankedByPuuid.get(enemy.puuid) : undefined;
+
+    return {
+      championName: enemy.championName,
+      enemyPosition: enemyLane || enemy.position || '-',
+      isDirectLaneOpponent,
+      laneH2HGames,
+      laneH2HEnemyWins,
+      laneH2HEnemyWinRate:
+        laneH2HGames > 0 ? Math.round((laneH2HEnemyWins / laneH2HGames) * 100) : null,
+      overallH2HGames,
+      overallH2HEnemyWins,
+      overallH2HEnemyWinRate:
+        overallH2HGames > 0 ? Math.round((overallH2HEnemyWins / overallH2HGames) * 100) : null,
+      enemyChampInLaneGames,
+      enemyChampInLaneWins,
+      enemyChampInLaneWinRate:
+        enemyChampInLaneGames > 0
+          ? Math.round((enemyChampInLaneWins / enemyChampInLaneGames) * 100)
+          : null,
+      enemyPlayerRankedWinRate: rankedInfo?.winRate ?? null,
+      enemyPlayerRankedGames: rankedInfo?.games ?? 0,
+      enemyPlayerRankLabel: rankedInfo?.label ?? null,
+    };
+  });
+
+  // Trier : vis-à-vis direct en premier, puis par nombre de données Match-V5
+  rows.sort((a, b) => {
+    if (a.isDirectLaneOpponent !== b.isDirectLaneOpponent) {
+      return a.isDirectLaneOpponent ? -1 : 1;
+    }
+    if (b.laneH2HGames !== a.laneH2HGames) return b.laneH2HGames - a.laneH2HGames;
+    return b.enemyChampInLaneGames - a.enemyChampInLaneGames;
+  });
+
+  const response: LaneMatchupWinRateResponse = {
+    available: apiKeyConfigured || srMatches.length > 0,
+    targetLane,
+    playerChampion: params.playerChampion,
+    scannedMatchesCount: srMatches.length,
+    rows,
+    note: apiKeyConfigured
+      ? undefined
+      : 'Clé Riot API absente côté serveur : affichage limité aux matchs déjà en cache.',
+  };
+
+  laneMatchupCache.set(cacheKey, { value: response, expiresAt: now + 1000 * 120 });
+  return response;
+}
+
+
 

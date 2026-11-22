@@ -33,9 +33,11 @@ async function generateJsonWithFallback(params: {
 export async function generateBuildCoachingRationale(payload: {
   recommendation: BuildRecommendation;
   tendencies?: PlayerTendencies;
+  matchupNote?: string;
   aiConfig?: Partial<AiUserSelection> | null;
 }) {
-  const { recommendation, tendencies, aiConfig } = payload;
+  const { recommendation, tendencies, matchupNote, aiConfig } = payload;
+  const cleanMatchupNote = typeof matchupNote === 'string' ? matchupNote.trim() : '';
 
   const promptData = {
     patch: recommendation.patchVersion,
@@ -46,6 +48,7 @@ export async function generateBuildCoachingRationale(payload: {
       : null,
     duoSynergyNotes: recommendation.duoSynergyNotes,
     role: recommendation.role,
+    personalMatchupNote: cleanMatchupNote || null,
     enemyProfiles: recommendation.threatSummary.profiles.map((p) => ({
       name: p.championName,
       damage: p.primaryDamage,
@@ -74,7 +77,11 @@ export async function generateBuildCoachingRationale(payload: {
   return generateJsonWithFallback({
     aiConfig,
     contents:
-      `Tu es un coach League of Legends de niveau Challenger. En t'appuyant UNIQUEMENT sur les données exactes ci-dessous (ne jamais inventer d'autres statistiques ni modifier les noms d'objets), rédige un plan de jeu concret en français pour ${recommendation.playerChampion.name} (${recommendation.role}, mode ${recommendation.gameMode}).\n\nDonnées vérifiées :\n` +
+      `Tu es un coach League of Legends de niveau Challenger. En t'appuyant UNIQUEMENT sur les données exactes ci-dessous (ne jamais inventer d'autres statistiques ni modifier les noms d'objets), rédige un plan de jeu concret en français pour ${recommendation.playerChampion.name} (${recommendation.role}, mode ${recommendation.gameMode}).${
+        cleanMatchupNote
+          ? ` Le joueur a aussi saisi ce mémo personnel à respecter dans son plan : "${cleanMatchupNote}". Intègre-le directement dans les conseils d'early game ou les rappels clés.`
+          : ''
+      }\n\nDonnées vérifiées :\n` +
       JSON.stringify(promptData, null, 2),
     systemInstruction:
       'Coach LoL francophone concis, précis et actionnable. Tu expliques la logique des objets sélectionnés par le moteur déterministe sans jamais inventer de chiffres absents des données fournies.',
@@ -768,6 +775,244 @@ export async function searchPopularBuildsWithGoogle(
     throw outerErr;
   }
 }
+
+export async function analyzeVoiceMomentWithAi(payload: {
+  audioBase64?: string;
+  mimeType?: string;
+  transcript?: string;
+  snapshot?: LiveCoachSnapshot | null;
+  aiConfig?: Partial<AiUserSelection> | null;
+}) {
+  const { audioBase64, mimeType, snapshot, aiConfig } = payload;
+  const cleanTranscript = typeof payload.transcript === 'string' ? payload.transcript.trim() : '';
+
+  const compactSnapshot = snapshot
+    ? {
+        champion: snapshot.championName,
+        level: snapshot.level,
+        gameTimeSec: snapshot.gameTimeSec,
+        kda: snapshot.kda,
+        currentGold: snapshot.currentGold,
+        dragonTimerSec: snapshot.dragonTimerSec,
+        baronTimerSec: snapshot.baronTimerSec,
+        gameState: snapshot.gameState,
+        topEnemyThreats: (snapshot.enemyThreats || []).slice(0, 3),
+      }
+    : null;
+
+  const responseSchema = {
+    type: Type.OBJECT,
+    required: ['transcript', 'detected', 'momentType', 'label', 'severity', 'headline', 'coachAction', 'spokenText'],
+    properties: {
+      transcript: {
+        type: Type.STRING,
+        description: 'Transcription exacte en français de ce que le joueur a dit dans l’audio.',
+      },
+      detected: { type: Type.BOOLEAN },
+      momentType: {
+        type: Type.STRING,
+        description:
+          'Un des choix exacts : DRAGON, BARON, HERALD_GRUBS, GANK_IMMINENT, RETREAT_DANGER, SUMMONER_DOWN, RECALL_BUY, TEAMFIGHT_ENGAGE, NONE',
+      },
+      label: { type: Type.STRING, description: 'Titre court du moment (ex: Dragon, Gank Imminent).' },
+      severity: { type: Type.STRING, description: 'critical, warning ou tactical' },
+      headline: { type: Type.STRING, description: 'Bandeau visuel court (max 8 mots).' },
+      coachAction: { type: Type.STRING, description: 'Action tactique immédiate à faire (1-2 phrases).' },
+      spokenText: {
+        type: Type.STRING,
+        description:
+          'Phrase courte et naturelle en français lue à voix haute (écris "pièces d’or" et "secondes" en toutes lettres, max 18 mots).',
+      },
+    },
+  };
+
+  const systemInstruction =
+    'Tu es un coach vocal League of Legends en temps réel. À partir de la phrase prononcée par le joueur et du contexte de la partie, identifie le moment clé LoL et donne une consigne courte, concrète et immédiatement actionnable.';
+
+  const analyzeTranscriptText = async (spokenPhrase: string) => {
+    const tactical = await generateJsonWithFallback({
+      aiConfig,
+      contents:
+        `Phrase captée au micro pendant une partie de League of Legends :\n"${spokenPhrase}"\n\nContexte temps réel de la partie :\n` +
+        JSON.stringify(compactSnapshot, null, 2),
+      systemInstruction,
+      responseSchema,
+    });
+
+    return {
+      transcript: spokenPhrase,
+      detected: Boolean(tactical?.detected),
+      momentType: String(tactical?.momentType || 'NONE'),
+      label: String(tactical?.label || 'Moment détecté'),
+      severity:
+        tactical?.severity === 'critical' || tactical?.severity === 'warning'
+          ? tactical.severity
+          : 'tactical',
+      headline: String(tactical?.headline || 'Consigne tactique'),
+      coachAction: String(tactical?.coachAction || ''),
+      spokenText: String(tactical?.spokenText || tactical?.coachAction || ''),
+    };
+  };
+
+  if (audioBase64 && !cleanTranscript) {
+    const safeMime =
+      typeof mimeType === 'string' && mimeType.startsWith('audio/')
+        ? mimeType.split(';')[0]
+        : 'audio/webm';
+
+    // Détection rapide de silence complet pour les flux PCM WAV non compressés
+    if (safeMime === 'audio/wav') {
+      try {
+        const rawBuf = Buffer.from(audioBase64, 'base64');
+        if (rawBuf.length > 44) {
+          let sumSq = 0;
+          let samples = 0;
+          for (let offset = 44; offset + 1 < rawBuf.length; offset += 2) {
+            const sample = rawBuf.readInt16LE(offset) / 32768;
+            sumSq += sample * sample;
+            samples++;
+          }
+          const rms = samples > 0 ? Math.sqrt(sumSq / samples) : 0;
+          if (rms < 0.003) {
+            return {
+              transcript: '',
+              detected: false,
+              momentType: 'NONE',
+              label: 'Aucune parole détectée',
+              severity: 'tactical',
+              headline: 'Aucune parole captée',
+              coachAction:
+                'L’extrait audio est silencieux. Rapprochez-vous du micro et prononcez une consigne claire.',
+              spokenText: 'Aucune parole détectée.',
+            };
+          }
+        }
+      } catch {
+        // ignore malformed wav inspection and let Gemini inspect audio
+      }
+    }
+
+    const ai = getGeminiClient();
+    const { ThinkingLevel } = await import('@google/genai');
+    const attempts = [
+      { model: 'gemini-4-hydrogen', thinkingLevel: ThinkingLevel.LOW },
+      { model: 'gemini-3.1-flash-lite', thinkingLevel: ThinkingLevel.MINIMAL },
+    ];
+
+    const transcriptionSchema = {
+      type: Type.OBJECT,
+      required: ['hasClearSpeech', 'transcript'],
+      properties: {
+        hasClearSpeech: {
+          type: Type.BOOLEAN,
+          description: 'true uniquement si une vraie voix humaine prononce des mots intelligibles, false si silence ou bruit.',
+        },
+        transcript: {
+          type: Type.STRING,
+          description: 'Transcription mot pour mot en français uniquement de ce qui est réellement entendu, sinon chaîne vide.',
+        },
+      },
+    };
+
+    let transcribed: { hasClearSpeech?: boolean; transcript?: string } | null = null;
+    let lastError: unknown = null;
+
+    for (const attempt of attempts) {
+      try {
+        const res = await ai.models.generateContent({
+          model: attempt.model,
+          contents: {
+            parts: [
+              {
+                inlineData: {
+                  mimeType: safeMime,
+                  data: audioBase64,
+                },
+              },
+              {
+                text: 'Transcris mot pour mot la parole humaine en français dans cet audio. Si tu n’entends que du silence, du souffle ou aucun mot distinct, mets hasClearSpeech=false et transcript="". Ne devine rien.',
+              },
+            ],
+          },
+          config: {
+            temperature: 0,
+            systemInstruction:
+              'Tu es un transcripteur audio littéral et strict. Tu ne transcris que des mots réellement prononcés par une voix humaine. En cas de silence ou de doute, retourne toujours hasClearSpeech=false et transcript="".',
+            thinkingConfig: { thinkingLevel: attempt.thinkingLevel },
+            responseMimeType: 'application/json',
+            responseSchema: transcriptionSchema as any,
+          },
+        });
+        transcribed = JSON.parse((res.text ?? '{}').trim());
+        break;
+      } catch (err) {
+        lastError = err;
+      }
+    }
+
+    if (!transcribed) {
+      throw new Error(
+        lastError instanceof Error
+          ? `Analyse audio Gemini impossible : ${lastError.message.slice(0, 180)}`
+          : 'Analyse audio Gemini indisponible.',
+      );
+    }
+
+    const heardText = String(transcribed.transcript || '').trim();
+    if (!transcribed.hasClearSpeech || !heardText) {
+      return {
+        transcript: '',
+        detected: false,
+        momentType: 'NONE',
+        label: 'Aucune parole détectée',
+        severity: 'tactical',
+        headline: 'Aucune phrase intelligible captée',
+        coachAction:
+          'Aucune voix claire n’a été détectée dans cet extrait. Parlez distinctement près du micro.',
+        spokenText: 'Aucune parole détectée.',
+      };
+    }
+
+    return analyzeTranscriptText(heardText);
+  }
+
+  if (!cleanTranscript) {
+    return {
+      transcript: '',
+      detected: false,
+      momentType: 'NONE',
+      label: 'Aucune parole détectée',
+      severity: 'tactical',
+      headline: 'Aucune phrase exploitable captée',
+      coachAction: 'Parlez un peu plus près du micro ou prononcez un repère clair (ex: Dragon, Baron, Gank).',
+      spokenText: 'Aucune commande détectée.',
+    };
+  }
+
+  const tactical = await generateJsonWithFallback({
+    aiConfig,
+    contents:
+      `Phrase captée au micro pendant une partie de League of Legends :\n"${cleanTranscript}"\n\nContexte temps réel de la partie :\n` +
+      JSON.stringify(compactSnapshot, null, 2),
+    systemInstruction,
+    responseSchema,
+  });
+
+  return {
+    transcript: cleanTranscript,
+    detected: Boolean(tactical?.detected),
+    momentType: String(tactical?.momentType || 'NONE'),
+    label: String(tactical?.label || 'Moment détecté'),
+    severity:
+      tactical?.severity === 'critical' || tactical?.severity === 'warning'
+        ? tactical.severity
+        : 'tactical',
+    headline: String(tactical?.headline || 'Consigne tactique'),
+    coachAction: String(tactical?.coachAction || ''),
+    spokenText: String(tactical?.spokenText || tactical?.coachAction || ''),
+  };
+}
+
 
 
 

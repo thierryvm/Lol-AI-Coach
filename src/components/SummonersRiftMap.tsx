@@ -4,6 +4,7 @@ import type {
   MapCoordinateEvent,
   MapParticipantSnapshot,
 } from '../engines/types.ts';
+import { formatChampionDisplayName, resolveChampionDisplay } from '../utils/championDisplay.ts';
 
 export interface ArchiveDeathPoint {
   x: number;
@@ -237,16 +238,6 @@ export function SummonersRiftMap({
   const [hoveredTurretId, setHoveredTurretId] = useState<string | null>(null);
   const [mapImgFailed, setMapImgFailed] = useState(false);
 
-  const championIconLookup = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const c of champions) {
-      map.set(c.id.toLowerCase(), c.imageUrl);
-      map.set(c.name.toLowerCase(), c.imageUrl);
-      map.set(c.id.toLowerCase().replace(/[^a-z0-9]/g, ''), c.imageUrl);
-    }
-    return map;
-  }, [champions]);
-
   const resolveChampionIconUrl = (rawName?: string): string | null => {
     if (!rawName) return null;
     const trimmed = rawName.trim();
@@ -258,16 +249,17 @@ export function SummonersRiftMap({
     ) {
       return null;
     }
-    const direct =
-      championIconLookup.get(trimmed.toLowerCase()) ||
-      championIconLookup.get(trimmed.toLowerCase().replace(/[^a-z0-9]/g, ''));
-    if (direct) return direct;
+    const disp = resolveChampionDisplay(champions, trimmed);
+    if (disp.imageUrl) return disp.imageUrl;
     const imgKey = normalizeChampionImageKey(trimmed);
     if (!imgKey) return null;
     return `https://ddragon.leagueoflegends.com/cdn/${patchVersion}/img/champion/${imgKey}.png`;
   };
 
   const playerIconUrl = resolveChampionIconUrl(playerChampion);
+  const playerDisplayName = playerChampion
+    ? formatChampionDisplayName(champions, playerChampion)
+    : undefined;
 
   const isExpanded = mode === 'expanded';
 
@@ -833,8 +825,9 @@ export function SummonersRiftMap({
                           : 5.8;
                       const clipId = `${svgUid}-snap-${snap.participantId}`;
                       const imgUrl = resolveChampionIconUrl(snap.championName);
+                      const snapDisplayName = formatChampionDisplayName(champions, snap.championName);
                       const roleTag = formatRoleFr(snap.teamPosition);
-                      const tooltip = `${snap.championName}${roleTag ? ` (${roleTag})` : ''} · ${
+                      const tooltip = `${snapDisplayName}${roleTag ? ` (${roleTag})` : ''} · ${
                         snap.isKiller
                           ? 'Tueur'
                           : snap.isAssister
@@ -927,7 +920,7 @@ export function SummonersRiftMap({
                   onClick={() => handleSelectEvent(ev)}
                   onMouseEnter={() =>
                     setHoveredFeature(
-                      `${playerChampion || 'Vous'} · ${isDeath ? 'Mort' : 'Élimination'} (${ev.minute} min)`,
+                      `${playerDisplayName || 'Vous'} · ${isDeath ? 'Mort' : 'Élimination'} (${ev.minute} min)`,
                     )
                   }
                   onMouseLeave={() => setHoveredFeature(null)}
@@ -1050,10 +1043,10 @@ export function SummonersRiftMap({
                   <span className="inline-flex items-center gap-1 text-slate-700 dark:text-slate-200 font-medium">
                     <img
                       src={playerIconUrl}
-                      alt={playerChampion || 'Vous'}
+                      alt={playerDisplayName || 'Vous'}
                       className="w-3.5 h-3.5 rounded-full ring-1 ring-rose-400 object-cover"
                     />
-                    {playerChampion || 'Vous'}
+                    {playerDisplayName || 'Vous'}
                   </span>
                 )}
                 <span className="inline-flex items-center gap-1">
@@ -1209,7 +1202,7 @@ export function SummonersRiftMap({
                         </div>
                         <div className="text-[11px] text-slate-600 dark:text-slate-300 truncate">
                           {tacticalAnalysis.nearestAllySnap
-                            ? `Plus proche : ${tacticalAnalysis.nearestAllySnap.championName} (${riotDistance(
+                            ? `Plus proche : ${formatChampionDisplayName(champions, tacticalAnalysis.nearestAllySnap.championName)} (${riotDistance(
                                 selectedEvent.x,
                                 selectedEvent.y,
                                 tacticalAnalysis.nearestAllySnap.x,
@@ -1247,7 +1240,7 @@ export function SummonersRiftMap({
                   </ul>
                   <p className="text-xs text-sky-700 dark:text-sky-300 leading-relaxed pt-1">
                     <strong className="font-semibold">
-                      Réflexe{playerChampion ? ` (${playerChampion})` : ''} :
+                      Réflexe{playerDisplayName ? ` (${playerDisplayName})` : ''} :
                     </strong>{' '}
                     {tacticalAnalysis.tip}
                   </p>
@@ -1263,6 +1256,10 @@ export function SummonersRiftMap({
                         const maxTotal = selectedEvent.damageBreakdown![0].totalDamage || 1;
                         const pct = Math.min(100, Math.round((dmg.totalDamage / maxTotal) * 100));
                         const dmgIcon = resolveChampionIconUrl(dmg.sourceName);
+                        const dmgLabel =
+                          dmg.isEnemyChampion || dmg.sourceName !== 'Tourelle'
+                            ? formatChampionDisplayName(champions, dmg.sourceName)
+                            : dmg.sourceName;
                         return (
                           <div key={`${dmg.sourceName}-${i}`} className="text-[11px]">
                             <div className="flex items-center justify-between gap-2">
@@ -1270,11 +1267,11 @@ export function SummonersRiftMap({
                                 {dmgIcon && (
                                   <img
                                     src={dmgIcon}
-                                    alt={dmg.sourceName}
+                                    alt={dmgLabel}
                                     className="w-4 h-4 rounded-full object-cover shrink-0"
                                   />
                                 )}
-                                {dmg.sourceName}
+                                {dmgLabel}
                               </span>
                               <span className="font-mono tabular-nums text-slate-500 dark:text-slate-400">
                                 {dmg.totalDamage} dmg

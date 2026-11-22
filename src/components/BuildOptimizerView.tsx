@@ -7,6 +7,7 @@ import {
   Brain,
   Check,
   CheckCircle2,
+  Coins,
   Copy,
   Download,
   ExternalLink,
@@ -15,6 +16,7 @@ import {
   Globe,
   Info,
   Layers,
+  Library,
   Loader2,
   Pencil,
   Plus,
@@ -39,7 +41,6 @@ import {
   computePerItemImpactMatrix,
   extractRawDataDragonItemDetails,
   formatItemStatTags,
-  parseExactItemStats,
   runCombinatorialBuildAndRuneSearch,
   simulateCombatDamageAgainstTarget,
   validateRuneConfiguration,
@@ -64,15 +65,35 @@ import type {
   Role,
 } from '../engines/types.ts';
 import {
+  activateRunePageInLcuBridge,
+  deleteRunePageFromLcuBridge,
   downloadWindowsBridgeBat,
+  extractAllLcuRunePages,
   extractCompositionFromBridgePayload,
   extractCompositionFromSpectator,
   extractDetectedRunePage,
+  fetchLcuRunePagesFromBridge,
+  saveRunePageToLcuBridge,
   type DetectedMatchComposition,
+  type NormalizedLcuRunePage,
   UNIVERSAL_STATE_CLIPBOARD_CMD,
 } from '../utils/liveBridge.ts';
+import { LoLItemShopPanel } from './LoLItemShopPanel.tsx';
+import {
+  MatchupNotesModal,
+  parseStoredMatchupNotes,
+  type MatchupNotesStorageMap,
+} from './MatchupNotesModal.tsx';
 import { PopularBuildSearch } from './PopularBuildSearch.tsx';
+import {
+  loadSavedRunePages,
+  MAX_SAVED_RUNE_PAGES,
+  RuneCollectionView,
+  saveRunePagesToStorage,
+  type SavedRunePageEntry,
+} from './RuneCollectionView.tsx';
 import { SafeGameIcon } from './SafeGameIcon.tsx';
+import { SectionInfoTooltip } from './SectionInfoTooltip.tsx';
 import { VisualRunePage } from './VisualRunePage.tsx';
 
 interface BuildOptimizerViewProps {
@@ -104,31 +125,6 @@ const SCENARIO_OPTIONS: Array<{ id: GameScenario; label: string; hint: string }>
   { id: 'balanced', label: 'Équilibré (50/50)', hint: 'Rythme standard' },
   { id: 'ahead', label: 'En avance (Snowball)', hint: 'Scaling & dégâts max' },
   { id: 'behind', label: 'Je me fais dominer', hint: 'Objets éco & survie' },
-];
-
-type ItemFilterKey =
-  | 'all'
-  | 'boots'
-  | 'budget'
-  | 'tank'
-  | 'armor'
-  | 'mr'
-  | 'ad'
-  | 'ap'
-  | 'haste'
-  | 'antiheal';
-
-const ITEM_FILTER_OPTIONS: Array<{ id: ItemFilterKey; label: string }> = [
-  { id: 'all', label: 'Tous' },
-  { id: 'boots', label: 'Bottes' },
-  { id: 'budget', label: 'Éco ≤ 2650 po' },
-  { id: 'tank', label: 'PV / Tank' },
-  { id: 'armor', label: 'Armure' },
-  { id: 'mr', label: 'Résist. Mag.' },
-  { id: 'ad', label: 'AD / Crit' },
-  { id: 'ap', label: 'Puissance (AP)' },
-  { id: 'haste', label: 'Hâte / CDR' },
-  { id: 'antiheal', label: 'Anti-soin' },
 ];
 
 function SlotPortraitCard({
@@ -360,6 +356,9 @@ export function BuildOptimizerView({
   };
 
   const [playerChampId, setPlayerChampId] = useState<string>(() => findChamp(initialChampionName).id);
+  const [buildStep, setBuildStep] = useState<'setup' | 'build' | 'tools' | 'all'>(() =>
+    initialChampionName ? 'build' : 'setup',
+  );
   const [role, setRole] = useState<Role>(initialRole);
   const [gameMode, setGameMode] = useState<GameModeContext>('CLASSIC');
   const [scenario, setScenario] = useState<GameScenario>('balanced');
@@ -388,12 +387,25 @@ export function BuildOptimizerView({
   const [customRuneSelection, setCustomRuneSelection] = useState<RunePageSelection | null>(null);
   const [runeSimLevel, setRuneSimLevel] = useState<number>(11);
 
-  // Atelier d'équipement interactif (6 emplacements + stacks Cœuracier + modale Data Dragon)
+  // Collection officielle de pages de runes sauvegardées (jusqu'à 15 pages) + Onglet Client LoL
+  const [savedRunePages, setSavedRunePages] = useState<SavedRunePageEntry[]>(() =>
+    loadSavedRunePages(),
+  );
+  const [activeSavedPageId, setActiveSavedPageId] = useState<string | null>(null);
+  const [activeRunePageTitle, setActiveRunePageTitle] = useState<string>('');
+  const [isRunePageDirty, setIsRunePageDirty] = useState<boolean>(false);
+  const [clientHubTab, setClientHubTab] = useState<'editor' | 'collection' | 'shop'>('editor');
+  const [lcuBridgeConnected, setLcuBridgeConnected] = useState<boolean>(false);
+  const [lcuSyncFeedback, setLcuSyncFeedback] = useState<string | null>(null);
+  const hasSeededFallbackRef = useRef(false);
+
+  // Atelier d'équipement interactif (6 emplacements + stacks Cœuracier + Boutique LoL officielle)
   const [customBuildItemIds, setCustomBuildItemIds] = useState<(string | null)[] | null>(null);
   const [heartsteelStacksHp, setHeartsteelStacksHp] = useState<number>(300);
   const [itemPickerSlotIdx, setItemPickerSlotIdx] = useState<number | null>(null);
-  const [itemSearchQuery, setItemSearchQuery] = useState('');
-  const [itemFilterKey, setItemFilterKey] = useState<ItemFilterKey>('all');
+  const [recipeModalItemId, setRecipeModalItemId] = useState<string | null>(null);
+  const [inspectedShopItemId, setInspectedShopItemId] = useState<string | null>(null);
+  const [showAtelierShopPanel, setShowAtelierShopPanel] = useState<boolean>(true);
 
   // Simulateur d'impact par objet (Data Dragon brut) & dégâts infligés en temps réel
   const [combatDurationSec, setCombatDurationSec] = useState<number>(6);
@@ -441,6 +453,7 @@ export function BuildOptimizerView({
   const [pickerTarget, setPickerTarget] = useState<{
     type: 'player' | 'duo' | 'enemy';
     index?: number;
+    selectAsTarget?: boolean;
   } | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [pickerTag, setPickerTag] = useState('Tous');
@@ -456,14 +469,15 @@ export function BuildOptimizerView({
   } | null>(null);
 
   const [showDraftCounterPanel, setShowDraftCounterPanel] = useState(false);
-  const [matchupNotesMap, setMatchupNotesMap] = useState<Record<string, string>>(() => {
-    try {
-      const raw = localStorage.getItem('lol_ai_coach_matchup_notes_v1');
-      return raw ? (JSON.parse(raw) as Record<string, string>) : {};
-    } catch {
-      return {};
-    }
-  });
+  const [showSavedNotes, setShowSavedNotes] = useState(false);
+  const [noteSavedFeedback, setNoteSavedFeedback] = useState(false);
+  const [matchupNotesMap, setMatchupNotesMap] = useState<MatchupNotesStorageMap>(() =>
+    parseStoredMatchupNotes(
+      typeof window !== 'undefined'
+        ? localStorage.getItem('lol_ai_coach_matchup_notes_v1')
+        : null,
+    ),
+  );
 
   const isInsideIframe = typeof window !== 'undefined' && window.self !== window.top;
 
@@ -569,20 +583,58 @@ export function BuildOptimizerView({
     };
   }, []);
 
+  const syncNormalizedLcuPages = (lcuPages: NormalizedLcuRunePage[]): number => {
+    if (lcuPages.length === 0) return 0;
+    const now = Date.now();
+    const mappedLcu: SavedRunePageEntry[] = lcuPages.map((p) => ({
+      id: `lcu-${p.lcuId}`,
+      name: p.name,
+      selection: p.selection,
+      updatedAt: now,
+      lcuId: p.lcuId,
+      isLcuCurrent: p.isCurrent,
+      syncedFromClient: true,
+    }));
+
+    setSavedRunePages((prev) => {
+      const localOnly = prev.filter(
+        (entry) => !entry.lcuId && !entry.syncedFromClient && !entry.id.startsWith('seed-'),
+      );
+      const merged = [...mappedLcu, ...localOnly].slice(0, MAX_SAVED_RUNE_PAGES);
+      saveRunePagesToStorage(merged);
+      return merged;
+    });
+    return mappedLcu.length;
+  };
+
   const pollLocalBridgeState = async () => {
     setSyncError(null);
     try {
       const healthRes = await fetch('http://127.0.0.1:38421/health');
       if (!healthRes.ok) throw new Error('Bridge down');
+      setLcuBridgeConnected(true);
 
       const res = await fetch('http://127.0.0.1:38421/state');
       if (!res.ok) {
+        const directPages = await fetchLcuRunePagesFromBridge().catch(() => []);
+        const importedCount = syncNormalizedLcuPages(directPages);
         setSyncMessage(
-          'Pont Windows connecté (port 38421), mais aucune session LoL active pour le moment.',
+          importedCount > 0
+            ? `Pont Windows v3.4 connecté · ${importedCount} page(s) de runes importées depuis votre client LoL.`
+            : 'Pont Windows connecté (port 38421), mais aucune session LoL active pour le moment.',
         );
         return;
       }
       const payload = await res.json();
+      let lcuPages = extractAllLcuRunePages(payload);
+      if (lcuPages.length === 0) {
+        lcuPages = await fetchLcuRunePagesFromBridge().catch(() => []);
+      }
+      const importedCount = syncNormalizedLcuPages(lcuPages);
+      if (importedCount > 0) {
+        setLcuSyncFeedback(`${importedCount} page(s) synchronisée(s) avec votre client LoL.`);
+      }
+
       const runePage = extractDetectedRunePage(payload);
       if (runePage) {
         setDetectedRunePage(runePage);
@@ -590,15 +642,17 @@ export function BuildOptimizerView({
 
       const comp = extractCompositionFromBridgePayload(payload, ddragon.champions);
       if (!comp) {
-        if (runePage) {
+        if (runePage || importedCount > 0) {
           setSyncMessage(
-            `Pont Windows v3 connecté (${payload.phase || 'Salon'}) · Page de runes active détectée : « ${
-              runePage.pageName || 'Page LoL'
-            } ». Cliquez sur « Votre page équipée » ci-dessous pour la consulter.`,
+            `Pont Windows v3.4 connecté (${payload.phase || 'Salon'}) · ${
+              importedCount > 0 ? `${importedCount} pages de runes récupérées` : ''
+            }${
+              runePage ? ` · Active : « ${runePage.pageName || 'Page LoL'} »` : ''
+            }.`,
           );
         } else {
           setSyncMessage(
-            `Pont Windows v3 connecté · Client LoL en phase « ${payload.phase || 'Salon'} ». Lancez une sélection de champions, une partie ou l'Outil d'entraînement pour synchroniser automatiquement.`,
+            `Pont Windows v3.4 connecté · Client LoL en phase « ${payload.phase || 'Salon'} ». Lancez une sélection de champions, une partie ou l'Outil d'entraînement pour synchroniser automatiquement.`,
           );
         }
         return;
@@ -611,6 +665,7 @@ export function BuildOptimizerView({
         }.`,
       );
     } catch {
+      setLcuBridgeConnected(false);
       if (isInsideIframe) {
         setShowLiveSyncPanel(true);
         setSyncError(
@@ -618,11 +673,52 @@ export function BuildOptimizerView({
         );
       } else {
         setSyncError(
-          'Pont local 127.0.0.1:38421 inaccessible. Téléchargez et lancez le nouveau lol-coach-bridge.bat sur Windows.',
+          'Pont local 127.0.0.1:38421 inaccessible. Téléchargez et lancez le nouveau lol-coach-bridge.bat (v3.4) sur Windows.',
         );
       }
     }
   };
+
+  const handleManualSyncLcuPages = async () => {
+    setLcuSyncFeedback(null);
+    try {
+      const lcuPages = await fetchLcuRunePagesFromBridge();
+      setLcuBridgeConnected(true);
+      const count = syncNormalizedLcuPages(lcuPages);
+      setLcuSyncFeedback(
+        count > 0
+          ? `${count} page(s) de runes importée(s) depuis votre client League of Legends.`
+          : 'Client LoL connecté, aucune page personnalisée détectée.',
+      );
+    } catch {
+      await pollLocalBridgeState();
+      if (isInsideIframe) {
+        setLcuSyncFeedback(
+          'Accès direct 127.0.0.1 bloqué dans l’iframe : ouvrez l’appli hors iframe (nouvel onglet) ou collez votre /state via Ctrl+V.',
+        );
+      } else {
+        setLcuSyncFeedback(
+          'Pont Windows v3.4 introuvable sur 127.0.0.1:38421. Téléchargez et lancez le fichier .bat v3.4.',
+        );
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (isInsideIframe) return;
+    let active = true;
+    fetch('http://127.0.0.1:38421/health')
+      .then((res) => {
+        if (active && res.ok) {
+          setBridgeAutoActive(true);
+          setLcuBridgeConnected(true);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [isInsideIframe]);
 
   useEffect(() => {
     if (!bridgeAutoActive) return;
@@ -636,6 +732,12 @@ export function BuildOptimizerView({
     setSyncMessage(null);
     try {
       const parsed = JSON.parse(raw);
+      const lcuPages = extractAllLcuRunePages(parsed);
+      const importedCount = syncNormalizedLcuPages(lcuPages);
+      if (importedCount > 0) {
+        setLcuSyncFeedback(`${importedCount} page(s) de runes importée(s) depuis votre client LoL.`);
+      }
+
       const runePage = extractDetectedRunePage(parsed);
       if (runePage) {
         setDetectedRunePage(runePage);
@@ -643,12 +745,24 @@ export function BuildOptimizerView({
 
       const comp = extractCompositionFromBridgePayload(parsed, ddragon.champions);
       if (!comp) {
-        if (runePage) {
+        if (runePage || importedCount > 0) {
           setPasteText('');
           setShowLiveSyncPanel(false);
-          setRuneViewMode('current');
+          if (importedCount > 0) {
+            setClientHubTab('collection');
+          } else {
+            setRuneViewMode('current');
+          }
           setSyncMessage(
-            `Page de runes « ${runePage.pageName || 'Client LoL'} » détectée (${runePage.sourceLabel}) et affichée ci-dessous ! (Aucune partie ou sélection active pour le moment).`,
+            `${
+              importedCount > 0
+                ? `${importedCount} pages de runes importées dans MES PAGES ! `
+                : ''
+            }${
+              runePage
+                ? `Page active « ${runePage.pageName || 'Client LoL'} » détectée (${runePage.sourceLabel}).`
+                : ''
+            }`,
           );
           return;
         }
@@ -662,8 +776,8 @@ export function BuildOptimizerView({
       setShowLiveSyncPanel(false);
       setSyncMessage(
         `${comp.phaseLabel} (${comp.modeLabel}) appliquée : ${comp.enemyChampIds.length} adversaire(s), ${comp.bannedChampIds.length} ban(s)${
-          runePage ? ` · Runes « ${runePage.pageName || 'Actives'} » détectées` : ''
-        }.`,
+          importedCount > 0 ? ` · ${importedCount} pages de runes synchronisées` : ''
+        }${runePage ? ` · Runes « ${runePage.pageName || 'Actives'} » détectées` : ''}.`,
       );
     } catch (err) {
       setSyncError(err instanceof Error ? err.message : 'JSON invalide.');
@@ -715,24 +829,43 @@ export function BuildOptimizerView({
   }, [gameMode, role, enemyIds, ddragon.champions, enemyChampions]);
 
   const matchupNoteKey = `${playerChampion.id}__${directEnemy?.id || 'general'}`;
-  const currentMatchupNote = matchupNotesMap[matchupNoteKey] || '';
+  const currentMatchupNote = matchupNotesMap[matchupNoteKey]?.text || '';
 
-  const updateMatchupNote = (value: string) => {
+  const persistNotesMap = (next: MatchupNotesStorageMap) => {
+    try {
+      localStorage.setItem('lol_ai_coach_matchup_notes_v1', JSON.stringify(next));
+    } catch {
+      // ignore storage quota errors
+    }
+  };
+
+  const updateMatchupNote = (value: string, targetKey = matchupNoteKey) => {
     setMatchupNotesMap((prev) => {
-      const next = { ...prev };
+      const next: MatchupNotesStorageMap = { ...prev };
       if (value === '') {
-        delete next[matchupNoteKey];
+        delete next[targetKey];
       } else {
-        next[matchupNoteKey] = value;
+        next[targetKey] = {
+          text: value,
+          updatedAt: Date.now(),
+        };
       }
-      try {
-        localStorage.setItem('lol_ai_coach_matchup_notes_v1', JSON.stringify(next));
-      } catch {
-        // ignore storage quota errors
-      }
+      persistNotesMap(next);
       return next;
     });
   };
+
+  const confirmSaveMatchupNote = () => {
+    const trimmed = currentMatchupNote.trim();
+    updateMatchupNote(trimmed);
+    setNoteSavedFeedback(true);
+    window.setTimeout(() => setNoteSavedFeedback(false), 2000);
+  };
+
+  const savedNotesCount = useMemo(
+    () => Object.values(matchupNotesMap).filter((v) => v.text.trim().length > 0).length,
+    [matchupNotesMap],
+  );
 
   const draftCounterPicks = useMemo(
     () =>
@@ -776,6 +909,9 @@ export function BuildOptimizerView({
   useEffect(() => {
     setCustomRuneSelection(null);
     setCustomBuildItemIds(null);
+    setActiveSavedPageId(null);
+    setActiveRunePageTitle('');
+    setIsRunePageDirty(false);
   }, [playerChampion.id, role, gameMode]);
 
   useEffect(() => {
@@ -901,7 +1037,9 @@ export function BuildOptimizerView({
       };
     }
     const matchedEnemy =
-      enemyChampions.find((e) => e.id === selectedEnemyTargetId) || enemyChampions[0] || null;
+      enemyChampions.find((e) => e.id === selectedEnemyTargetId) ||
+      enemyChampions[0] ||
+      null;
     if (!matchedEnemy) {
       return {
         id: 'dummy',
@@ -1026,51 +1164,232 @@ export function BuildOptimizerView({
     ],
   );
 
-  const purchasableCatalog = useMemo(() => {
-    const mapKey = gameMode === 'ARAM' ? '12' : '11';
-    const raw = ddragon.items.filter(
-      (it) =>
-        Number(it.id) < 100000 &&
-        it.gold.purchasable &&
-        it.gold.total >= 300 &&
-        !it.tags.includes('Consumable') &&
-        !it.tags.includes('Trinket') &&
-        (!it.maps || it.maps[mapKey] !== false),
-    );
-    const dedup = new Map<string, ItemData>();
-    for (const it of raw) {
-      const k = it.name.trim().toLowerCase();
-      const prev = dedup.get(k);
-      if (!prev || Number(it.id) < Number(prev.id)) dedup.set(k, it);
-    }
-    return Array.from(dedup.values()).sort((a, b) => b.gold.total - a.gold.total);
-  }, [ddragon.items, gameMode]);
+  const recommendedItemIdsSet = useMemo(
+    () => new Set(recommendedBuildItems.map((it) => it.id)),
+    [recommendedBuildItems],
+  );
 
-  const filteredCatalogItems = useMemo(() => {
-    const q = itemSearchQuery.trim().toLowerCase();
-    return purchasableCatalog.filter((it) => {
-      if (q) {
-        const matchesName =
-          it.name.toLowerCase().includes(q) || it.plaintext.toLowerCase().includes(q);
-        if (!matchesName) return false;
+  // Initialise la collection avec la page réelle Data Dragon du champion une seule fois si vide
+  useEffect(() => {
+    if (!hasSeededFallbackRef.current && savedRunePages.length === 0 && metaRuneSelection.primaryTreeId) {
+      hasSeededFallbackRef.current = true;
+      const seedPage: SavedRunePageEntry = {
+        id: `seed-${playerChampion.id}-${Date.now()}`,
+        name: `${playerChampion.name} ${role === 'SUPPORT' ? 'Support' : role}`,
+        championId: playerChampion.id,
+        selection: metaRuneSelection,
+        updatedAt: Date.now(),
+      };
+      setSavedRunePages([seedPage]);
+      saveRunePagesToStorage([seedPage]);
+      setActiveSavedPageId(seedPage.id);
+      setActiveRunePageTitle(seedPage.name);
+      setIsRunePageDirty(false);
+    }
+  }, [savedRunePages.length, metaRuneSelection, playerChampion.id, playerChampion.name, role]);
+
+  const activeSavedEntry = useMemo(
+    () => (activeSavedPageId ? savedRunePages.find((p) => p.id === activeSavedPageId) || null : null),
+    [savedRunePages, activeSavedPageId],
+  );
+
+  const handleSaveActiveRunePage = async () => {
+    const resolvedName =
+      activeRunePageTitle.trim() ||
+      `${playerChampion.name} ${role === 'SUPPORT' ? 'Support' : role}`;
+    const existingIdx = activeSavedPageId
+      ? savedRunePages.findIndex((p) => p.id === activeSavedPageId)
+      : -1;
+    const existingEntry = existingIdx !== -1 ? savedRunePages[existingIdx] : null;
+
+    let syncedLcuId = existingEntry?.lcuId;
+    let syncedSuccess = false;
+    if (lcuBridgeConnected) {
+      const lcuRes = await saveRunePageToLcuBridge({
+        lcuId: existingEntry?.lcuId,
+        name: resolvedName,
+        selection: activeSandboxSelection,
+        makeCurrent: true,
+      });
+      if (lcuRes.ok) {
+        syncedLcuId = lcuRes.lcuId ?? syncedLcuId;
+        syncedSuccess = true;
+        setLcuSyncFeedback(`Page « ${resolvedName} » enregistrée et équipée directement dans votre client LoL !`);
+      } else {
+        setLcuSyncFeedback(
+          `Sauvegardé localement, mais refusé par le client LoL (${lcuRes.error || 'limite atteinte ou erreur LCU'}).`,
+        );
       }
-      if (itemFilterKey === 'all') return true;
-      const st = parseExactItemStats(it);
-      const txt = `${it.name} ${it.description}`.toLowerCase();
-      if (itemFilterKey === 'boots') return it.tags.includes('Boots');
-      if (itemFilterKey === 'budget') return !it.tags.includes('Boots') && it.gold.total >= 1800 && it.gold.total <= 2650;
-      if (itemFilterKey === 'tank') return st.hp >= 250 || st.armor >= 35 || st.mr >= 35;
-      if (itemFilterKey === 'armor') return st.armor > 0;
-      if (itemFilterKey === 'mr') return st.mr > 0;
-      if (itemFilterKey === 'ad') return st.ad > 0 || st.critChancePct > 0;
-      if (itemFilterKey === 'ap') return st.ap > 0;
-      if (itemFilterKey === 'haste') return st.abilityHaste > 0;
-      if (itemFilterKey === 'antiheal') {
-        return Boolean(txt.match(/hémorragie|blessures graves|épineuse|thornmail|mortal|morello|bourreau/));
+    }
+
+    if (existingIdx !== -1) {
+      const next = savedRunePages.map((p, idx) =>
+        idx === existingIdx
+          ? {
+              ...p,
+              name: resolvedName,
+              championId: playerChampion.id,
+              selection: activeSandboxSelection,
+              updatedAt: Date.now(),
+              lcuId: syncedLcuId ?? p.lcuId,
+              isLcuCurrent: syncedSuccess ? true : p.isLcuCurrent,
+              syncedFromClient: syncedSuccess ? true : p.syncedFromClient,
+            }
+          : syncedSuccess
+            ? { ...p, isLcuCurrent: false }
+            : p,
+      );
+      setSavedRunePages(next);
+      saveRunePagesToStorage(next);
+      setActiveRunePageTitle(resolvedName);
+      setIsRunePageDirty(false);
+      return;
+    }
+
+    if (savedRunePages.length >= MAX_SAVED_RUNE_PAGES) return;
+    const created: SavedRunePageEntry = {
+      id: syncedLcuId ? `lcu-${syncedLcuId}` : `page-${Date.now()}`,
+      name: resolvedName,
+      championId: playerChampion.id,
+      selection: activeSandboxSelection,
+      updatedAt: Date.now(),
+      lcuId: syncedLcuId,
+      isLcuCurrent: syncedSuccess,
+      syncedFromClient: syncedSuccess,
+    };
+    const next = [
+      created,
+      ...savedRunePages.map((p) => (syncedSuccess ? { ...p, isLcuCurrent: false } : p)),
+    ].slice(0, MAX_SAVED_RUNE_PAGES);
+    setSavedRunePages(next);
+    saveRunePagesToStorage(next);
+    setActiveSavedPageId(created.id);
+    setActiveRunePageTitle(created.name);
+    setIsRunePageDirty(false);
+  };
+
+  const handleCreateNewRunePage = async (fromMeta = false) => {
+    if (savedRunePages.length >= MAX_SAVED_RUNE_PAGES) {
+      setClientHubTab('collection');
+      return;
+    }
+    const baseSelection = fromMeta ? metaRuneSelection : activeSandboxSelection;
+    const nextNum = savedRunePages.length + 1;
+    const defaultName = fromMeta
+      ? `${playerChampion.name} ${role === 'SUPPORT' ? 'Support' : role}`
+      : `Page ${playerChampion.name} #${nextNum}`;
+
+    let syncedLcuId: number | undefined;
+    let syncedSuccess = false;
+    if (lcuBridgeConnected) {
+      const lcuRes = await saveRunePageToLcuBridge({
+        name: defaultName,
+        selection: baseSelection,
+        makeCurrent: true,
+      });
+      if (lcuRes.ok) {
+        syncedLcuId = lcuRes.lcuId;
+        syncedSuccess = true;
+        setLcuSyncFeedback(`Nouvelle page « ${defaultName} » créée directement dans votre client LoL !`);
+      } else {
+        setLcuSyncFeedback(
+          `Page créée localement, mais non ajoutée dans LoL (${lcuRes.error || 'nombre max de pages LoL atteint'}).`,
+        );
       }
-      return true;
-    });
-  }, [purchasableCatalog, itemSearchQuery, itemFilterKey]);
+    }
+
+    const created: SavedRunePageEntry = {
+      id: syncedLcuId ? `lcu-${syncedLcuId}` : `page-${Date.now()}`,
+      name: defaultName,
+      championId: playerChampion.id,
+      selection: baseSelection,
+      updatedAt: Date.now(),
+      lcuId: syncedLcuId,
+      isLcuCurrent: syncedSuccess,
+      syncedFromClient: syncedSuccess,
+    };
+    const next = [
+      created,
+      ...savedRunePages.map((p) => (syncedSuccess ? { ...p, isLcuCurrent: false } : p)),
+    ].slice(0, MAX_SAVED_RUNE_PAGES);
+    setSavedRunePages(next);
+    saveRunePagesToStorage(next);
+    setActiveSavedPageId(created.id);
+    setActiveRunePageTitle(created.name);
+    setCustomRuneSelection(baseSelection);
+    setRuneViewMode('recommended');
+    setIsRunePageDirty(false);
+    setClientHubTab('editor');
+  };
+
+  const handleSelectSavedRunePage = (page: SavedRunePageEntry) => {
+    setActiveSavedPageId(page.id);
+    setActiveRunePageTitle(page.name);
+    setCustomRuneSelection(page.selection);
+    setRuneViewMode('recommended');
+    setIsRunePageDirty(false);
+    setClientHubTab('editor');
+  };
+
+  const handleDeleteRunePage = async (targetId?: string) => {
+    const idToDelete = targetId || activeSavedPageId;
+    if (!idToDelete) return;
+    const targetEntry = savedRunePages.find((p) => p.id === idToDelete);
+    if (lcuBridgeConnected && targetEntry?.lcuId) {
+      const deletedInClient = await deleteRunePageFromLcuBridge(targetEntry.lcuId);
+      setLcuSyncFeedback(
+        deletedInClient
+          ? `Page « ${targetEntry.name} » supprimée aussi de votre client LoL.`
+          : `Page retirée ici, mais le client LoL a refusé la suppression.`,
+      );
+    }
+
+    const next = savedRunePages.filter((p) => p.id !== idToDelete);
+    setSavedRunePages(next);
+    saveRunePagesToStorage(next);
+    if (activeSavedPageId === idToDelete) {
+      const fallback = next[0] || null;
+      if (fallback) {
+        setActiveSavedPageId(fallback.id);
+        setActiveRunePageTitle(fallback.name);
+        setCustomRuneSelection(fallback.selection);
+      } else {
+        setActiveSavedPageId(null);
+        setActiveRunePageTitle(`${playerChampion.name} · Méta`);
+        setCustomRuneSelection(null);
+      }
+      setIsRunePageDirty(false);
+    }
+  };
+
+  const handleActivateRunePageInClient = async (targetPage?: SavedRunePageEntry) => {
+    const page = targetPage || activeSavedEntry;
+    if (!lcuBridgeConnected) {
+      setLcuSyncFeedback('Connectez d’abord le pont Windows v3.4 pour activer une page dans League of Legends.');
+      return;
+    }
+    if (page?.lcuId) {
+      const ok = await activateRunePageInLcuBridge(page.lcuId);
+      if (ok) {
+        setSavedRunePages((prev) => {
+          const next = prev.map((p) => ({ ...p, isLcuCurrent: p.id === page.id }));
+          saveRunePagesToStorage(next);
+          return next;
+        });
+        setLcuSyncFeedback(`Page « ${page.name} » activée dans votre client League of Legends !`);
+      } else {
+        setLcuSyncFeedback('Impossible d’activer cette page dans le client LoL.');
+      }
+    } else {
+      await handleSaveActiveRunePage();
+    }
+  };
+
+  const openItemRecipeModal = (itemId: string) => {
+    setInspectedShopItemId(itemId);
+    setItemPickerSlotIdx(null);
+    setRecipeModalItemId(itemId);
+  };
 
   const handleAssignItemToSlot = (slotIdx: number, item: ItemData | null) => {
     setCustomBuildItemIds((prev) => {
@@ -1403,16 +1722,17 @@ export function BuildOptimizerView({
   }, [pickerTarget, playerChampId, duoPartnerId, enemyIds]);
 
   useEffect(() => {
-    if (!pickerTarget && itemPickerSlotIdx === null) return;
+    if (!pickerTarget && itemPickerSlotIdx === null && recipeModalItemId === null) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setPickerTarget(null);
         setItemPickerSlotIdx(null);
+        setRecipeModalItemId(null);
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [pickerTarget, itemPickerSlotIdx]);
+  }, [pickerTarget, itemPickerSlotIdx, recipeModalItemId]);
 
   const filteredChampions = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -1438,11 +1758,19 @@ export function BuildOptimizerView({
     } else if (pickerTarget.type === 'duo') {
       setDuoPartnerId(champId);
     } else if (typeof pickerTarget.index === 'number') {
+      const targetIdx = pickerTarget.index;
+      const previousEnemyId = enemyIds[targetIdx];
       setEnemyIds((prev) => {
         const next = [...prev];
-        next[pickerTarget.index!] = champId;
+        next[targetIdx] = champId;
         return next;
       });
+      if (pickerTarget.selectAsTarget || previousEnemyId === selectedEnemyTargetId) {
+        setSelectedEnemyTargetId(champId);
+        if (pickerTarget.selectAsTarget && targetArmorTier === 'custom') {
+          setTargetArmorTier('standard');
+        }
+      }
     }
     setAiPlan(null);
     setPickerTarget(null);
@@ -1460,7 +1788,11 @@ export function BuildOptimizerView({
         midGameSpike?: string;
         teamfightPositioning?: string;
         keyReminders?: string[];
-      }>('/api/coach/build-rationale', { recommendation, tendencies });
+      }>('/api/coach/build-rationale', {
+        recommendation,
+        tendencies,
+        matchupNote: currentMatchupNote.trim() || undefined,
+      });
       setAiPlan(data);
     } catch (err) {
       setAiError(err instanceof Error ? err.message : 'Impossible de joindre le coach IA.');
@@ -1471,8 +1803,94 @@ export function BuildOptimizerView({
 
   return (
     <div className="space-y-6">
+      {/* Barre de contexte + Parcours guidé en 3 étapes (Style Apple) */}
+      <div className="rounded-2xl apple-surface p-4 sm:p-5 space-y-3.5">
+        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <SafeGameIcon
+              src={playerChampion.imageUrl}
+              alt={playerChampion.name}
+              fallbackLabel={playerChampion.name}
+              sizeClass="w-10 h-10"
+            />
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-1.5 text-sm font-semibold text-slate-900 dark:text-white">
+                <span>{playerChampion.name}</span>
+                {duoPartner && (
+                  <span className="text-xs font-medium text-[#007AFF] dark:text-[#0A84FF]">
+                    + {duoPartner.name}
+                  </span>
+                )}
+                <span className="text-slate-400">·</span>
+                <span className="text-xs font-medium text-slate-500 dark:text-slate-400">
+                  {role} · {GAME_MODE_OPTIONS.find((m) => m.id === gameMode)?.label}
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5 mt-1">
+                <span className="text-[11px] text-slate-500 dark:text-slate-400 mr-1">
+                  Contre :
+                </span>
+                {enemyChampions.map((ec, idx) => (
+                  <SafeGameIcon
+                    key={`ctx-enemy-${ec.id}-${idx}`}
+                    src={ec.imageUrl}
+                    alt={ec.name}
+                    fallbackLabel={ec.name}
+                    sizeClass="w-5 h-5"
+                  />
+                ))}
+                {buildStep !== 'setup' && (
+                  <button
+                    type="button"
+                    onClick={() => setBuildStep('setup')}
+                    className="ml-2 text-[11px] font-semibold text-[#007AFF] dark:text-[#0A84FF] hover:underline whitespace-nowrap"
+                  >
+                    Modifier
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div
+            role="tablist"
+            aria-label="Étapes de préparation du build"
+            className="inline-flex flex-wrap items-center gap-1 p-1 rounded-xl bg-slate-200/70 dark:bg-[#0D0F14] border border-black/[0.05] dark:border-white/[0.07] self-start lg:self-auto"
+          >
+            {(
+              [
+                { id: 'setup', label: '1. Champion & Compo' },
+                { id: 'build', label: '2. Build & Runes' },
+                { id: 'tools', label: '3. Atelier & Simulateur' },
+                { id: 'all', label: 'Tout voir' },
+              ] as const
+            ).map((step) => {
+              const active = buildStep === step.id;
+              return (
+                <button
+                  key={step.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  onClick={() => setBuildStep(step.id)}
+                  className={`px-3 py-1.5 text-xs rounded-lg transition-all whitespace-nowrap ${
+                    active
+                      ? 'bg-white dark:bg-[#1E222D] text-slate-900 dark:text-white font-semibold shadow-xs'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white font-medium'
+                  }`}
+                >
+                  {step.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      {(buildStep === 'setup' || buildStep === 'all') && (
+      <>
       {/* Détection automatique partie en cours & sélection des champions (Classée, Draft, Swiftplay, ARAM) */}
-      <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-4 space-y-3">
+      <section className="rounded-2xl apple-surface p-4 space-y-3">
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
           <div className="space-y-0.5 min-w-0">
             <h2 className="text-sm font-semibold text-slate-900 dark:text-white flex items-center gap-2">
@@ -1637,7 +2055,7 @@ export function BuildOptimizerView({
                 <p className="text-slate-600 dark:text-slate-300 leading-relaxed">
                   Le pont Windows{' '}
                   <code className="px-1 py-0.5 rounded bg-slate-200 dark:bg-slate-800">lol-coach-bridge.bat</code>{' '}
-                  (v3) lit vos champions, bans et <strong>votre page de runes active</strong> directement depuis le client LoL.
+                  (v3.4) lit vos champions, bans et synchronise <strong>toutes vos pages de runes (lecture &amp; écriture)</strong> directement avec le client LoL.
                 </p>
                 <div className="flex flex-wrap gap-2">
                   <button
@@ -1646,7 +2064,7 @@ export function BuildOptimizerView({
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold rounded-lg bg-amber-600 dark:bg-amber-500 text-white dark:text-slate-950"
                   >
                     <Download className="w-3.5 h-3.5" aria-hidden="true" />
-                    Télécharger le pont v3 (Windows)
+                    Télécharger le pont v3.4 (Windows)
                   </button>
                   {isInsideIframe && (
                     <a
@@ -1885,111 +2303,230 @@ export function BuildOptimizerView({
           </div>
         </div>
 
-        {/* Carnet de Match-ups Personnel + Assistant de Draft « Conseiller mon pick » */}
-        <div className="border-t border-slate-200 dark:border-slate-800 pt-3.5 space-y-3">
-          <div className="flex flex-col lg:flex-row lg:items-center gap-3">
-            <div className="flex-1 flex flex-col sm:flex-row sm:items-center gap-2">
-              <label
-                htmlFor="matchup-note-input"
-                className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300 whitespace-nowrap shrink-0"
+        {/* Carnet de Match-up Personnel & Assistant de Draft clairement séparés */}
+        <div className="border-t border-slate-200 dark:border-slate-800 pt-4 space-y-4">
+          {/* Bloc 1 : Carnet de Match-up Personnel */}
+          <div className="space-y-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <label
+                  htmlFor="matchup-note-input"
+                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-900 dark:text-white"
+                >
+                  <BookOpen className="w-3.5 h-3.5 text-amber-500 shrink-0" aria-hidden="true" />
+                  <span>
+                    Carnet de duel · {playerChampion.name} vs {directEnemy?.name || 'Draft'}
+                  </span>
+                </label>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                  Sauvegardé automatiquement dans votre navigateur pour ce duel et pris en compte par le Coach IA lors du Plan Tactique.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowSavedNotes(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-[#0D121C] text-slate-700 dark:text-slate-200 hover:border-amber-500 hover:text-amber-600 dark:hover:text-amber-400 transition-colors whitespace-nowrap shrink-0"
               >
                 <BookOpen className="w-3.5 h-3.5 text-amber-500" aria-hidden="true" />
-                Mémo {playerChampion.name} vs {directEnemy?.name || 'Draft'} :
-              </label>
+                <span>Gérer mes mémos ({savedNotesCount})</span>
+              </button>
+            </div>
+
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                confirmSaveMatchupNote();
+              }}
+              className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2"
+            >
               <div className="relative flex-1">
                 <input
                   id="matchup-note-input"
                   type="text"
                   value={currentMatchupNote}
-                  onChange={(e) => updateMatchupNote(e.target.value)}
-                  placeholder="Note perso (ex. Respecter le niveau 2, garder Q pour son dash...)"
-                  className="w-full h-8 pl-2.5 pr-7 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0D121C] text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-amber-500"
+                  onChange={(e) => {
+                    updateMatchupNote(e.target.value);
+                    if (noteSavedFeedback) setNoteSavedFeedback(false);
+                  }}
+                  placeholder={`Ex. : Contre ${directEnemy?.name || 'cet adversaire'}, garder mon Q pour casser son engage...`}
+                  className="w-full h-9 pl-3 pr-8 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0D121C] text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-500"
                 />
                 {currentMatchupNote && (
                   <button
                     type="button"
                     onClick={() => updateMatchupNote('')}
                     aria-label="Effacer le mémo de match-up"
-                    className="absolute right-1.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-rose-500 p-0.5"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-rose-500 p-0.5"
                   >
                     <X className="w-3.5 h-3.5" />
                   </button>
                 )}
               </div>
-            </div>
 
-            <button
-              type="button"
-              onClick={() => setShowDraftCounterPanel((v) => !v)}
-              className={`inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors whitespace-nowrap shrink-0 ${
-                showDraftCounterPanel
-                  ? 'bg-amber-500 text-slate-950 border-amber-500'
-                  : 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300 hover:bg-amber-500/20'
-              }`}
-            >
-              <Sparkles className="w-3.5 h-3.5" aria-hidden="true" />
-              {showDraftCounterPanel ? 'Masquer les contre-picks' : `Conseiller mon pick (${role})`}
-            </button>
+              <button
+                type="submit"
+                disabled={!currentMatchupNote.trim() && !noteSavedFeedback}
+                className={`inline-flex items-center justify-center gap-1.5 px-3.5 h-9 text-xs font-semibold rounded-lg border transition-colors whitespace-nowrap shrink-0 ${
+                  noteSavedFeedback
+                    ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                    : 'border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0D121C] text-slate-800 dark:text-slate-100 hover:border-amber-500 hover:text-amber-600 dark:hover:text-amber-400 disabled:opacity-45'
+                }`}
+              >
+                <Check className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>{noteSavedFeedback ? 'Enregistré ✓' : 'Enregistrer le mémo'}</span>
+              </button>
+            </form>
           </div>
 
-          {showDraftCounterPanel && (
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-1">
-              {draftCounterPicks.map((pick) => (
-                <div
-                  key={pick.champion.id}
-                  className="flex items-start justify-between gap-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] p-3"
-                >
-                  <div className="flex items-start gap-2.5 min-w-0">
-                    <SafeGameIcon
-                      src={pick.champion.imageUrl}
-                      alt={pick.champion.name}
-                      fallbackLabel={pick.champion.name.slice(0, 2)}
-                      sizeClass="w-10 h-10 shrink-0"
-                    />
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-semibold text-slate-900 dark:text-white truncate">
-                          {pick.champion.name}
-                        </span>
-                        <span className="text-[11px] font-mono tabular-nums font-bold text-emerald-600 dark:text-emerald-400">
-                          {pick.fitScore}%
-                        </span>
-                      </div>
-                      <div className="text-[11px] text-amber-600 dark:text-amber-400">
-                        {pick.styleLabel}
-                      </div>
-                      <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 leading-snug">
-                        {pick.counterReason}
-                      </p>
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      manualOverrideRef.current = true;
-                      setPlayerChampId(pick.champion.id);
-                      setAiPlan(null);
-                      setShowDraftCounterPanel(false);
-                    }}
-                    className="px-2 py-1 text-[11px] font-semibold rounded border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:border-amber-500 hover:text-amber-600 dark:hover:text-amber-400 whitespace-nowrap shrink-0"
-                  >
-                    Choisir
-                  </button>
-                </div>
-              ))}
+          {/* Bloc 2 : Assistant de Draft / Contre-picks (distinct du mémo) */}
+          <div className="pt-3 border-t border-slate-200/80 dark:border-slate-800/80 space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+              <div className="text-xs text-slate-600 dark:text-slate-300">
+                <span className="font-semibold text-slate-900 dark:text-white">
+                  Assistant de Draft ({role})
+                </span>
+                <span className="mx-1.5 text-slate-400" aria-hidden="true">·</span>
+                <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                  Vous hésitez encore sur votre pick face à cette équipe ennemie ?
+                </span>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowDraftCounterPanel((v) => !v)}
+                className={`inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors whitespace-nowrap shrink-0 ${
+                  showDraftCounterPanel
+                    ? 'bg-amber-500 text-slate-950 border-amber-500'
+                    : 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300 hover:bg-amber-500/20'
+                }`}
+              >
+                <Sparkles className="w-3.5 h-3.5" aria-hidden="true" />
+                {showDraftCounterPanel
+                  ? 'Masquer les contre-picks'
+                  : `Suggérer des contre-picks (${role})`}
+              </button>
             </div>
-          )}
+
+            <AnimatePresence>
+              {showDraftCounterPanel && (
+                <motion.div
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{
+                    opacity: 1,
+                    y: 0,
+                    transition: { duration: 0.17, ease: [0.23, 1, 0.32, 1] },
+                  }}
+                  exit={{
+                    opacity: 0,
+                    y: -4,
+                    transition: { duration: 0.11, ease: [0.23, 1, 0.32, 1] },
+                  }}
+                  className="grid grid-cols-1 md:grid-cols-3 gap-3"
+                >
+                  {draftCounterPicks.map((pick) => (
+                    <div
+                      key={pick.champion.id}
+                      className="flex items-start justify-between gap-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] p-3"
+                    >
+                      <div className="flex items-start gap-2.5 min-w-0">
+                        <SafeGameIcon
+                          src={pick.champion.imageUrl}
+                          alt={pick.champion.name}
+                          fallbackLabel={pick.champion.name.slice(0, 2)}
+                          sizeClass="w-10 h-10 shrink-0"
+                        />
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-semibold text-slate-900 dark:text-white truncate">
+                              {pick.champion.name}
+                            </span>
+                            <span className="text-[11px] font-mono tabular-nums font-bold text-emerald-600 dark:text-emerald-400">
+                              {pick.fitScore}%
+                            </span>
+                          </div>
+                          <div className="text-[11px] text-amber-600 dark:text-amber-400">
+                            {pick.styleLabel}
+                          </div>
+                          <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 leading-snug">
+                            {pick.counterReason}
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          manualOverrideRef.current = true;
+                          setPlayerChampId(pick.champion.id);
+                          setAiPlan(null);
+                          setShowDraftCounterPanel(false);
+                        }}
+                        className="px-2.5 py-1 text-[11px] font-semibold rounded border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:border-amber-500 hover:text-amber-600 dark:hover:text-amber-400 whitespace-nowrap shrink-0"
+                      >
+                        Choisir
+                      </button>
+                    </div>
+                  ))}
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
         </div>
       </section>
 
+      {buildStep === 'setup' && (
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={() => setBuildStep('build')}
+            className="inline-flex items-center gap-2 px-5 py-2.5 text-xs font-semibold rounded-full bg-[#007AFF] hover:bg-[#0066D6] dark:bg-[#0A84FF] dark:hover:bg-[#2994FF] text-white transition-colors shadow-xs"
+          >
+            <span>Étape 2 : Voir le Build, les Runes &amp; le Plan IA</span>
+            <span aria-hidden="true">→</span>
+          </button>
+        </div>
+      )}
+      </>
+      )}
+
       {/* Profil de menace + Projection (Gauche) & Ordre d'achat recommandé (Droite) */}
+      {(buildStep === 'build' || buildStep === 'all') && (
+      <>
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         <div className="lg:col-span-5 space-y-6">
           <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5 space-y-4">
-            <h2 className="text-base font-semibold text-slate-900 dark:text-white flex items-center gap-2">
-              <Swords className="w-4 h-4 text-amber-500" aria-hidden="true" />
-              Profil de dégâts &amp; menaces adverses
-            </h2>
+            <div className="space-y-1.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h2 className="text-base font-semibold text-slate-900 dark:text-white flex items-center gap-2">
+                  <Swords className="w-4 h-4 text-amber-500 shrink-0" aria-hidden="true" />
+                  <span>Profil de dégâts &amp; menaces adverses</span>
+                  <SectionInfoTooltip
+                    title="À quoi sert le Profil de dégâts & menaces ?"
+                    description="Cette synthèse analyse automatiquement les 5 champions adverses sélectionnés (répartition Physique / Magique, Soin, Burst, Tanks) pour expliquer pourquoi le moteur recommande l’armure, la résistance magique ou l’anti-soin à droite."
+                    usageTip="Cliquez directement sur n’importe quel champion de la liste ci-dessous pour le remplacer par un autre adversaire, ou testez un preset en 1 clic."
+                  />
+                </h2>
+              </div>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                Justifie l’ordre d’achat à droite à partir des 5 adversaires sélectionnés · Cliquez sur un champion pour le changer.
+              </p>
+              <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                {PRESET_COMPS.map((preset) => (
+                  <button
+                    key={`threat-preset-${preset.label}`}
+                    type="button"
+                    onClick={() => {
+                      manualOverrideRef.current = true;
+                      setEnemyIds(preset.ids);
+                      setAiPlan(null);
+                    }}
+                    className="px-2 py-1 text-[11px] font-medium rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] text-slate-600 dark:text-slate-300 hover:border-amber-500/50 hover:text-amber-600 dark:hover:text-amber-400 transition-colors whitespace-nowrap shrink-0"
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+            </div>
 
             <div className="space-y-2">
               <div className="flex items-center justify-between text-xs font-mono tabular-nums">
@@ -2039,15 +2576,22 @@ export function BuildOptimizerView({
               </div>
             </div>
 
-            {/* Détail concret champion par champion avec contre recommandé */}
+            {/* Détail concret champion par champion avec contre recommandé + clic direct pour changer */}
             {recommendation.threatSummary.profiles.length > 0 && (
               <div className="pt-3 border-t border-slate-200 dark:border-slate-800 space-y-2.5">
-                <div className="text-xs font-semibold text-slate-700 dark:text-slate-200">
-                  Menaces concrètes &amp; contres à prioriser
+                <div className="flex items-center justify-between gap-2 text-xs">
+                  <span className="font-semibold text-slate-700 dark:text-slate-200">
+                    Menaces concrètes &amp; contres à prioriser
+                  </span>
+                  <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Cliquer pour changer
+                  </span>
                 </div>
                 <div className="divide-y divide-slate-200/70 dark:divide-slate-800/70">
                   {recommendation.threatSummary.profiles.map((prof, idx) => {
                     const champObj = ddragon.champions.find((c) => c.id === prof.championId);
+                    const slotIdx = enemyIds.findIndex((eid) => eid === prof.championId);
+                    const targetEnemyIdx = slotIdx >= 0 ? slotIdx : idx;
                     const dmgColor =
                       prof.primaryDamage === 'Physique'
                         ? 'text-orange-600 dark:text-orange-400'
@@ -2056,9 +2600,11 @@ export function BuildOptimizerView({
                           : 'text-amber-600 dark:text-amber-400';
 
                     return (
-                      <div
+                      <button
                         key={`${prof.championId}-${idx}`}
-                        className="py-2.5 first:pt-0 last:pb-0 flex items-start gap-2.5 text-xs"
+                        type="button"
+                        onClick={() => setPickerTarget({ type: 'enemy', index: targetEnemyIdx })}
+                        className="group w-full text-left py-2.5 px-1.5 -mx-1.5 rounded-lg hover:bg-slate-50 dark:hover:bg-[#0D121C] transition-colors flex items-start gap-2.5 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
                       >
                         <SafeGameIcon
                           src={champObj?.imageUrl}
@@ -2068,8 +2614,12 @@ export function BuildOptimizerView({
                         />
                         <div className="flex-1 min-w-0 space-y-0.5">
                           <div className="flex flex-wrap items-baseline justify-between gap-2">
-                            <span className="font-semibold text-slate-900 dark:text-white">
-                              {prof.championName}
+                            <span className="font-semibold text-slate-900 dark:text-white inline-flex items-center gap-1.5">
+                              <span>{prof.championName}</span>
+                              <Pencil
+                                className="w-3 h-3 text-slate-400 opacity-0 group-hover:opacity-100 transition-opacity"
+                                aria-hidden="true"
+                              />
                             </span>
                             <span className={`text-[11px] font-semibold ${dmgColor}`}>
                               {prof.primaryDamage} · {prof.keyThreats?.join(' / ') || prof.archetype}
@@ -2079,7 +2629,7 @@ export function BuildOptimizerView({
                             Contre : {prof.recommendedCounter}
                           </p>
                         </div>
-                      </div>
+                      </button>
                     );
                   })}
                 </div>
@@ -2088,10 +2638,14 @@ export function BuildOptimizerView({
           </section>
 
           <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5 space-y-3">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-2">
               <h2 className="text-base font-semibold text-slate-900 dark:text-white flex items-center gap-2">
-                <Shield className="w-4 h-4 text-sky-500" aria-hidden="true" />
-                Projection de robustesse &amp; dégâts
+                <Shield className="w-4 h-4 text-sky-500 shrink-0" aria-hidden="true" />
+                <span>Projection de robustesse &amp; dégâts</span>
+                <SectionInfoTooltip
+                  title="Projection de robustesse & dégâts"
+                  description="Estime vos PV effectifs contre les dégâts Physiques (EHP Phys.) et Magiques (EHP Mag.) ainsi que votre indice offensif aux niveaux 6, 11 et 16 avec l’ordre d’achat recommandé."
+                />
               </h2>
               <span className="text-[11px] text-slate-500 dark:text-slate-400">
                 Simulation théorique
@@ -2198,6 +2752,15 @@ export function BuildOptimizerView({
                           <span className="font-semibold text-sm text-slate-900 dark:text-white truncate">
                             {rec.item.name}
                           </span>
+                          <button
+                            type="button"
+                            onClick={() => openItemRecipeModal(rec.item.id)}
+                            title={`Ouvrir l'arbre de fabrication (composants & prix) de ${rec.item.name}`}
+                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md border border-[#C8AA6E]/45 bg-[#091428]/10 dark:bg-[#091428] text-[10px] font-semibold text-amber-700 dark:text-[#C8AA6E] hover:border-amber-500 hover:bg-amber-500/15 transition-colors shrink-0"
+                          >
+                            <Coins className="w-3 h-3" aria-hidden="true" />
+                            <span>Recette</span>
+                          </button>
                           {showPassiveInfo && (
                             <button
                               type="button"
@@ -2293,13 +2856,24 @@ export function BuildOptimizerView({
                             {rec.reasons[0]}
                           </p>
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => handleQuickTestItem(rec.item)}
-                          className="w-full px-2.5 py-1.5 text-[11px] font-semibold rounded-md border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:border-amber-500 hover:text-amber-600 dark:hover:text-amber-400 transition-colors"
-                        >
-                          Tester dans l’atelier
-                        </button>
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => openItemRecipeModal(rec.item.id)}
+                            title={`Voir la recette et les composants de ${rec.item.name}`}
+                            className="inline-flex items-center gap-1 px-2 py-1.5 text-[11px] font-semibold rounded-md border border-[#C8AA6E]/45 text-amber-700 dark:text-[#C8AA6E] hover:border-amber-500 hover:bg-amber-500/10 transition-colors shrink-0"
+                          >
+                            <Coins className="w-3 h-3" aria-hidden="true" />
+                            <span>Recette</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleQuickTestItem(rec.item)}
+                            className="flex-1 px-2.5 py-1.5 text-[11px] font-semibold rounded-md border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:border-amber-500 hover:text-amber-600 dark:hover:text-amber-400 transition-colors"
+                          >
+                            Tester dans l’atelier
+                          </button>
+                        </div>
                       </div>
                     );
                   })}
@@ -2381,17 +2955,28 @@ export function BuildOptimizerView({
                             </button>
                           )}
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => handleQuickTestItem(webItem)}
-                          className={`w-full px-2.5 py-1.5 text-[11px] font-semibold rounded-md border transition-colors ${
-                            isAlreadyInAtelier
-                              ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-                              : 'border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:border-sky-500 hover:text-sky-600 dark:hover:text-sky-300'
-                          }`}
-                        >
-                          {isAlreadyInAtelier ? 'Ajouté à l’atelier ✓' : 'Tester dans l’atelier'}
-                        </button>
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => openItemRecipeModal(webItem.id)}
+                            title={`Voir la recette de ${webItem.name}`}
+                            className="inline-flex items-center gap-1 px-2 py-1.5 text-[11px] font-semibold rounded-md border border-[#C8AA6E]/45 text-amber-700 dark:text-[#C8AA6E] hover:border-amber-500 hover:bg-amber-500/10 transition-colors shrink-0"
+                          >
+                            <Coins className="w-3 h-3" aria-hidden="true" />
+                            <span>Recette</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleQuickTestItem(webItem)}
+                            className={`flex-1 px-2.5 py-1.5 text-[11px] font-semibold rounded-md border transition-colors ${
+                              isAlreadyInAtelier
+                                ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+                                : 'border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:border-sky-500 hover:text-sky-600 dark:hover:text-sky-300'
+                            }`}
+                          >
+                            {isAlreadyInAtelier ? 'Ajouté à l’atelier ✓' : 'Tester dans l’atelier'}
+                          </button>
+                        </div>
                       </div>
                     );
                   })}
@@ -2423,9 +3008,13 @@ export function BuildOptimizerView({
           setPopularWebMeta(meta);
         }}
       />
+      </>
+      )}
 
       {/* Atelier Équipement Interactif + Statistiques Exactes & Deltas en Temps Réel */}
-      <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5 space-y-5">
+      {(buildStep === 'tools' || buildStep === 'all') && (
+      <>
+      <section className="rounded-2xl apple-surface p-5 space-y-5">
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 pb-4 border-b border-slate-200 dark:border-slate-800">
           <div className="space-y-1">
             <h2 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
@@ -2484,6 +3073,19 @@ export function BuildOptimizerView({
                 Réinitialiser au conseillé
               </button>
             )}
+
+            <button
+              type="button"
+              onClick={() => setShowAtelierShopPanel((v) => !v)}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors whitespace-nowrap shrink-0 ${
+                showAtelierShopPanel
+                  ? 'border-[#C8AA6E] bg-[#091428] text-[#F0E6D2]'
+                  : 'border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800'
+              }`}
+            >
+              <Coins className="w-3.5 h-3.5 text-[#C8AA6E]" aria-hidden="true" />
+              {showAtelierShopPanel ? 'Masquer Boutique LoL' : 'Boutique & Recettes LoL'}
+            </button>
           </div>
         </div>
 
@@ -2538,11 +3140,7 @@ export function BuildOptimizerView({
                 {item ? (
                   <button
                     type="button"
-                    onClick={() => {
-                      setItemSearchQuery('');
-                      setItemFilterKey(slotIdx === 0 ? 'boots' : 'all');
-                      setItemPickerSlotIdx(slotIdx);
-                    }}
+                    onClick={() => setItemPickerSlotIdx(slotIdx)}
                     className="text-left space-y-2 group"
                   >
                     <div className="flex items-center gap-2.5">
@@ -2570,11 +3168,7 @@ export function BuildOptimizerView({
                 ) : (
                   <button
                     type="button"
-                    onClick={() => {
-                      setItemSearchQuery('');
-                      setItemFilterKey('all');
-                      setItemPickerSlotIdx(slotIdx);
-                    }}
+                    onClick={() => setItemPickerSlotIdx(slotIdx)}
                     className="py-4 flex flex-col items-center justify-center gap-1 text-slate-400 hover:text-amber-500 transition-colors"
                   >
                     <Plus className="w-4 h-4" />
@@ -2585,6 +3179,22 @@ export function BuildOptimizerView({
             );
           })}
         </div>
+
+        {showAtelierShopPanel && (
+          <LoLItemShopPanel
+            allItems={ddragon.items}
+            gameMode={gameMode}
+            championName={playerChampion.name}
+            slots={sandboxSlots}
+            recommendedItemIds={recommendedItemIdsSet}
+            initialInspectedItemId={inspectedShopItemId}
+            onAssignSlot={(idx, it) => handleAssignItemToSlot(idx, it)}
+            onApplyItemSet={(ids) => setCustomBuildItemIds(ids)}
+            onResetToRecommended={() => setCustomBuildItemIds(null)}
+            onExplainPassive={(it) => handleTogglePassiveExplanation(it, 'atelier')}
+            hasPassiveInfo={hasUniquePassiveInfo}
+          />
+        )}
 
         {activePassiveExplain?.anchor === 'atelier' &&
           renderPassiveAiPanel(activePassiveExplain.item)}
@@ -2946,6 +3556,11 @@ export function BuildOptimizerView({
             <h2 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
               <Radar className="w-4 h-4 text-amber-500 shrink-0" aria-hidden="true" />
               <span>Simulateur d’Impact par Objet &amp; Dégâts Infligés en Temps Réel</span>
+              <SectionInfoTooltip
+                title="Simulateur de dégâts & apport par objet"
+                description="Calcule les dégâts réels infligés contre chacun des 5 champions de l’équipe adverse (ou un Mannequin libre) selon ses PV, son armure et sa résistance magique au niveau actuel."
+                usageTip="Cliquez sur l’un des 5 champions pour le prendre pour cible, ou sur l’icône crayon de sa vignette pour le remplacer par un autre champion."
+              />
             </h2>
             <p className="text-xs text-slate-500 dark:text-slate-400">
               Isole l’apport marginal exact (Avec − Sans) de chacun de vos objets équipés sur les statistiques finales, les passifs uniques (ex. Aube et crépuscule / Aube de Haut-Lacère) et les dégâts réels infligés à la cible.
@@ -3001,30 +3616,54 @@ export function BuildOptimizerView({
             <span className="text-xs font-medium text-slate-600 dark:text-slate-300 mr-1">
               Cible simulée :
             </span>
-            {enemyChampions.map((enemy) => {
+            {enemyIds.map((enemyId, slotIdx) => {
+              const enemy = enemyId
+                ? ddragon.champions.find((c) => c.id === enemyId) || null
+                : null;
+              if (!enemy) return null;
               const isSelected = targetArmorTier !== 'custom' && activeCombatTarget.id === enemy.id;
               return (
-                <button
-                  key={enemy.id}
-                  type="button"
-                  onClick={() => {
-                    setSelectedEnemyTargetId(enemy.id);
-                    if (targetArmorTier === 'custom') setTargetArmorTier('standard');
-                  }}
-                  className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs transition-colors whitespace-nowrap shrink-0 ${
+                <div
+                  key={`sim-enemy-slot-${slotIdx}-${enemy.id}`}
+                  className={`inline-flex items-center rounded-lg border text-xs transition-colors overflow-hidden shrink-0 ${
                     isSelected
                       ? 'border-amber-500 bg-amber-500/10 text-amber-700 dark:text-amber-300 font-semibold'
                       : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] text-slate-700 dark:text-slate-300 hover:border-amber-500/50'
                   }`}
                 >
-                  <SafeGameIcon
-                    src={enemy.imageUrl}
-                    alt={enemy.name}
-                    fallbackLabel={enemy.name}
-                    sizeClass="w-5 h-5"
-                  />
-                  <span>{enemy.name}</span>
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedEnemyTargetId(enemy.id);
+                      if (targetArmorTier === 'custom') setTargetArmorTier('standard');
+                    }}
+                    className="inline-flex items-center gap-1.5 pl-2.5 pr-2 py-1.5 whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
+                    title={`Simuler les dégâts contre ${enemy.name}`}
+                  >
+                    <SafeGameIcon
+                      src={enemy.imageUrl}
+                      alt={enemy.name}
+                      fallbackLabel={enemy.name}
+                      sizeClass="w-5 h-5"
+                    />
+                    <span>{enemy.name}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setPickerTarget({ type: 'enemy', index: slotIdx, selectAsTarget: true })
+                    }
+                    title={`Changer ${enemy.name} (${ENEMY_SLOT_LABELS[slotIdx] || `Adversaire ${slotIdx + 1}`})`}
+                    aria-label={`Changer ${enemy.name}`}
+                    className={`px-1.5 py-1.5 border-l transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 ${
+                      isSelected
+                        ? 'border-amber-500/30 text-amber-600 dark:text-amber-300 hover:bg-amber-500/15'
+                        : 'border-slate-200 dark:border-slate-800 text-slate-400 hover:text-amber-500 dark:hover:text-amber-400 hover:bg-slate-200/50 dark:hover:bg-slate-800/70'
+                    }`}
+                  >
+                    <Pencil className="w-3 h-3" aria-hidden="true" />
+                  </button>
+                </div>
               );
             })}
 
@@ -3561,8 +4200,12 @@ export function BuildOptimizerView({
           ))}
         </div>
       </section>
+      </>
+      )}
 
       {/* Section Pleine Largeur : Page de Runes interactive (Client LoL) + Simulateur d'impact en temps réel */}
+      {(buildStep === 'build' || buildStep === 'all') && (
+      <>
       {(() => {
         const showingCurrent = runeViewMode === 'current' && Boolean(detectedRunePage);
         const isModified = customRuneSelection !== null;
@@ -3603,93 +4246,228 @@ export function BuildOptimizerView({
 
         return (
           <div className="space-y-4">
-            <VisualRunePage
-              runeTrees={ddragon.runeTrees}
-              primaryTreeId={displaySelection.primaryTreeId}
-              secondaryTreeId={displaySelection.secondaryTreeId}
-              keystoneId={displaySelection.keystoneId}
-              selectedRuneIds={displayAllIds}
-              shardIndicesOverride={displaySelection.shardIndices}
-              compareRuneIds={showingCurrent || isModified ? metaAllIds : undefined}
-              championName={playerChampion.name}
-              editable={!showingCurrent}
-              onChangeSelection={(next) => {
-                setRuneViewMode('recommended');
-                setCustomRuneSelection(next);
-              }}
-              onResetToMeta={isModified ? () => setCustomRuneSelection(null) : undefined}
-              pageTitle={
-                showingCurrent && detectedRunePage
-                  ? `Page équipée${detectedRunePage.pageName ? ` · « ${detectedRunePage.pageName} »` : ''}`
-                  : isModified
-                    ? `${playerChampion.name} · Test en direct (${activeComparison.score}/100)`
-                    : `${playerChampion.name} · Page conseillée (Méta)`
-              }
-              sourceLabel={
-                showingCurrent && detectedRunePage
-                  ? `${detectedRunePage.sourceLabel} · ${activeComparison.matchedCount}/6 alignées méta`
-                  : isModified
-                    ? `Bac à sable interactif (${activeComparison.matchedCount}/6 méta)`
-                    : `Moteur S16 (${playerChampion.name})`
-              }
-              headerActions={
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <div className="flex items-center gap-1 p-1 rounded-lg bg-[#08101C] border border-[#C8AA6E]/35">
+            {/* Barre de navigation Client LoL officielle : RUNES (Éditeur) · MES PAGES (X/15) · OBJETS (Boutique & Recettes) */}
+            <div className="rounded-xl border border-[#785A28]/70 bg-[#010A13] px-4 py-2.5 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-5">
+                {[
+                  { id: 'editor' as const, label: 'RUNES · ÉDITEUR', icon: Sparkles },
+                  {
+                    id: 'collection' as const,
+                    label: `MES PAGES (${savedRunePages.length}/${MAX_SAVED_RUNE_PAGES})`,
+                    icon: Library,
+                  },
+                  { id: 'shop' as const, label: 'OBJETS · BOUTIQUE & RECETTES', icon: Coins },
+                ].map((tab) => {
+                  const active = clientHubTab === tab.id;
+                  const IconComp = tab.icon;
+                  return (
                     <button
+                      key={tab.id}
                       type="button"
-                      onClick={() => setRuneViewMode('recommended')}
-                      className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 ${
-                        !showingCurrent
-                          ? 'bg-[#C8AA6E] text-[#09121F]'
-                          : 'text-[#C8C3B4] hover:text-white'
+                      onClick={() => setClientHubTab(tab.id)}
+                      className={`relative py-1.5 inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-[0.14em] transition-colors whitespace-nowrap shrink-0 ${
+                        active ? 'text-[#F0E6D2]' : 'text-[#A09B8C] hover:text-[#F0E6D2]'
                       }`}
                     >
-                      {isModified ? 'Bac à sable (Modifiée)' : 'Page conseillée / Test'}
+                      <IconComp className="w-3.5 h-3.5 text-[#C8AA6E]" aria-hidden="true" />
+                      <span>{tab.label}</span>
+                      {active && (
+                        <span className="absolute bottom-0 left-0 right-0 h-[2px] bg-[#C8AA6E]" />
+                      )}
                     </button>
-                    <button
-                      type="button"
-                      disabled={!detectedRunePage}
-                      onClick={() => setRuneViewMode('current')}
-                      title={
-                        detectedRunePage
-                          ? 'Afficher votre page de runes actuellement utilisée dans League of Legends'
-                          : 'Lancez le pont local ou collez votre partie pour détecter vos runes actives'
+                  );
+                })}
+              </div>
+
+              <div className="flex items-center gap-2 text-[11px] text-[#A09B8C] font-mono tabular-nums">
+                {lcuBridgeConnected ? (
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded border border-emerald-400/50 bg-emerald-500/15 text-emerald-300 font-sans font-semibold">
+                    <Radio className="w-3 h-3" aria-hidden="true" />
+                    Client LoL connecté
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleManualSyncLcuPages}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded border border-sky-400/45 bg-sky-500/10 text-sky-200 hover:bg-sky-500/20 transition-colors font-sans font-semibold"
+                  >
+                    <RefreshCw className="w-3 h-3" aria-hidden="true" />
+                    Synchroniser pages LoL
+                  </button>
+                )}
+                <span>Patch {ddragon.version}</span>
+              </div>
+            </div>
+
+            {lcuSyncFeedback && clientHubTab === 'editor' && (
+              <div className="rounded-lg border border-sky-400/40 bg-sky-500/10 px-3.5 py-2 text-xs text-sky-200 flex items-center justify-between gap-2">
+                <span>{lcuSyncFeedback}</span>
+                <button
+                  type="button"
+                  onClick={() => setLcuSyncFeedback(null)}
+                  aria-label="Fermer"
+                  className="text-sky-300 hover:text-white"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+
+            {clientHubTab === 'collection' && (
+              <RuneCollectionView
+                pages={savedRunePages}
+                activePageId={activeSavedPageId}
+                runeTrees={ddragon.runeTrees}
+                currentChampionName={playerChampion.name}
+                lcuConnected={lcuBridgeConnected}
+                isInsideIframe={isInsideIframe}
+                syncFeedback={lcuSyncFeedback}
+                onSelectPage={handleSelectSavedRunePage}
+                onCreateNewPage={() => handleCreateNewRunePage(false)}
+                onSaveCurrentMetaAsPage={() => handleCreateNewRunePage(true)}
+                onDeletePage={(pageId) => handleDeleteRunePage(pageId)}
+                onSyncFromClient={handleManualSyncLcuPages}
+                onDownloadBridge={() => downloadWindowsBridgeBat()}
+                onActivateInClient={(page) => handleActivateRunePageInClient(page)}
+              />
+            )}
+
+            {clientHubTab === 'shop' && (
+              <LoLItemShopPanel
+                allItems={ddragon.items}
+                gameMode={gameMode}
+                championName={playerChampion.name}
+                slots={sandboxSlots}
+                recommendedItemIds={recommendedItemIdsSet}
+                initialInspectedItemId={inspectedShopItemId}
+                onAssignSlot={(idx, it) => handleAssignItemToSlot(idx, it)}
+                onApplyItemSet={(ids) => setCustomBuildItemIds(ids)}
+                onResetToRecommended={() => setCustomBuildItemIds(null)}
+              />
+            )}
+
+            {clientHubTab === 'editor' && (
+              <VisualRunePage
+                runeTrees={ddragon.runeTrees}
+                primaryTreeId={displaySelection.primaryTreeId}
+                secondaryTreeId={displaySelection.secondaryTreeId}
+                keystoneId={displaySelection.keystoneId}
+                selectedRuneIds={displayAllIds}
+                shardIndicesOverride={displaySelection.shardIndices}
+                compareRuneIds={showingCurrent || isModified ? metaAllIds : undefined}
+                championName={playerChampion.name}
+                editable={!showingCurrent}
+                editableTitle={
+                  showingCurrent && detectedRunePage
+                    ? `Page équipée${detectedRunePage.pageName ? ` · « ${detectedRunePage.pageName} »` : ''}`
+                    : activeRunePageTitle || `${playerChampion.name} ${role === 'SUPPORT' ? 'Support' : role}`
+                }
+                onChangeTitle={
+                  !showingCurrent
+                    ? (nextTitle) => {
+                        setActiveRunePageTitle(nextTitle);
+                        setIsRunePageDirty(true);
                       }
-                      className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 ${
-                        showingCurrent
-                          ? 'bg-sky-500 text-white'
-                          : detectedRunePage
-                            ? 'text-[#F0E6D2] hover:bg-white/10'
-                            : 'text-slate-500 opacity-60 cursor-not-allowed'
-                      }`}
-                    >
-                      {detectedRunePage
-                        ? `Votre page équipée${detectedRunePage.pageName ? ` (${detectedRunePage.pageName})` : ''}`
-                        : 'Votre page (non détectée)'}
-                    </button>
+                    : undefined
+                }
+                isDirty={isRunePageDirty}
+                onSavePage={!showingCurrent ? handleSaveActiveRunePage : undefined}
+                onCreateNewPage={!showingCurrent ? () => handleCreateNewRunePage(false) : undefined}
+                onDeletePage={
+                  !showingCurrent && activeSavedPageId
+                    ? () => handleDeleteRunePage(activeSavedPageId)
+                    : undefined
+                }
+                onOpenCollection={() => setClientHubTab('collection')}
+                savedPagesCount={savedRunePages.length}
+                maxSavedPages={MAX_SAVED_RUNE_PAGES}
+                isSyncedWithClient={lcuBridgeConnected}
+                isCurrentInClient={Boolean(activeSavedEntry?.isLcuCurrent)}
+                onActivateInClient={
+                  lcuBridgeConnected && !showingCurrent
+                    ? () => handleActivateRunePageInClient()
+                    : undefined
+                }
+                onChangeSelection={(next) => {
+                  setRuneViewMode('recommended');
+                  setCustomRuneSelection(next);
+                  setIsRunePageDirty(true);
+                }}
+                onResetToMeta={
+                  isModified
+                    ? () => {
+                        setCustomRuneSelection(null);
+                        setIsRunePageDirty(true);
+                      }
+                    : undefined
+                }
+                sourceLabel={
+                  showingCurrent && detectedRunePage
+                    ? `${detectedRunePage.sourceLabel} · ${activeComparison.matchedCount}/6 alignées méta`
+                    : isModified
+                      ? `Bac à sable interactif (${activeComparison.matchedCount}/6 méta)`
+                      : `Moteur S16 (${playerChampion.name})`
+                }
+                headerActions={
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <div className="flex items-center gap-1 p-0.5 rounded border border-[#C8AA6E]/35 bg-[#08101C]">
+                      <button
+                        type="button"
+                        onClick={() => setRuneViewMode('recommended')}
+                        className={`px-2.5 py-1 text-[11px] font-semibold rounded transition-colors whitespace-nowrap shrink-0 ${
+                          !showingCurrent
+                            ? 'bg-[#C8AA6E] text-[#09121F]'
+                            : 'text-[#C8C3B4] hover:text-white'
+                        }`}
+                      >
+                        {isModified ? 'Bac à sable' : 'Page conseillée'}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!detectedRunePage}
+                        onClick={() => setRuneViewMode('current')}
+                        title={
+                          detectedRunePage
+                            ? 'Afficher votre page de runes actuellement utilisée dans League of Legends'
+                            : 'Lancez le pont local ou collez votre partie pour détecter vos runes actives'
+                        }
+                        className={`px-2.5 py-1 text-[11px] font-semibold rounded transition-colors whitespace-nowrap shrink-0 ${
+                          showingCurrent
+                            ? 'bg-sky-500 text-white'
+                            : detectedRunePage
+                              ? 'text-[#F0E6D2] hover:bg-white/10'
+                              : 'text-slate-500 opacity-60 cursor-not-allowed'
+                        }`}
+                      >
+                        {detectedRunePage
+                          ? `Page équipée${detectedRunePage.pageName ? ` (${detectedRunePage.pageName})` : ''}`
+                          : 'Page équipée (non détectée)'}
+                      </button>
+                    </div>
+                    {showingCurrent && detectedAsSelection && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCustomRuneSelection(detectedAsSelection);
+                          setRuneViewMode('recommended');
+                          setIsRunePageDirty(true);
+                        }}
+                        className="px-2.5 py-1 text-[11px] font-semibold rounded border border-sky-400/50 bg-sky-500/15 text-sky-200 hover:bg-sky-500/25 transition-colors whitespace-nowrap"
+                      >
+                        Modifier cette page
+                      </button>
+                    )}
                   </div>
-                  {showingCurrent && detectedAsSelection && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setCustomRuneSelection(detectedAsSelection);
-                        setRuneViewMode('recommended');
-                      }}
-                      className="px-3 py-1.5 text-xs font-semibold rounded-lg border border-sky-400/50 bg-sky-500/15 text-sky-200 hover:bg-sky-500/25 transition-colors whitespace-nowrap"
-                    >
-                      Modifier cette page
-                    </button>
-                  )}
-                </div>
-              }
-              footerNote={
-                showingCurrent
-                  ? 'Comparaison directe : les runes entourées en bleu sur votre page équipée diffèrent de la page méta recommandée.'
-                  : isModified
-                    ? 'Mode interactif actif : cliquez sur n’importe quel arbre, rune ou fragment pour mesurer son impact en jeu ci-dessous.'
-                    : `${recommendation.runes.rationale} Cliquez sur une rune ou un fragment ci-dessus pour tester des variantes en direct.`
-              }
-            />
+                }
+                footerNote={
+                  showingCurrent
+                    ? 'Comparaison directe : les runes entourées en bleu sur votre page équipée diffèrent de la page méta recommandée.'
+                    : isModified
+                      ? 'Mode interactif actif : cliquez sur SAUVEGARDER pour conserver cette page dans votre collection.'
+                      : `${recommendation.runes.rationale}`
+                }
+              />
+            )}
 
             {/* Simulateur d'impact en jeu (Stats Lv 1-18, Mécaniques & Verdict Comparatif) */}
             <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5 space-y-5">
@@ -3921,6 +4699,18 @@ export function BuildOptimizerView({
           </button>
         </div>
 
+        {currentMatchupNote.trim() && (
+          <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3.5 py-2 text-xs text-slate-700 dark:text-slate-200 flex items-center gap-2">
+            <BookOpen className="w-3.5 h-3.5 text-amber-500 shrink-0" aria-hidden="true" />
+            <span>
+              <strong className="text-slate-900 dark:text-white">
+                Mémo {playerChampion.name} vs {directEnemy?.name || 'Draft'} intégré :
+              </strong>{' '}
+              « {currentMatchupNote.trim()} »
+            </span>
+          </div>
+        )}
+
         {aiError && (
           <div className="p-3 rounded-lg border border-rose-500/30 bg-rose-500/5 text-xs text-rose-600 dark:text-rose-400">
             {aiError}
@@ -3975,6 +4765,8 @@ export function BuildOptimizerView({
           )
         )}
       </section>
+      </>
+      )}
 
       {/* Modal Sélecteur Universel de Champion (Portraits Champion Select + filtres FR) */}
       <AnimatePresence>
@@ -4127,19 +4919,22 @@ export function BuildOptimizerView({
       )}
       </AnimatePresence>
 
-      {/* Modal Sélecteur d'Objet Data Dragon (Atelier Équipement) */}
+      {/* Modal Boutique Officielle LoL (Sélecteur & Recettes d'Objet pour l'Atelier ou bouton Recette) */}
       <AnimatePresence>
-      {itemPickerSlotIdx !== null && (
+      {(itemPickerSlotIdx !== null || recipeModalItemId !== null) && (
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1, transition: { duration: 0.16, ease: 'easeOut' } }}
           exit={{ opacity: 0, transition: { duration: 0.11, ease: 'easeOut' } }}
-          className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-4"
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4"
           role="dialog"
           aria-modal="true"
-          aria-label="Choisir un objet Data Dragon"
+          aria-label="Boutique et recette d'objet League of Legends"
           onClick={(e) => {
-            if (e.target === e.currentTarget) setItemPickerSlotIdx(null);
+            if (e.target === e.currentTarget) {
+              setItemPickerSlotIdx(null);
+              setRecipeModalItemId(null);
+            }
           }}
         >
           <motion.div
@@ -4156,114 +4951,65 @@ export function BuildOptimizerView({
               y: 4,
               transition: { duration: 0.12, ease: [0.23, 1, 0.32, 1] },
             }}
-            className="w-full max-w-4xl rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] overflow-hidden shadow-2xl"
+            className="w-full max-w-5xl max-h-[90vh] overflow-y-auto thin-scrollbar shadow-2xl"
           >
-            <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <div className="font-semibold text-base text-slate-900 dark:text-white">
-                  Choisir un objet — Emplacement {itemPickerSlotIdx + 1}
-                </div>
-                <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                  {filteredCatalogItems.length} objets officiels Patch {ddragon.version} · Stats extraites en temps réel
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => handleAssignItemToSlot(itemPickerSlotIdx, null)}
-                  className="px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
-                >
-                  Vider l’emplacement
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setItemPickerSlotIdx(null)}
-                  aria-label="Fermer"
-                  className="p-2 rounded-lg text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-
-            <div className="p-4 border-b border-slate-200 dark:border-slate-800 space-y-3 bg-slate-50/50 dark:bg-[#0E131D]">
-              <div className="relative">
-                <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" aria-hidden="true" />
-                <input
-                  type="text"
-                  autoFocus
-                  value={itemSearchQuery}
-                  onChange={(e) => setItemSearchQuery(e.target.value)}
-                  placeholder="Rechercher un objet (ex: Cœuracier, Randuin, Visage spirituel, Liandry...)"
-                  className="w-full pl-10 pr-9 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-[#0B0E14] text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-500"
-                />
-                {itemSearchQuery && (
-                  <button
-                    type="button"
-                    onClick={() => setItemSearchQuery('')}
-                    aria-label="Effacer"
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                )}
-              </div>
-
-              <div className="flex flex-wrap items-center gap-1 p-1 rounded-lg bg-slate-100 dark:bg-[#0B0E14] border border-slate-200 dark:border-slate-800">
-                {ITEM_FILTER_OPTIONS.map((f) => (
-                  <button
-                    key={f.id}
-                    type="button"
-                    onClick={() => setItemFilterKey(f.id)}
-                    className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
-                      itemFilterKey === f.id
-                        ? 'bg-amber-600 dark:bg-amber-500 text-white dark:text-slate-950 font-semibold'
-                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-                    }`}
-                  >
-                    {f.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="p-4 max-h-[440px] overflow-y-auto thin-scrollbar grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
-              {filteredCatalogItems.slice(0, 90).map((it) => {
-                const tags = formatItemStatTags(it);
-                return (
-                  <button
-                    key={it.id}
-                    type="button"
-                    onClick={() => handleAssignItemToSlot(itemPickerSlotIdx, it)}
-                    className="flex items-start gap-3 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] hover:border-amber-500/70 text-left transition-colors"
-                  >
-                    <SafeGameIcon
-                      src={it.imageUrl}
-                      alt={it.name}
-                      fallbackLabel={it.name}
-                      sizeClass="w-10 h-10"
-                    />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-baseline justify-between gap-2">
-                        <span className="text-xs font-semibold text-slate-900 dark:text-white truncate">
-                          {it.name}
-                        </span>
-                        <span className="text-[11px] font-mono tabular-nums text-amber-600 dark:text-amber-400 shrink-0">
-                          {it.gold.total} po
-                        </span>
-                      </div>
-                      <div className="text-[10px] font-mono tabular-nums text-slate-500 dark:text-slate-400 mt-0.5 truncate">
-                        {tags.length > 0 ? tags.join(' · ') : it.plaintext || 'Objet utilitaire'}
-                      </div>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
+            <LoLItemShopPanel
+              allItems={ddragon.items}
+              gameMode={gameMode}
+              championName={playerChampion.name}
+              slots={sandboxSlots}
+              recommendedItemIds={recommendedItemIdsSet}
+              initialTargetSlotIdx={itemPickerSlotIdx}
+              initialInspectedItemId={
+                recipeModalItemId ||
+                (itemPickerSlotIdx !== null ? sandboxSlots[itemPickerSlotIdx]?.id : null) ||
+                null
+              }
+              onAssignSlot={(idx, it) => {
+                handleAssignItemToSlot(idx, it);
+                setRecipeModalItemId(null);
+              }}
+              onApplyItemSet={(ids) => {
+                setCustomBuildItemIds(ids);
+                setItemPickerSlotIdx(null);
+                setRecipeModalItemId(null);
+              }}
+              onResetToRecommended={() => setCustomBuildItemIds(null)}
+              isModal
+              onCloseModal={() => {
+                setItemPickerSlotIdx(null);
+                setRecipeModalItemId(null);
+              }}
+            />
           </motion.div>
         </motion.div>
       )}
       </AnimatePresence>
+
+      {/* Modale complète de gestion des mémos (édition inline, ajout, recherche, suppression avec annulation) */}
+      <MatchupNotesModal
+        open={showSavedNotes}
+        onClose={() => setShowSavedNotes(false)}
+        notesMap={matchupNotesMap}
+        champions={ddragon.champions}
+        activePlayerChampId={playerChampion.id}
+        activeEnemyChampId={directEnemy?.id || null}
+        onSaveNote={(key, text) => updateMatchupNote(text, key)}
+        onDeleteNote={(key) => updateMatchupNote('', key)}
+        onLoadMatchup={(champAId, champBId) => {
+          manualOverrideRef.current = true;
+          setPlayerChampId(champAId);
+          if (champBId && champBId !== 'general') {
+            const roleIdx = Math.max(0, ROLES.indexOf(role));
+            setEnemyIds((prev) => {
+              const next = [...prev];
+              next[roleIdx] = champBId;
+              return next;
+            });
+          }
+          setAiPlan(null);
+        }}
+      />
     </div>
   );
 }

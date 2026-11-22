@@ -746,6 +746,13 @@ export const SAMPLE_LIVE_CLIENT_PAYLOAD: LiveClientAllGameData = {
     riotId: 'Player#EUW',
     level: 11,
     currentGold: 1485,
+    abilities: {
+      Passive: { displayName: 'Vol essentiel', id: 'AhriPassive' },
+      Q: { abilityLevel: 5, displayName: 'Orbe d’illusion', id: 'AhriQ' },
+      W: { abilityLevel: 1, displayName: 'Lucioles', id: 'AhriW' },
+      E: { abilityLevel: 3, displayName: 'Charme', id: 'AhriE' },
+      R: { abilityLevel: 2, displayName: 'Assaut spirituel', id: 'AhriR' },
+    },
     championStats: {
       abilityPower: 142,
       armor: 64,
@@ -783,6 +790,10 @@ export const SAMPLE_LIVE_CLIENT_PAYLOAD: LiveClientAllGameData = {
       level: 12,
       scores: { kills: 2, deaths: 1, assists: 2, creepScore: 134, wardScore: 11 },
       items: [{ itemID: 3078, displayName: 'Force de la trinité', price: 3333 }],
+      summonerSpells: {
+        summonerSpellOne: { displayName: 'Flash' },
+        summonerSpellTwo: { displayName: 'Téléportation' },
+      },
     },
     {
       championName: 'LeeSin',
@@ -791,6 +802,10 @@ export const SAMPLE_LIVE_CLIENT_PAYLOAD: LiveClientAllGameData = {
       level: 10,
       scores: { kills: 3, deaths: 2, assists: 4, creepScore: 98, wardScore: 18 },
       items: [{ itemID: 6692, displayName: 'Éclipse', price: 2900 }],
+      summonerSpells: {
+        summonerSpellOne: { displayName: 'Flash' },
+        summonerSpellTwo: { displayName: 'Châtiment' },
+      },
     },
     {
       championName: 'Ahri',
@@ -800,6 +815,10 @@ export const SAMPLE_LIVE_CLIENT_PAYLOAD: LiveClientAllGameData = {
       level: 11,
       scores: { kills: 3, deaths: 1, assists: 4, creepScore: 118, wardScore: 15 },
       items: [{ itemID: 6655, displayName: 'Compagnon de Luden', price: 2850 }],
+      summonerSpells: {
+        summonerSpellOne: { displayName: 'Flash' },
+        summonerSpellTwo: { displayName: 'Embrasement' },
+      },
     },
     {
       championName: 'Jinx',
@@ -808,6 +827,10 @@ export const SAMPLE_LIVE_CLIENT_PAYLOAD: LiveClientAllGameData = {
       level: 10,
       scores: { kills: 2, deaths: 2, assists: 3, creepScore: 142, wardScore: 12 },
       items: [{ itemID: 6672, displayName: 'Tueur de krakens', price: 3100 }],
+      summonerSpells: {
+        summonerSpellOne: { displayName: 'Flash' },
+        summonerSpellTwo: { displayName: 'Barrière' },
+      },
     },
     {
       championName: 'Thresh',
@@ -816,6 +839,10 @@ export const SAMPLE_LIVE_CLIENT_PAYLOAD: LiveClientAllGameData = {
       level: 9,
       scores: { kills: 0, deaths: 2, assists: 7, creepScore: 22, wardScore: 34 },
       items: [{ itemID: 3190, displayName: 'Médaillon des Iron Solari', price: 2200 }],
+      summonerSpells: {
+        summonerSpellOne: { displayName: 'Flash' },
+        summonerSpellTwo: { displayName: 'Embrasement' },
+      },
     },
     {
       championName: 'Aatrox',
@@ -824,6 +851,10 @@ export const SAMPLE_LIVE_CLIENT_PAYLOAD: LiveClientAllGameData = {
       level: 12,
       scores: { kills: 4, deaths: 1, assists: 1, creepScore: 146, wardScore: 12 },
       items: [{ itemID: 6692, displayName: 'Éclipse', price: 2900 }, { itemID: 6610, displayName: 'Ciel éventré', price: 3100 }],
+      summonerSpells: {
+        summonerSpellOne: { displayName: 'Flash' },
+        summonerSpellTwo: { displayName: 'Téléportation' },
+      },
     },
     {
       championName: 'Viego',
@@ -832,6 +863,10 @@ export const SAMPLE_LIVE_CLIENT_PAYLOAD: LiveClientAllGameData = {
       level: 11,
       scores: { kills: 2, deaths: 2, assists: 4, creepScore: 112, wardScore: 16 },
       items: [{ itemID: 6672, displayName: 'Tueur de krakens', price: 3100 }],
+      summonerSpells: {
+        summonerSpellOne: { displayName: 'Flash' },
+        summonerSpellTwo: { displayName: 'Châtiment' },
+      },
     },
     {
       championName: 'Zed',
@@ -840,6 +875,10 @@ export const SAMPLE_LIVE_CLIENT_PAYLOAD: LiveClientAllGameData = {
       level: 11,
       scores: { kills: 4, deaths: 2, assists: 2, creepScore: 138, wardScore: 14 },
       items: [{ itemID: 6692, displayName: 'Éclipse', price: 2900 }, { itemID: 3158, displayName: 'Bottes de lucidité', price: 1000 }],
+      summonerSpells: {
+        summonerSpellOne: { displayName: 'Flash' },
+        summonerSpellTwo: { displayName: 'Embrasement' },
+      },
     },
     {
       championName: 'Kaisa',
@@ -848,6 +887,10 @@ export const SAMPLE_LIVE_CLIENT_PAYLOAD: LiveClientAllGameData = {
       level: 10,
       scores: { kills: 2, deaths: 2, assists: 3, creepScore: 136, wardScore: 11 },
       items: [{ itemID: 6672, displayName: 'Tueur de krakens', price: 3100 }],
+      summonerSpells: {
+        summonerSpellOne: { displayName: 'Flash' },
+        summonerSpellTwo: { displayName: 'Barrière' },
+      },
     },
     {
       championName: 'Leona',
@@ -856,6 +899,10 @@ export const SAMPLE_LIVE_CLIENT_PAYLOAD: LiveClientAllGameData = {
       level: 9,
       scores: { kills: 0, deaths: 3, assists: 6, creepScore: 19, wardScore: 29 },
       items: [{ itemID: 3190, displayName: 'Médaillon des Iron Solari', price: 2200 }],
+      summonerSpells: {
+        summonerSpellOne: { displayName: 'Flash' },
+        summonerSpellTwo: { displayName: 'Fatigue' },
+      },
     },
   ],
   events: {

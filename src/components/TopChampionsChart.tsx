@@ -13,11 +13,15 @@ import {
   YAxis,
 } from 'recharts';
 import { SafeGameIcon } from './SafeGameIcon.tsx';
-import type { ChampionCareerStat, MatchRecord } from '../engines/types.ts';
+import { SectionInfoTooltip } from './SectionInfoTooltip.tsx';
+import type { ChampionCareerStat, ChampionSummary, MatchRecord } from '../engines/types.ts';
+import { resolveChampionDisplay } from '../utils/championDisplay.ts';
 
 type ChampionSortMode = 'games' | 'winRate' | 'kdaRatio';
 
 interface ChampionChartRow extends ChampionCareerStat {
+  displayName: string;
+  imageUrl?: string;
   shortName: string;
   losses: number;
 }
@@ -25,6 +29,7 @@ interface ChampionChartRow extends ChampionCareerStat {
 interface TopChampionsChartProps {
   championStats?: ChampionCareerStat[];
   matches: MatchRecord[];
+  champions?: ChampionSummary[];
   getChampIcon: (championName: string) => string | undefined;
   onSelectChampion: (championName: string) => void;
 }
@@ -102,14 +107,14 @@ function ChampionChartTooltip({ active, payload, getChampIcon }: CustomTooltipPr
     <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-[#0D121C] px-3.5 py-3 shadow-lg min-w-[215px] space-y-2">
       <div className="flex items-center gap-2.5">
         <SafeGameIcon
-          src={getChampIcon(row.championName)}
-          alt={row.championName}
-          fallbackLabel={row.championName}
+          src={row.imageUrl || getChampIcon(row.championName)}
+          alt={row.displayName}
+          fallbackLabel={row.displayName}
           sizeClass="w-8 h-8"
         />
         <div className="min-w-0">
           <div className="text-xs font-bold text-slate-900 dark:text-white truncate">
-            {row.championName}
+            {row.displayName}
           </div>
           <div className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
             {row.games} partie{row.games > 1 ? 's' : ''} · {row.wins}V - {row.losses}D
@@ -156,6 +161,7 @@ function ChampionChartTooltip({ active, payload, getChampIcon }: CustomTooltipPr
 export function TopChampionsChart({
   championStats,
   matches,
+  champions = [],
   getChampIcon,
   onSelectChampion,
 }: TopChampionsChartProps) {
@@ -181,13 +187,18 @@ export function TopChampionsChart({
       return b.games - a.games || b.winRate - a.winRate || b.kdaRatio - a.kdaRatio;
     });
 
-    return sorted.map((cs) => ({
-      ...cs,
-      losses: Math.max(0, cs.games - cs.wins),
-      shortName:
-        cs.championName.length > 11 ? `${cs.championName.slice(0, 10)}…` : cs.championName,
-    }));
-  }, [resolvedStats, sortBy]);
+    return sorted.map((cs) => {
+      const disp = resolveChampionDisplay(champions, cs.championName);
+      return {
+        ...cs,
+        displayName: disp.displayName,
+        imageUrl: disp.imageUrl,
+        losses: Math.max(0, cs.games - cs.wins),
+        shortName:
+          disp.displayName.length > 11 ? `${disp.displayName.slice(0, 10)}…` : disp.displayName,
+      };
+    });
+  }, [resolvedStats, sortBy, champions]);
 
   const maxKdaDomain = useMemo(() => {
     if (topPlayedRows.length === 0) return 6;
@@ -207,6 +218,11 @@ export function TopChampionsChart({
           <h2 className="text-base font-semibold text-slate-900 dark:text-white flex items-center gap-2">
             <BarChart3 className="w-4 h-4 text-amber-500 shrink-0" aria-hidden="true" />
             <span>Champions les plus joués — Winrate &amp; KDA</span>
+            <SectionInfoTooltip
+              title="Champions les plus joués"
+              description="Compare votre taux de victoire (barres vertes/rouges) et votre ratio KDA (courbe ambre) sur vos 8 champions les plus utilisés."
+              usageTip="Repérez vos valeurs sûres (≥ 50% WR) et cliquez sur une barre ou « Build » pour optimiser un champion."
+            />
           </h2>
           <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
             {topPlayedRows.length > 0 ? (
@@ -389,13 +405,13 @@ export function TopChampionsChart({
                     <td className="py-2.5 pr-3">
                       <div className="flex items-center gap-2.5 min-w-0">
                         <SafeGameIcon
-                          src={getChampIcon(row.championName)}
-                          alt={row.championName}
-                          fallbackLabel={row.championName}
+                          src={row.imageUrl || getChampIcon(row.championName)}
+                          alt={row.displayName}
+                          fallbackLabel={row.displayName}
                           sizeClass="w-7 h-7"
                         />
                         <span className="font-semibold text-slate-900 dark:text-slate-100 truncate">
-                          {row.championName}
+                          {row.displayName}
                         </span>
                       </div>
                     </td>

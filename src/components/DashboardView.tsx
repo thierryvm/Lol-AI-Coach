@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { motion } from 'motion/react';
+import { motion, type Variants } from 'motion/react';
 import {
   AlertTriangle,
   ArrowDownRight,
@@ -23,11 +23,17 @@ import {
   SlidersHorizontal,
   Sparkles,
   Swords,
+  Target,
   TrendingUp,
   X,
 } from 'lucide-react';
+import { ContextualTacticalAdvice } from './ContextualTacticalAdvice.tsx';
 import { DuoSynergyAnalysis } from './DuoSynergyAnalysis.tsx';
+import { PerformanceRadarAndDuoPanel } from './PerformanceRadarAndDuoPanel.tsx';
+import { RankedTierCrest } from './RankedTierCrest.tsx';
 import { SafeGameIcon } from './SafeGameIcon.tsx';
+import { SectionInfoTooltip } from './SectionInfoTooltip.tsx';
+import type { ToastItem } from './ToastContainer.tsx';
 import { TopChampionsChart } from './TopChampionsChart.tsx';
 import { postCoachJson } from '../engines/aiConfig.ts';
 import {
@@ -35,19 +41,36 @@ import {
   formatRecommenderRoleLabel,
   type RecommenderRoleFilter,
 } from '../engines/championRecommender.ts';
+import { downloadRecentMatchesExport } from '../engines/matchExportEngine.ts';
+import {
+  computeFrequentTeammates,
+  computeMobalyticsStyleProfile,
+} from '../engines/performanceProfileEngine.ts';
 import { buildCareerSynthesisDataset } from '../engines/postGameEngine.ts';
+import {
+  buildTrainingFocusReport,
+  type TrainingIntensity,
+} from '../engines/trainingGoalsEngine.ts';
 import type {
   CareerAiSynthesis,
   CareerSynthesisDataset,
   ChampionSummary,
   MatchRecord,
   PlayerProfileResponse,
+  Role,
 } from '../engines/types.ts';
+import {
+  formatChampionDisplayName,
+  getChampionIconUrl,
+  resolveChampionDisplay,
+} from '../utils/championDisplay.ts';
+import { formatRankedQueue } from '../utils/rankedDisplay.ts';
 
 function hydrateCareerSynthesis(
   raw: CareerAiSynthesis | null,
   dataset: CareerSynthesisDataset,
   riotId: string,
+  champions: ChampionSummary[] = [],
 ): CareerAiSynthesis | null {
   if (!raw) return null;
 
@@ -143,14 +166,14 @@ function hydrateCareerSynthesis(
     topChamps.length > 0
       ? `Votre pool est centré sur ${topChamps
           .slice(0, 3)
-          .map((c) => `${c.championName} (${c.games}p, ${c.winRate}% WR)`)
+          .map((c) => `${formatChampionDisplayName(champions, c.championName)} (${c.games}p, ${c.winRate}% WR)`)
           .join(', ')}. ${
           bestChamp
-            ? `Votre meilleur rendement est sur ${bestChamp.championName} (${bestChamp.winRate}% WR). `
+            ? `Votre meilleur rendement est sur ${formatChampionDisplayName(champions, bestChamp.championName)} (${bestChamp.winRate}% WR). `
             : ''
         }${
           worstDeathChamp && worstDeathChamp.avgDeaths >= 6.5
-            ? `Attention sur ${worstDeathChamp.championName} (${worstDeathChamp.avgDeaths} morts/m) : privilégiez un démarrage défensif.`
+            ? `Attention sur ${formatChampionDisplayName(champions, worstDeathChamp.championName)} (${worstDeathChamp.avgDeaths} morts/m) : privilégiez un démarrage défensif.`
             : 'Gardez ce noyau de 2 à 3 champions pour consolider vos réflexes.'
         }`
       : 'Concentrez-vous sur 2 à 3 champions maîtrisés pour stabiliser vos prises de décision.';
@@ -161,7 +184,7 @@ function hydrateCareerSynthesis(
     }.`,
     'Partie 2 : Déclencher chaque rappel 55 secondes avant Dragon/Baron avec au moins 1 Balise de contrôle.',
     `Partie 3 : Adapter votre 2e objet dès que l’équipe adverse prend l’avantage (${
-      bestChamp ? `sur ${bestChamp.championName}` : 'en priorité défensive'
+      bestChamp ? `sur ${formatChampionDisplayName(champions, bestChamp.championName)}` : 'en priorité défensive'
     }).`,
   ];
 
@@ -204,11 +227,60 @@ interface DashboardViewProps {
   onSelectMatchForReview: (match: MatchRecord) => void;
   onNavigateToBuilds: (championName?: string, duoChampionName?: string) => void;
   onNavigateToLive: () => void;
+  onNavigateToPostGame?: () => void;
   onNavigateToSettings?: () => void;
   careerSynthesis?: CareerAiSynthesis | null;
   geminiConfigured?: boolean;
   onSaveCareerSynthesis?: (synthesis: CareerAiSynthesis) => void;
+  defaultRole?: Role;
+  trainingIntensity?: TrainingIntensity;
+  onChangeTrainingIntensity?: (intensity: TrainingIntensity) => void;
+  onNotify?: (toast: Omit<ToastItem, 'id'>) => void;
 }
+
+const EASE_OUT: [number, number, number, number] = [0.23, 1, 0.32, 1];
+
+const dashboardContainerVariants: Variants = {
+  hidden: {},
+  show: {
+    transition: {
+      staggerChildren: 0.045,
+    },
+  },
+};
+
+const dashboardSectionVariants: Variants = {
+  hidden: { opacity: 0, y: 10 },
+  show: {
+    opacity: 1,
+    y: 0,
+    transition: {
+      duration: 0.22,
+      ease: EASE_OUT,
+    },
+  },
+};
+
+const subCardGridVariants: Variants = {
+  hidden: {},
+  show: {
+    transition: {
+      staggerChildren: 0.035,
+    },
+  },
+};
+
+const subCardItemVariants: Variants = {
+  hidden: { opacity: 0, y: 8 },
+  show: {
+    opacity: 1,
+    y: 0,
+    transition: {
+      duration: 0.2,
+      ease: EASE_OUT,
+    },
+  },
+};
 
 export function DashboardView({
   profile,
@@ -227,10 +299,15 @@ export function DashboardView({
   onSelectMatchForReview,
   onNavigateToBuilds,
   onNavigateToLive,
+  onNavigateToPostGame,
   onNavigateToSettings,
   careerSynthesis = null,
   geminiConfigured = true,
   onSaveCareerSynthesis,
+  defaultRole = 'SUPPORT',
+  trainingIntensity = 'standard',
+  onChangeTrainingIntensity,
+  onNotify,
 }: DashboardViewProps) {
   const [showLocalImport, setShowLocalImport] = useState(false);
   const [localImporting, setLocalImporting] = useState(false);
@@ -242,10 +319,16 @@ export function DashboardView({
   const [aiError, setAiError] = useState<string | null>(null);
   const [recRoleFilter, setRecRoleFilter] = useState<RecommenderRoleFilter>('AUTO');
   const [includePlayedInRecs, setIncludePlayedInRecs] = useState(false);
+  const [sectionMode, setSectionMode] = useState<'essential' | 'progression' | 'history' | 'all'>('essential');
 
   const careerDataset = useMemo(
     () => buildCareerSynthesisDataset(profile?.matches || [], profile?.tendencies),
     [profile?.matches, profile?.tendencies],
+  );
+
+  const trainingReport = useMemo(
+    () => buildTrainingFocusReport(profile?.matches || [], trainingIntensity, defaultRole),
+    [profile?.matches, trainingIntensity, defaultRole],
   );
 
   const championFit = useMemo(
@@ -261,22 +344,25 @@ export function DashboardView({
   );
 
   const hydratedSynthesis = useMemo(
-    () => hydrateCareerSynthesis(careerSynthesis, careerDataset, profile?.riotId || ''),
-    [careerSynthesis, careerDataset, profile?.riotId],
+    () => hydrateCareerSynthesis(careerSynthesis, careerDataset, profile?.riotId || '', champions),
+    [careerSynthesis, careerDataset, profile?.riotId, champions],
+  );
+
+  const mobalyticsProfile = useMemo(
+    () => computeMobalyticsStyleProfile(profile?.matches || [], defaultRole),
+    [profile?.matches, defaultRole],
+  );
+
+  const frequentTeammates = useMemo(
+    () => computeFrequentTeammates(profile?.matches || [], profile?.riotId || ''),
+    [profile?.matches, profile?.riotId],
   );
 
   const isLegacySynthesis = Boolean(careerSynthesis && (!careerSynthesis.schemaVersion || careerSynthesis.schemaVersion < 2));
 
   const isInsideIframe = typeof window !== 'undefined' && window.self !== window.top;
 
-  const getChampIcon = (championName: string) => {
-    const found = champions.find(
-      (c) =>
-        c.id.toLowerCase() === championName.toLowerCase() ||
-        c.name.toLowerCase() === championName.toLowerCase(),
-    );
-    return found?.imageUrl;
-  };
+  const getChampIcon = (championName: string) => getChampionIconUrl(champions, championName);
 
   const applyRawHistoryJson = (rawObj: any) => {
     const converted = normalizeLcuHistoryToMatches(rawObj, champions, profile?.riotId || '');
@@ -310,7 +396,7 @@ export function DashboardView({
       setLocalErr(
         isInsideIframe
           ? 'Accès à 127.0.0.1:38421 bloqué dans l’aperçu iframe : copiez la commande ci-dessous dans PowerShell puis faites Ctrl+V (ou ouvrez l’app hors iframe).'
-          : 'Pont local 127.0.0.1:38421 non détecté. Téléchargez et lancez lol-coach-bridge.bat v3.1 puis réessayez.',
+          : 'Pont local 127.0.0.1:38421 non détecté. Téléchargez et lancez lol-coach-bridge.bat v3.4 puis réessayez.',
       );
     } finally {
       setLocalImporting(false);
@@ -338,6 +424,12 @@ export function DashboardView({
         dataset: careerDataset,
       });
       onSaveCareerSynthesis?.(data);
+      onNotify?.({
+        variant: 'success',
+        title: `Synthèse Globale IA prête (${data.gamesAnalyzed} matchs)`,
+        description:
+          'Votre Conseil Tactique Contextuel et votre plan d’action sur 3 parties ont été actualisés.',
+      });
     } catch (err) {
       setAiError(
         err instanceof Error ? err.message : 'Erreur lors de l’appel à la synthèse globale IA.',
@@ -409,10 +501,18 @@ export function DashboardView({
 
   if (!profile) return null;
 
-  const { tendencies, rankedSolo, matches, activeGame } = profile;
+  const { tendencies, rankedSolo, rankedFlex, challenges, serverStatus, matches, activeGame } = profile;
+  const soloRankInfo = formatRankedQueue(rankedSolo);
+  const flexRankInfo = formatRankedQueue(rankedFlex);
 
   return (
-    <div className="space-y-6">
+    <motion.div
+      key={`${profile.riotId}-${profile.region}`}
+      variants={dashboardContainerVariants}
+      initial="hidden"
+      animate="show"
+      className="space-y-7"
+    >
       {/* Bannière d'erreur non-bloquante : conserve le profil et les parties déjà synchronisées */}
       {error && (
         <div className="rounded-xl border border-rose-500/30 bg-rose-500/5 px-5 py-4 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
@@ -464,7 +564,10 @@ export function DashboardView({
       )}
 
       {!riotConfigured && (
-        <section className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4 text-xs text-slate-700 dark:text-slate-300 space-y-1.5">
+        <motion.section
+          variants={dashboardSectionVariants}
+          className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4 text-xs text-slate-700 dark:text-slate-300 space-y-1.5"
+        >
           <div className="font-semibold text-amber-700 dark:text-amber-400">
             Mode aperçu : clé serveur RIOT_API_KEY non renseignée
           </div>
@@ -483,11 +586,14 @@ export function DashboardView({
             <code className="px-1 py-0.5 rounded bg-slate-200 dark:bg-slate-800">RIOT_API_KEY</code> dans{' '}
             <strong>Settings &gt; Secrets</strong>.
           </p>
-        </section>
+        </motion.section>
       )}
 
-      {/* En-tête Profil & Provenance claire */}
-      <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-6">
+      {/* En-tête Profil, Classement Officiel & Provenance */}
+      <motion.section
+        variants={dashboardSectionVariants}
+        className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-6"
+      >
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
           <div className="flex items-center gap-4">
             <SafeGameIcon
@@ -497,21 +603,38 @@ export function DashboardView({
               sizeClass="w-14 h-14"
             />
             <div>
-              <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white text-balance">
-                {profile.riotId}
-              </h1>
+              <div className="flex items-center gap-2">
+                <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white text-balance">
+                  {profile.riotId}
+                </h1>
+                <SectionInfoTooltip
+                  title="Profil & Niveau en Classé"
+                  description="Affiche l’identité du compte Riot actif, ses rangs officiels Solo/Duo et Flex 5v5 (League-V4), la provenance des données et le raccourci vers l’optimisation de build ou le Coach Live."
+                  usageTip="Si une partie en cours est détectée, un bouton vert apparaît ici pour ouvrir le Coach Temps Réel en un clic."
+                />
+              </div>
               <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
                 <span>Serveur {profile.region}</span>
                 <span aria-hidden="true" className="mx-2">·</span>
                 <span className="font-mono tabular-nums">Niveau {profile.level}</span>
                 <span aria-hidden="true" className="mx-2">·</span>
-                <span>
-                  {rankedSolo
-                    ? `${rankedSolo.tier} ${rankedSolo.rank} (${rankedSolo.lp} LP)`
-                    : 'Non classé Solo/Duo'}
-                </span>
-                <span aria-hidden="true" className="mx-2">·</span>
                 <span>Source : {profile.source}</span>
+                {serverStatus && (
+                  <>
+                    <span aria-hidden="true" className="mx-2">·</span>
+                    <span
+                      className={
+                        serverStatus.healthy
+                          ? 'text-emerald-600 dark:text-emerald-400'
+                          : 'text-amber-600 dark:text-amber-400 font-semibold'
+                      }
+                    >
+                      {serverStatus.healthy
+                        ? `État ${serverStatus.platform} : OK`
+                        : `${serverStatus.incidents.length + serverStatus.maintenances.length} incident/maintenance Riot`}
+                    </span>
+                  </>
+                )}
               </p>
             </div>
           </div>
@@ -521,100 +644,483 @@ export function DashboardView({
               <button
                 type="button"
                 onClick={onNavigateToLive}
-                className="px-4 py-2 text-xs font-semibold rounded-lg bg-emerald-600 text-white hover:bg-emerald-500 transition-colors whitespace-nowrap shrink-0"
+                className="px-4 py-2 text-xs font-semibold rounded-full bg-emerald-600 text-white hover:bg-emerald-500 transition-colors whitespace-nowrap shrink-0 shadow-xs"
               >
-                Partie en cours détectée · Ouvrir Coach Live
+                Partie en cours · Ouvrir Coach Live
               </button>
             )}
             <button
               type="button"
               onClick={() => onNavigateToBuilds(matches[0]?.player.championName)}
-              className="px-4 py-2 text-xs font-semibold rounded-lg bg-amber-600 dark:bg-amber-500 text-white dark:text-slate-950 hover:bg-amber-500 dark:hover:bg-amber-400 transition-colors whitespace-nowrap shrink-0"
+              className="px-4 py-2 text-xs font-semibold rounded-full bg-[#007AFF] hover:bg-[#0066D6] dark:bg-[#0A84FF] dark:hover:bg-[#2994FF] text-white transition-colors whitespace-nowrap shrink-0 shadow-xs"
             >
-              Préparer un build contre la meta
+              Préparer un build
             </button>
           </div>
         </div>
-      </section>
 
-      {/* Grille des 4 KPIs principaux */}
-      <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* Cartes Niveau en Classé (Solo/Duo & Flex 5v5) */}
+        <div className="mt-5 pt-4 border-t border-slate-200 dark:border-slate-800 grid grid-cols-1 md:grid-cols-2 gap-3.5">
+          {[
+            { key: 'solo', queueLabel: 'Classé Solo / Duo', info: soloRankInfo },
+            { key: 'flex', queueLabel: 'Classé Flex 5v5', info: flexRankInfo },
+          ].map(({ key, queueLabel, info }) => (
+            <div
+              key={key}
+              className={`rounded-xl border px-4 py-3 flex items-center justify-between gap-4 ${info.theme.borderClass} ${info.theme.softBgClass}`}
+            >
+              <div className="flex items-center gap-3.5 min-w-0">
+                <RankedTierCrest tier={info.tierKey} sizeClass="w-10 h-10" />
+                <div className="min-w-0">
+                  <div className="text-[11px] font-medium text-slate-500 dark:text-slate-400 flex items-center gap-2">
+                    <span>{queueLabel}</span>
+                    {info.hotStreak && (
+                      <span className="text-amber-600 dark:text-amber-400 font-semibold">
+                        · Série de victoires
+                      </span>
+                    )}
+                  </div>
+                  <div className={`text-base font-bold tracking-tight truncate ${info.theme.textClass}`}>
+                    {info.divisionLabel}
+                    {info.isRanked && (
+                      <span className="ml-2 text-xs font-mono tabular-nums text-slate-700 dark:text-slate-200">
+                        {info.lp} LP
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="text-right shrink-0">
+                {info.isRanked ? (
+                  <>
+                    <div
+                      className={`text-xs font-mono tabular-nums font-bold ${
+                        info.winRate >= 50
+                          ? 'text-emerald-600 dark:text-emerald-400'
+                          : 'text-rose-600 dark:text-rose-400'
+                      }`}
+                    >
+                      {info.winRate}% WR
+                    </div>
+                    <div className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                      {info.wins}V - {info.losses}D ({info.totalGames}p)
+                    </div>
+                  </>
+                ) : (
+                  <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Saison non placée
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {serverStatus && !serverStatus.healthy && (
+          <div className="mt-4 pt-3 border-t border-amber-500/30 text-xs text-amber-700 dark:text-amber-300 space-y-1">
+            <div className="font-semibold flex items-center gap-1.5">
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+              Alerte officielle Riot sur {serverStatus.platform} (LoL-Status-V4)
+            </div>
+            {serverStatus.incidents.map((inc) => (
+              <p key={`inc-${inc.id}`} className="text-[11px]">
+                · Incident ({inc.severity}) : {inc.title}
+              </p>
+            ))}
+            {serverStatus.maintenances.map((m) => (
+              <p key={`maint-${m.id}`} className="text-[11px]">
+                · Maintenance ({m.status}) : {m.title}
+              </p>
+            ))}
+          </div>
+        )}
+      </motion.section>
+
+      {/* Parcours guidé en 3 étapes + Sélecteur de vue Apple */}
+      <motion.section
+        variants={dashboardSectionVariants}
+        className="rounded-2xl apple-surface p-4 sm:p-5 space-y-4"
+      >
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5">
+          <button
+            type="button"
+            onClick={() => onNavigateToBuilds(matches[0]?.player.championName)}
+            className="group flex items-center justify-between gap-3 rounded-xl border border-black/[0.06] dark:border-white/[0.08] bg-slate-50/80 dark:bg-[#0F1117] px-3.5 py-2.5 text-left hover:border-[#007AFF]/40 dark:hover:border-[#0A84FF]/40 transition-colors"
+          >
+            <div className="min-w-0">
+              <div className="text-[11px] font-semibold text-[#007AFF] dark:text-[#0A84FF]">
+                Étape 1 · Avant la partie
+              </div>
+              <div className="text-xs font-semibold text-slate-900 dark:text-white truncate">
+                Choisir build, runes &amp; match-up
+              </div>
+            </div>
+            <ArrowRight className="w-4 h-4 text-slate-400 group-hover:text-[#007AFF] dark:group-hover:text-[#0A84FF] shrink-0 transition-colors" aria-hidden="true" />
+          </button>
+
+          <button
+            type="button"
+            onClick={onNavigateToLive}
+            className={`group flex items-center justify-between gap-3 rounded-xl border px-3.5 py-2.5 text-left transition-colors ${
+              activeGame.inGame
+                ? 'border-emerald-500/40 bg-emerald-500/10'
+                : 'border-black/[0.06] dark:border-white/[0.08] bg-slate-50/80 dark:bg-[#0F1117] hover:border-emerald-500/40'
+            }`}
+          >
+            <div className="min-w-0">
+              <div className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
+                Étape 2 · En partie (Live)
+              </div>
+              <div className="text-xs font-semibold text-slate-900 dark:text-white truncate">
+                Départ, compétences &amp; sorts en direct
+              </div>
+            </div>
+            <ArrowRight className="w-4 h-4 text-slate-400 group-hover:text-emerald-500 shrink-0 transition-colors" aria-hidden="true" />
+          </button>
+
+          <button
+            type="button"
+            onClick={() => (onNavigateToPostGame ? onNavigateToPostGame() : matches[0] && onSelectMatchForReview(matches[0]))}
+            className="group flex items-center justify-between gap-3 rounded-xl border border-black/[0.06] dark:border-white/[0.08] bg-slate-50/80 dark:bg-[#0F1117] px-3.5 py-2.5 text-left hover:border-[#007AFF]/40 dark:hover:border-[#0A84FF]/40 transition-colors"
+          >
+            <div className="min-w-0">
+              <div className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+                Étape 3 · Après la partie
+              </div>
+              <div className="text-xs font-semibold text-slate-900 dark:text-white truncate">
+                Débriefing, carte &amp; objectifs
+              </div>
+            </div>
+            <ArrowRight className="w-4 h-4 text-slate-400 group-hover:text-[#007AFF] dark:group-hover:text-[#0A84FF] shrink-0 transition-colors" aria-hidden="true" />
+          </button>
+        </div>
+
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pt-1 border-t border-black/[0.06] dark:border-white/[0.07]">
+          <div className="text-xs text-slate-500 dark:text-slate-400">
+            Affichage ciblé pour éviter la surcharge d’informations :
+          </div>
+          <div
+            role="tablist"
+            aria-label="Sections du tableau de bord"
+            className="inline-flex flex-wrap items-center gap-1 p-1 rounded-xl bg-slate-200/70 dark:bg-[#0D0F14] border border-black/[0.05] dark:border-white/[0.07]"
+          >
+            {(
+              [
+                { id: 'essential', label: 'Essentiel' },
+                { id: 'progression', label: 'Progression & Duo' },
+                { id: 'history', label: `Historique (${matches.length})` },
+                { id: 'all', label: 'Tout voir' },
+              ] as const
+            ).map((tab) => {
+              const active = sectionMode === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  onClick={() => setSectionMode(tab.id)}
+                  className={`px-3 py-1.5 text-xs rounded-lg transition-all whitespace-nowrap ${
+                    active
+                      ? 'bg-white dark:bg-[#1E222D] text-slate-900 dark:text-white font-semibold shadow-xs'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white font-medium'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </motion.section>
+
+      {/* Conseil Tactique Contextuel (Astuce quotidienne pilotée par careerSynthesis) */}
+      {(sectionMode === 'essential' || sectionMode === 'all') && matches.length > 0 && (
+        <motion.section variants={dashboardSectionVariants}>
+          <ContextualTacticalAdvice
+            careerSynthesis={hydratedSynthesis}
+            dataset={careerDataset}
+            matches={matches}
+            champions={champions}
+            riotId={profile.riotId}
+            dominantRole={trainingReport.dominantRole}
+            aiLoading={aiLoading}
+            geminiConfigured={geminiConfigured}
+            onGenerateCareerSynthesis={handleGenerateCareerSynthesis}
+            onNavigateToBuilds={(championName) => onNavigateToBuilds(championName)}
+            onNotify={onNotify}
+          />
+        </motion.section>
+      )}
+
+      {/* Grille des 4 KPIs principaux (espacement isolé pour zéro chevauchement au survol) */}
+      {(sectionMode === 'essential' || sectionMode === 'all') && (
+      <motion.section variants={dashboardSectionVariants} className="space-y-3">
+        <div className="flex items-center gap-2 px-0.5">
+          <h2 className="text-xs font-semibold text-slate-600 dark:text-slate-300">
+            Indicateurs clés de performance
+          </h2>
+          <SectionInfoTooltip
+            title="Indicateurs clés de performance"
+            description="Résume vos 4 métriques fondamentales sur l’ensemble des parties analysées : taux de victoire, rythme de farm, morts en sur-extension et contrôle de vision."
+            usageTip="Identifiez en 3 secondes si votre priorité du jour est la survie, la vision ou le farming."
+          />
+        </div>
+
         <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.2, delay: 0, ease: [0.16, 1, 0.3, 1] }}
-          className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5 transition-transform duration-200 hover:-translate-y-0.5 hover:border-slate-300 dark:hover:border-slate-700"
+          variants={subCardGridVariants}
+          className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5 pt-0.5"
         >
-          <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
-            <span>Taux de victoire récent</span>
-            <TrendingUp className="w-4 h-4 text-amber-500" aria-hidden="true" />
-          </div>
-          <div className="mt-2 text-2xl font-bold font-mono tabular-nums text-slate-900 dark:text-white">
-            {tendencies.winRate}%
-          </div>
-          <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-            Calculé sur {tendencies.gamesAnalyzed} parties analysées
-          </p>
-        </motion.div>
+          <motion.div
+            variants={subCardItemVariants}
+            className="relative rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5 transition-[transform,border-color,box-shadow] duration-200 [@media(hover:hover)]:hover:-translate-y-0.5 [@media(hover:hover)]:hover:z-10 [@media(hover:hover)]:hover:shadow-md hover:border-slate-300 dark:hover:border-slate-700"
+          >
+            <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+              <span>Taux de victoire récent</span>
+              <TrendingUp className="w-4 h-4 text-amber-500" aria-hidden="true" />
+            </div>
+            <div className="mt-2 text-2xl font-bold font-mono tabular-nums text-slate-900 dark:text-white">
+              {tendencies.winRate}%
+            </div>
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+              Calculé sur {tendencies.gamesAnalyzed} parties analysées
+            </p>
+          </motion.div>
 
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.2, delay: 0.04, ease: [0.16, 1, 0.3, 1] }}
-          className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5 transition-transform duration-200 hover:-translate-y-0.5 hover:border-slate-300 dark:hover:border-slate-700"
+          <motion.div
+            variants={subCardItemVariants}
+            className="relative rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5 transition-[transform,border-color,box-shadow] duration-200 [@media(hover:hover)]:hover:-translate-y-0.5 [@media(hover:hover)]:hover:z-10 [@media(hover:hover)]:hover:shadow-md hover:border-slate-300 dark:hover:border-slate-700"
+          >
+            <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+              <span>Rythme de farming moyen</span>
+              <Crosshair className="w-4 h-4 text-sky-500" aria-hidden="true" />
+            </div>
+            <div className="mt-2 text-2xl font-bold font-mono tabular-nums text-slate-900 dark:text-white">
+              {tendencies.avgCsPerMin} <span className="text-sm font-normal text-slate-400">CS/min</span>
+            </div>
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+              Cible recommandée : 7.0+ CS/min
+            </p>
+          </motion.div>
+
+          <motion.div
+            variants={subCardItemVariants}
+            className="relative rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5 transition-[transform,border-color,box-shadow] duration-200 [@media(hover:hover)]:hover:-translate-y-0.5 [@media(hover:hover)]:hover:z-10 [@media(hover:hover)]:hover:shadow-md hover:border-slate-300 dark:hover:border-slate-700"
+          >
+            <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+              <span>Morts isolées / sur-extension</span>
+              <ShieldAlert className="w-4 h-4 text-rose-500" aria-hidden="true" />
+            </div>
+            <div className="mt-2 text-2xl font-bold font-mono tabular-nums text-slate-900 dark:text-white">
+              {Math.round(tendencies.enemyJungleDeathRate * 100)}%
+            </div>
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+              Moyenne de {tendencies.avgDeaths} morts par match
+            </p>
+          </motion.div>
+
+          <motion.div
+            variants={subCardItemVariants}
+            className="relative rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5 transition-[transform,border-color,box-shadow] duration-200 [@media(hover:hover)]:hover:-translate-y-0.5 [@media(hover:hover)]:hover:z-10 [@media(hover:hover)]:hover:shadow-md hover:border-slate-300 dark:hover:border-slate-700"
+          >
+            <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+              <span>Contrôle de vision</span>
+              <Eye className="w-4 h-4 text-emerald-500" aria-hidden="true" />
+            </div>
+            <div className="mt-2 text-2xl font-bold font-mono tabular-nums text-slate-900 dark:text-white">
+              {tendencies.avgVisionPerMin} <span className="text-sm font-normal text-slate-400">/ min</span>
+            </div>
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+              {Math.round(tendencies.preObjectiveDeathRate * 100)}% de morts avant objectif
+            </p>
+          </motion.div>
+        </motion.div>
+      </motion.section>
+      )}
+
+      {/* Profil de Performance 5 Axes (style Mobalytics) & Synergie Coéquipiers / Duos Famille */}
+      {(sectionMode === 'progression' || sectionMode === 'all') && mobalyticsProfile && (
+        <motion.section variants={dashboardSectionVariants}>
+          <PerformanceRadarAndDuoPanel
+            performanceProfile={mobalyticsProfile}
+            frequentTeammates={frequentTeammates}
+            challenges={challenges}
+            champions={champions}
+            onSyncExtended={onDeepSync}
+          />
+        </motion.section>
+      )}
+
+      {/* Programme d'Entraînement Actif & Score de Forme (Connecté à Post-Game & Coach Live) */}
+      {(sectionMode === 'essential' || sectionMode === 'all') && trainingReport.goals.length > 0 && (
+        <motion.section
+          variants={dashboardSectionVariants}
+          className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-6 space-y-5"
         >
-          <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
-            <span>Rythme de farming moyen</span>
-            <Crosshair className="w-4 h-4 text-sky-500" aria-hidden="true" />
-          </div>
-          <div className="mt-2 text-2xl font-bold font-mono tabular-nums text-slate-900 dark:text-white">
-            {tendencies.avgCsPerMin} <span className="text-sm font-normal text-slate-400">CS/min</span>
-          </div>
-          <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-            Cible recommandée : 7.0+ CS/min
-          </p>
-        </motion.div>
+          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+            <div className="space-y-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-base font-semibold text-slate-900 dark:text-white flex items-center gap-2">
+                  <Target className="w-4 h-4 text-amber-500 shrink-0" aria-hidden="true" />
+                  <span>Programme d’Entraînement Actif · Score de Forme</span>
+                </h2>
+                <SectionInfoTooltip
+                  title="Programme d’Entraînement & Score de Forme"
+                  description="Transforme automatiquement vos faiblesses récentes en 3 défis mesurables adaptés à votre rôle principal, vérifiés sur vos 5 dernières parties."
+                  usageTip="Cliquez sur une pastille de match (V/×) pour ouvrir la partie correspondante en Analyse Post-Game. Ces objectifs sont aussi rappelés dans le Coach Temps Réel."
+                />
+              </div>
+              <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                {trainingReport.formSummary} (Rôle calibré :{' '}
+                <span className="font-semibold text-slate-700 dark:text-slate-200">
+                  {trainingReport.dominantRole}
+                </span>
+                )
+              </p>
+            </div>
 
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.2, delay: 0.08, ease: [0.16, 1, 0.3, 1] }}
-          className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5 transition-transform duration-200 hover:-translate-y-0.5 hover:border-slate-300 dark:hover:border-slate-700"
+            <div className="flex flex-wrap items-center gap-3 shrink-0">
+              <div className="flex items-center gap-3 px-3.5 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C]">
+                <div>
+                  <div className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                    Forme actuelle
+                  </div>
+                  <div
+                    className={`text-xs font-semibold ${
+                      trainingReport.formScore >= 72
+                        ? 'text-emerald-600 dark:text-emerald-400'
+                        : trainingReport.formScore >= 50
+                          ? 'text-amber-600 dark:text-amber-400'
+                          : 'text-rose-600 dark:text-rose-400'
+                    }`}
+                  >
+                    {trainingReport.formTier}
+                  </div>
+                </div>
+                <div className="text-xl font-bold font-mono tabular-nums text-slate-900 dark:text-white">
+                  {trainingReport.formScore}
+                  <span className="text-xs font-normal text-slate-400">/100</span>
+                </div>
+              </div>
+
+              {onChangeTrainingIntensity && (
+                <div
+                  className="flex items-center gap-0.5 p-0.5 rounded-lg bg-slate-100 dark:bg-[#0B0E14] border border-slate-200 dark:border-slate-800"
+                  role="group"
+                  aria-label="Niveau d'exigence de l'entraînement"
+                >
+                  {(
+                    [
+                      { id: 'standard', label: 'Standard' },
+                      { id: 'strict', label: 'Exigeant' },
+                    ] as Array<{ id: TrainingIntensity; label: string }>
+                  ).map((mode) => (
+                    <button
+                      key={mode.id}
+                      type="button"
+                      onClick={() => onChangeTrainingIntensity(mode.id)}
+                      className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors whitespace-nowrap ${
+                        trainingIntensity === mode.id
+                          ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-sm'
+                          : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                      }`}
+                    >
+                      {mode.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <motion.div
+            variants={subCardGridVariants}
+            className="grid grid-cols-1 lg:grid-cols-3 gap-4 pt-0.5"
+          >
+            {trainingReport.goals.map((goal) => {
+              const pct =
+                goal.totalCount > 0 ? Math.round((goal.passedCount / goal.totalCount) * 100) : 0;
+              return (
+                <motion.div
+                  key={goal.id}
+                  variants={subCardItemVariants}
+                  className="relative rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] p-4 flex flex-col justify-between gap-3 transition-[transform,border-color,box-shadow] duration-200 [@media(hover:hover)]:hover:-translate-y-0.5 [@media(hover:hover)]:hover:z-10 [@media(hover:hover)]:hover:shadow-md hover:border-slate-300 dark:hover:border-slate-700"
+                >
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-2 text-[11px]">
+                      <span className="font-semibold text-amber-600 dark:text-amber-400">
+                        {goal.category}
+                      </span>
+                      <span className="font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                        {goal.passedCount}/{goal.totalCount} validées
+                      </span>
+                    </div>
+
+                    <div className="text-xs font-bold text-slate-900 dark:text-white leading-snug">
+                      {goal.title}
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono tabular-nums text-slate-600 dark:text-slate-300">
+                      <span>{goal.targetLabel}</span>
+                      <span className="text-slate-500 dark:text-slate-400">
+                        {goal.currentAvgLabel}
+                      </span>
+                    </div>
+
+                    <div className="h-1.5 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-[width] duration-300 ${
+                          pct >= 60
+                            ? 'bg-emerald-500'
+                            : pct >= 40
+                              ? 'bg-amber-500'
+                              : 'bg-rose-500'
+                        }`}
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="pt-2 border-t border-slate-200/70 dark:border-slate-800 flex items-center justify-between gap-2">
+                    <span className="text-[10px] text-slate-500 dark:text-slate-400">
+                      5 derniers matchs :
+                    </span>
+                    <div className="flex items-center gap-1.5">
+                      {goal.checks.map((chk) => {
+                        const targetMatch = matches.find((m) => m.matchId === chk.matchId);
+                        const chkChampDisplay = formatChampionDisplayName(champions, chk.championName);
+                        return (
+                          <button
+                            key={chk.matchId}
+                            type="button"
+                            onClick={() => targetMatch && onSelectMatchForReview(targetMatch)}
+                            title={`${chkChampDisplay} (${chk.win ? 'V' : 'D'}) : ${chk.measuredLabel} — Cliquer pour inspecter`}
+                            className={`w-6 h-6 rounded-md text-[10px] font-mono font-bold flex items-center justify-center border transition-colors ${
+                              chk.passed
+                                ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/25'
+                                : 'border-rose-500/40 bg-rose-500/15 text-rose-600 dark:text-rose-400 hover:bg-rose-500/25'
+                            }`}
+                          >
+                            {chk.passed ? '✓' : '×'}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </motion.div>
+              );
+            })}
+          </motion.div>
+        </motion.section>
+      )}
+
+      {/* ADN Gameplay & Champions recommandés pour vous */}
+      {(sectionMode === 'progression' || sectionMode === 'all') && championFit.recommendations.length > 0 && (
+        <motion.section
+          variants={dashboardSectionVariants}
+          className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-6 space-y-4"
         >
-          <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
-            <span>Morts isolées / sur-extension</span>
-            <ShieldAlert className="w-4 h-4 text-rose-500" aria-hidden="true" />
-          </div>
-          <div className="mt-2 text-2xl font-bold font-mono tabular-nums text-slate-900 dark:text-white">
-            {Math.round(tendencies.enemyJungleDeathRate * 100)}%
-          </div>
-          <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-            Moyenne de {tendencies.avgDeaths} morts par match
-          </p>
-        </motion.div>
-
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.2, delay: 0.12, ease: [0.16, 1, 0.3, 1] }}
-          className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5 transition-transform duration-200 hover:-translate-y-0.5 hover:border-slate-300 dark:hover:border-slate-700"
-        >
-          <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
-            <span>Contrôle de vision</span>
-            <Eye className="w-4 h-4 text-emerald-500" aria-hidden="true" />
-          </div>
-          <div className="mt-2 text-2xl font-bold font-mono tabular-nums text-slate-900 dark:text-white">
-            {tendencies.avgVisionPerMin} <span className="text-sm font-normal text-slate-400">/ min</span>
-          </div>
-          <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-            {Math.round(tendencies.preObjectiveDeathRate * 100)}% de morts avant objectif
-          </p>
-        </motion.div>
-      </section>
-
-      {/* ADN Gameplay & Champions recommandés pour vous (Section visible dès les 4 KPIs) */}
-      {championFit.recommendations.length > 0 && (
-        <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-6 space-y-4">
           <div className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-3">
             <div className="space-y-0.5">
               <h2 className="text-base font-semibold text-slate-900 dark:text-white flex flex-wrap items-center gap-x-2 gap-y-0.5">
@@ -624,6 +1130,11 @@ export function DashboardView({
                 <span className="text-sm font-semibold text-amber-600 dark:text-amber-400">
                   {championFit.dna.archetypeTitle}
                 </span>
+                <SectionInfoTooltip
+                  title="ADN Gameplay & Recommandations"
+                  description="Analyse votre style (jeu collectif, portée, dégâts préférés, rôle dominant) sur vos parties archivées pour suggérer 4 champions particulièrement adaptés à vos réflexes."
+                  usageTip="Filtrez par rôle ou activez « Nouveaux à découvrir » pour élargir votre champion pool."
+                />
               </h2>
               <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
                 {championFit.dna.archetypeSummary}{' '}
@@ -675,11 +1186,18 @@ export function DashboardView({
             </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
+          <motion.div
+            key={`${recRoleFilter}-${includePlayedInRecs}`}
+            variants={subCardGridVariants}
+            initial="hidden"
+            animate="show"
+            className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 pt-1"
+          >
             {championFit.recommendations.map((rec) => (
-              <div
+              <motion.div
                 key={rec.champion.id}
-                className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] p-3.5 flex flex-col justify-between gap-2.5"
+                variants={subCardItemVariants}
+                className="relative rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] p-3.5 flex flex-col justify-between gap-2.5 transition-[transform,border-color,box-shadow] duration-200 [@media(hover:hover)]:hover:-translate-y-0.5 [@media(hover:hover)]:hover:z-10 [@media(hover:hover)]:hover:shadow-md hover:border-slate-300 dark:hover:border-slate-700"
               >
                 <div className="space-y-2">
                   <div className="flex items-center justify-between gap-2">
@@ -729,39 +1247,56 @@ export function DashboardView({
                     <ArrowRight className="w-3 h-3" aria-hidden="true" />
                   </button>
                 </div>
-              </div>
+              </motion.div>
             ))}
-          </div>
-        </section>
+          </motion.div>
+        </motion.section>
       )}
 
       {/* Visualisation Recharts : Champions les plus joués (Winrate & KDA) */}
-      <TopChampionsChart
-        championStats={tendencies.championStats}
-        matches={matches}
-        getChampIcon={getChampIcon}
-        onSelectChampion={(championName) => onNavigateToBuilds(championName)}
-      />
+      {(sectionMode === 'progression' || sectionMode === 'all') && (
+        <>
+          <motion.div variants={dashboardSectionVariants}>
+            <TopChampionsChart
+              championStats={tendencies.championStats}
+              matches={matches}
+              champions={champions}
+              getChampIcon={getChampIcon}
+              onSelectChampion={(championName) => onNavigateToBuilds(championName)}
+            />
+          </motion.div>
 
-      {/* Analyse de synergie : Champions les plus joués vs Meilleurs duos alliés */}
-      <DuoSynergyAnalysis
-        matches={matches}
-        championStats={tendencies.championStats}
-        champions={champions}
-        getChampIcon={getChampIcon}
-        onSelectDuoForBuild={(championName, duoChampionName) =>
-          onNavigateToBuilds(championName, duoChampionName)
-        }
-      />
+          {/* Analyse de synergie : Champions les plus joués vs Meilleurs duos alliés */}
+          <motion.div variants={dashboardSectionVariants}>
+            <DuoSynergyAnalysis
+              matches={matches}
+              championStats={tendencies.championStats}
+              champions={champions}
+              getChampIcon={getChampIcon}
+              onSelectDuoForBuild={(championName, duoChampionName) =>
+                onNavigateToBuilds(championName, duoChampionName)
+              }
+            />
+          </motion.div>
+        </>
+      )}
 
       {/* Coaching Proactif Carrière (Ensemble des parties analysées) */}
-      {(tendencies.proactiveAlerts?.length || tendencies.championStats?.length || tendencies.trend) && (
-        <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-6 space-y-5">
+      {(sectionMode === 'progression' || sectionMode === 'all') && (tendencies.proactiveAlerts?.length || tendencies.championStats?.length || tendencies.trend) && (
+        <motion.section
+          variants={dashboardSectionVariants}
+          className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-6 space-y-5"
+        >
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
             <div>
-              <h2 className="text-base font-semibold text-slate-900 dark:text-white flex items-center gap-2">
-                <Sparkles className="w-4 h-4 text-amber-500" aria-hidden="true" />
-                Coaching Proactif Carrière ({tendencies.gamesAnalyzed} parties cumulées)
+              <h2 className="text-base font-semibold text-slate-900 dark:text-white flex flex-wrap items-center gap-2">
+                <Sparkles className="w-4 h-4 text-amber-500 shrink-0" aria-hidden="true" />
+                <span>Coaching Proactif Carrière ({tendencies.gamesAnalyzed} parties cumulées)</span>
+                <SectionInfoTooltip
+                  title="Coaching Proactif Carrière"
+                  description="Compare vos parties récentes aux plus anciennes et génère des alertes concrètes sur vos tendances (morts, vision, farming) ainsi qu’un résumé de votre pool actif."
+                  usageTip="Utilisez les boutons « Optimiser » sur les alertes prioritaires pour ajuster votre build."
+                />
               </h2>
               <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
                 Analyse transversale de toutes vos parties archivées : chaque nouvelle partie affine automatiquement ces conseils et vos builds.
@@ -844,14 +1379,18 @@ export function DashboardView({
 
           {/* Alertes Proactives */}
           {tendencies.proactiveAlerts && tendencies.proactiveAlerts.length > 0 && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <motion.div
+              variants={subCardGridVariants}
+              className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1"
+            >
               {tendencies.proactiveAlerts.map((alert) => {
                 const isHigh = alert.priority === 'Haute';
                 const isPositive = alert.priority === 'Positif';
                 return (
-                  <div
+                  <motion.div
                     key={alert.id}
-                    className={`rounded-xl border p-4 space-y-2 ${
+                    variants={subCardItemVariants}
+                    className={`relative rounded-xl border p-4 space-y-2 transition-[border-color,box-shadow] duration-200 [@media(hover:hover)]:hover:shadow-sm ${
                       isHigh
                         ? 'border-rose-500/30 bg-rose-500/5'
                         : isPositive
@@ -874,7 +1413,7 @@ export function DashboardView({
                         <span>{alert.title}</span>
                       </div>
                       <span
-                        className={`text-[10px] font-semibold uppercase tracking-wide shrink-0 ${
+                        className={`text-[11px] font-semibold shrink-0 ${
                           isHigh
                             ? 'text-rose-600 dark:text-rose-400'
                             : isPositive
@@ -899,14 +1438,14 @@ export function DashboardView({
                           className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold rounded-lg bg-amber-600 dark:bg-amber-500 text-white dark:text-slate-950 hover:bg-amber-500 shrink-0 whitespace-nowrap"
                         >
                           <Swords className="w-3 h-3" aria-hidden="true" />
-                          Optimiser {alert.championTarget}
+                          Optimiser {formatChampionDisplayName(champions, alert.championTarget)}
                         </button>
                       )}
                     </div>
-                  </div>
+                  </motion.div>
                 );
               })}
-            </div>
+            </motion.div>
           )}
 
           {/* Maîtrise par Champion */}
@@ -915,61 +1454,77 @@ export function DashboardView({
               <div className="text-xs font-semibold text-slate-700 dark:text-slate-300">
                 Performance cumulée par champion (Pool récent)
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-                {tendencies.championStats.slice(0, 4).map((cs) => (
-                  <div
-                    key={cs.championName}
-                    className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] p-3 flex items-center justify-between gap-3"
-                  >
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <SafeGameIcon
-                        src={getChampIcon(cs.championName)}
-                        alt={cs.championName}
-                        fallbackLabel={cs.championName}
-                        sizeClass="w-9 h-9"
-                      />
-                      <div className="min-w-0">
-                        <div className="text-xs font-semibold text-slate-900 dark:text-white truncate">
-                          {cs.championName}
-                        </div>
-                        <div className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
-                          {cs.games}p ·{' '}
-                          <span
-                            className={
-                              cs.winRate >= 50
-                                ? 'text-emerald-600 dark:text-emerald-400 font-semibold'
-                                : 'text-rose-600 dark:text-rose-400 font-semibold'
-                            }
-                          >
-                            {cs.winRate}% WR
-                          </span>{' '}
-                          · {cs.kdaRatio} KDA
+              <motion.div
+                variants={subCardGridVariants}
+                className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 pt-1"
+              >
+                {tendencies.championStats.slice(0, 4).map((cs) => {
+                  const csDisp = resolveChampionDisplay(champions, cs.championName);
+                  return (
+                    <motion.div
+                      key={cs.championName}
+                      variants={subCardItemVariants}
+                      className="relative rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] p-3 flex items-center justify-between gap-3 transition-[transform,border-color,box-shadow] duration-200 [@media(hover:hover)]:hover:-translate-y-0.5 [@media(hover:hover)]:hover:z-10 [@media(hover:hover)]:hover:shadow-md hover:border-slate-300 dark:hover:border-slate-700"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <SafeGameIcon
+                          src={csDisp.imageUrl}
+                          alt={csDisp.displayName}
+                          fallbackLabel={csDisp.displayName}
+                          sizeClass="w-9 h-9"
+                        />
+                        <div className="min-w-0">
+                          <div className="text-xs font-semibold text-slate-900 dark:text-white truncate">
+                            {csDisp.displayName}
+                          </div>
+                          <div className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                            {cs.games}p ·{' '}
+                            <span
+                              className={
+                                cs.winRate >= 50
+                                  ? 'text-emerald-600 dark:text-emerald-400 font-semibold'
+                                  : 'text-rose-600 dark:text-rose-400 font-semibold'
+                              }
+                            >
+                              {cs.winRate}% WR
+                            </span>{' '}
+                            · {cs.kdaRatio} KDA
+                          </div>
                         </div>
                       </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => onNavigateToBuilds(cs.championName)}
-                      title={`Préparer un build pour ${cs.championName}`}
-                      className="px-2 py-1 text-[11px] font-medium rounded-lg border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-800 shrink-0"
-                    >
-                      Build
-                    </button>
-                  </div>
-                ))}
-              </div>
+                      <button
+                        type="button"
+                        onClick={() => onNavigateToBuilds(cs.championName)}
+                        title={`Préparer un build pour ${csDisp.displayName}`}
+                        className="px-2 py-1 text-[11px] font-medium rounded-lg border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-800 shrink-0"
+                      >
+                        Build
+                      </button>
+                    </motion.div>
+                  );
+                })}
+              </motion.div>
             </div>
           )}
-        </section>
+        </motion.section>
       )}
 
       {/* Synthèse Globale IA (Analyse long terme sur l'ensemble des matchs stockés localement) */}
-      <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-6 space-y-5">
+      {(sectionMode === 'progression' || sectionMode === 'all') && (
+      <motion.section
+        variants={dashboardSectionVariants}
+        className="rounded-2xl apple-surface p-6 space-y-5"
+      >
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
           <div className="space-y-1">
-            <h2 className="text-base font-semibold text-slate-900 dark:text-white flex items-center gap-2">
+            <h2 className="text-base font-semibold text-slate-900 dark:text-white flex flex-wrap items-center gap-2">
               <BrainCircuit className="w-4 h-4 text-amber-500 shrink-0" aria-hidden="true" />
               <span>Synthèse Globale IA — Tendances &amp; Positionnement</span>
+              <SectionInfoTooltip
+                title="Synthèse Globale IA"
+                description="Croise toutes vos parties archivées (zones de mort sur la carte, écarts à 15 min, pool de champions) pour générer un diagnostic IA long terme et un plan d’action sur 3 matchs."
+                usageTip="Actualisez cette analyse après une nouvelle session de 5 à 10 parties."
+              />
             </h2>
             <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
               Agrège vos{' '}
@@ -1117,7 +1672,7 @@ export function DashboardView({
                 onClick={onNavigateToSettings}
                 className="text-xs font-semibold text-amber-600 dark:text-amber-400 hover:underline whitespace-nowrap"
               >
-                Ouvrir Paramètres
+                Ouvrir Compte &amp; Réglages
               </button>
             )}
           </div>
@@ -1274,21 +1829,44 @@ export function DashboardView({
             </span>
           </div>
         )}
-      </section>
+      </motion.section>
+      )}
 
-      {/* Historique des parties synchronisées */}
-      <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] overflow-hidden">
-        <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
-          <div>
-            <h2 className="text-base font-semibold text-slate-900 dark:text-white">
-              Historique de jeu &amp; détection d’erreurs ({matches.length} parties archivées)
-            </h2>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              Riot Match-V5 synchronise vos parties en matchmaking (Classée, Partie Accélérée, Draft, ARAM). Les parties « Personnalisée » restent locales sur votre PC.
-            </p>
+      {/* Aperçu des 6 dernières parties & Export hors-ligne (l'historique complet et la carte sont dans Analyse Post-Game) */}
+      {(sectionMode === 'history' || sectionMode === 'all') && (
+      <motion.section
+        variants={dashboardSectionVariants}
+        className="rounded-2xl apple-surface overflow-hidden"
+      >
+        <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div className="min-w-0">
+              <h2 className="text-base font-semibold text-slate-900 dark:text-white flex flex-wrap items-center gap-2">
+                <span>Dernières parties &amp; export rapide ({matches.length} archivées)</span>
+                <SectionInfoTooltip
+                  title="Aperçu des dernières parties & Export"
+                  description="Affiche vos 6 matchs les plus récents pour un accès immédiat, ainsi que l’export CSV/JSON de vos 10 dernières parties. L’historique complet filtrable et la carte tactique sont dans Analyse Post-Game."
+                  usageTip="Cliquez sur « Analyser » à droite d’un match ou ouvrez Analyse Post-Game pour voir toutes vos parties."
+                />
+              </h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                Aperçu des 6 derniers matchs synchronisés · Retrouvez la liste complète, les filtres et les courbes dans Analyse Post-Game.
+              </p>
+            </div>
+
+            {onNavigateToPostGame && matches.length > 0 && (
+              <button
+                type="button"
+                onClick={onNavigateToPostGame}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg bg-amber-600 dark:bg-amber-500 text-white dark:text-slate-950 hover:bg-amber-500 transition-colors whitespace-nowrap shrink-0 self-start sm:self-center"
+              >
+                <span>Historique complet ({matches.length})</span>
+                <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
+              </button>
+            )}
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
               onClick={onToggleAutoSync}
@@ -1322,6 +1900,55 @@ export function DashboardView({
               <FolderSync className={`w-3.5 h-3.5 text-sky-500 ${localImporting ? 'animate-spin' : ''}`} aria-hidden="true" />
               {localImporting ? 'Lecture client...' : 'Importer parties locales (Personnalisées)'}
             </button>
+
+            {matches.length > 0 && (
+              <div
+                role="group"
+                aria-label="Exporter les 10 dernières parties"
+                className="inline-flex items-center rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-[#0B0E14] overflow-hidden shrink-0"
+              >
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-600 dark:text-slate-300 border-r border-slate-200 dark:border-slate-700 whitespace-nowrap">
+                  <Download className="w-3.5 h-3.5 text-amber-500 shrink-0" aria-hidden="true" />
+                  Exporter ({Math.min(10, matches.length)})
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const { count, filename } = downloadRecentMatchesExport('csv', matches, {
+                      riotId: profile.riotId,
+                      limit: 10,
+                    });
+                    onNotify?.({
+                      variant: 'info',
+                      title: `Export CSV généré (${count} ${count > 1 ? 'parties' : 'partie'})`,
+                      description: `Fichier prêt pour Excel / analyse hors-ligne : ${filename}`,
+                    });
+                  }}
+                  title="Exporter les statistiques des 10 dernières parties en CSV (Excel)"
+                  className="px-2.5 py-1.5 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-amber-500/15 hover:text-amber-600 dark:hover:text-amber-400 border-r border-slate-200 dark:border-slate-700 transition-colors whitespace-nowrap"
+                >
+                  CSV
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const { count, filename } = downloadRecentMatchesExport('json', matches, {
+                      riotId: profile.riotId,
+                      limit: 10,
+                    });
+                    onNotify?.({
+                      variant: 'info',
+                      title: `Export JSON généré (${count} ${count > 1 ? 'parties' : 'partie'})`,
+                      description: `Fichier prêt pour analyse hors-ligne : ${filename}`,
+                    });
+                  }}
+                  title="Exporter les statistiques des 10 dernières parties en JSON"
+                  className="px-2.5 py-1.5 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-amber-500/15 hover:text-amber-600 dark:hover:text-amber-400 transition-colors whitespace-nowrap"
+                >
+                  JSON
+                </button>
+              </div>
+            )}
           </div>
         </div>
 
@@ -1337,7 +1964,7 @@ export function DashboardView({
               <div className="space-y-2">
                 <div className="flex flex-wrap items-center justify-between gap-2 text-slate-600 dark:text-slate-300">
                   <span>
-                    Lancez <code className="px-1 py-0.5 rounded bg-slate-200 dark:bg-slate-800">lol-coach-bridge.bat</code> (v3.1), puis copiez l’historique local et collez avec <strong>Ctrl+V</strong> :
+                    Lancez <code className="px-1 py-0.5 rounded bg-slate-200 dark:bg-slate-800">lol-coach-bridge.bat</code> (v3.4), puis copiez l’historique local et collez avec <strong>Ctrl+V</strong> :
                   </span>
                   <button
                     type="button"
@@ -1345,7 +1972,7 @@ export function DashboardView({
                     className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-600 dark:text-amber-400 hover:underline"
                   >
                     <Download className="w-3.5 h-3.5" aria-hidden="true" />
-                    Télécharger pont v3.1
+                    Télécharger pont v3.4
                   </button>
                 </div>
                 <div className="relative">
@@ -1398,9 +2025,13 @@ export function DashboardView({
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-              {matches.map((m) => {
+              {matches.slice(0, 6).map((m) => {
                 const durMin = Math.round(m.gameDurationSec / 60);
                 const p = m.player;
+                const pDisp = resolveChampionDisplay(champions, p.championName);
+                const oppName = m.laneOpponent
+                  ? formatChampionDisplayName(champions, m.laneOpponent.championName)
+                  : '';
                 const queueLabel = formatMatchQueueLabel(
                   m.queueId,
                   m.gameMode,
@@ -1421,21 +2052,21 @@ export function DashboardView({
                     <td className="py-3.5 px-6">
                       <div className="flex items-center gap-3">
                         <SafeGameIcon
-                          src={getChampIcon(p.championName)}
-                          alt={p.championName}
-                          fallbackLabel={p.championName}
+                          src={pDisp.imageUrl}
+                          alt={pDisp.displayName}
+                          fallbackLabel={pDisp.displayName}
                           sizeClass="w-9 h-9"
                         />
                         <div>
                           <div className="font-semibold text-slate-900 dark:text-slate-100 flex items-center gap-2">
-                            <span>{p.championName}</span>
+                            <span>{pDisp.displayName}</span>
                             <span className="text-[11px] font-medium text-amber-600 dark:text-amber-400">
                               {queueLabel}
                             </span>
                           </div>
                           <div className="text-xs text-slate-500 dark:text-slate-400">
                             {p.teamPosition !== 'UNKNOWN' ? p.teamPosition : 'Libre'}
-                            {m.laneOpponent ? ` vs ${m.laneOpponent.championName}` : ''}
+                            {oppName ? ` vs ${oppName}` : ''}
                             <span aria-hidden="true" className="mx-1.5">·</span>
                             Patch {m.gameVersion}
                           </div>
@@ -1489,7 +2120,23 @@ export function DashboardView({
             </tbody>
           </table>
         </div>
-      </section>
-    </div>
+        {matches.length > 6 && onNavigateToPostGame && (
+          <div className="px-6 py-3 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3 text-xs bg-slate-50/70 dark:bg-[#0D121C]">
+            <span className="text-slate-500 dark:text-slate-400">
+              Affichage des 6 dernières parties sur {matches.length} archivées.
+            </span>
+            <button
+              type="button"
+              onClick={onNavigateToPostGame}
+              className="inline-flex items-center gap-1.5 font-semibold text-amber-600 dark:text-amber-400 hover:underline whitespace-nowrap"
+            >
+              <span>Voir les {matches.length} parties dans Analyse Post-Game</span>
+              <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
+            </button>
+          </div>
+        )}
+      </motion.section>
+      )}
+    </motion.div>
   );
 }

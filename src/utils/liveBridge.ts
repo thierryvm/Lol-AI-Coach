@@ -1,7 +1,9 @@
+import type { RunePageSelection } from '../engines/runeEngine.ts';
 import type {
   ChampionSummary,
   DetectedRunePage,
   GameModeContext,
+  LcuRunePageRaw,
   LiveClientAllGameData,
   LocalBridgeStatePayload,
   MatchParticipantSummary,
@@ -13,15 +15,15 @@ import type {
 // Commande universelle compatible PowerShell 7 (pwsh) ET PowerShell 5.1 (Windows 10/11)
 // Utilise curl.exe natif Windows (-sk = silencieux + ignore certificat auto-signé local 127.0.0.1:2999)
 export const UNIVERSAL_LIVE_CLIPBOARD_CMD =
-  'curl.exe -sk https://127.0.0.1:2999/liveclientdata/allgamedata | Set-Clipboard';
+  'curl.exe -sk --noproxy "*" https://127.0.0.1:2999/liveclientdata/allgamedata | Set-Clipboard';
 
 // Commande universelle pour copier l'état complet (Sélection des champions + Bans + Partie en cours) depuis le pont local
 export const UNIVERSAL_STATE_CLIPBOARD_CMD =
-  'curl.exe -s http://127.0.0.1:38421/state | Set-Clipboard';
+  'curl.exe -s --noproxy "*" http://127.0.0.1:38421/state | Set-Clipboard';
 
 // Commande universelle pour copier l'historique local du client LoL (inclut les parties Personnalisées)
 export const UNIVERSAL_HISTORY_CLIPBOARD_CMD =
-  'curl.exe -s http://127.0.0.1:38421/history | Set-Clipboard';
+  'curl.exe -s --noproxy "*" http://127.0.0.1:38421/history | Set-Clipboard';
 
 // Script PowerShell propre (UTF-16LE Base64) pour éviter tout crash d'échappement cmd.exe au lancement du .bat
 const PS_BRIDGE_SCRIPT = `
@@ -41,8 +43,14 @@ function Get-LcuCreds {
   } catch {}
 
   $drives = @('C:', 'D:', 'E:', 'F:')
+  $subPaths = @(
+    'Riot Games\\League of Legends\\lockfile',
+    'Games\\Riot Games\\League of Legends\\lockfile',
+    'Program Files\\Riot Games\\League of Legends\\lockfile',
+    'Program Files (x86)\\Riot Games\\League of Legends\\lockfile'
+  )
   foreach ($d in $drives) {
-    foreach ($sub in @('Riot Games\\League of Legends\\lockfile', 'Games\\Riot Games\\League of Legends\\lockfile')) {
+    foreach ($sub in $subPaths) {
       $lockPath = Join-Path $d $sub
       if (Test-Path $lockPath) {
         try {
@@ -62,6 +70,15 @@ function Get-LcuCreds {
   return $null
 }
 
+function Test-ValidLiveJson([string]$raw) {
+  if (-not $raw) { return $false }
+  $trimmed = $raw.Trim()
+  if (-not $trimmed.StartsWith('{')) { return $false }
+  if ($trimmed -match '"errorCode"') { return $false }
+  if ($trimmed -notmatch '"allPlayers"') { return $false }
+  return $true
+}
+
 function Write-JsonResponse($res, [int]$statusCode, [string]$jsonText) {
   try {
     $bytes = [System.Text.Encoding]::UTF8.GetBytes($jsonText)
@@ -71,6 +88,91 @@ function Write-JsonResponse($res, [int]$statusCode, [string]$jsonText) {
     $res.OutputStream.Write($bytes, 0, $bytes.Length)
     $res.OutputStream.Close()
   } catch {}
+}
+
+$script:cachedLive = $null
+$script:cachedState = '{"phase":"None","gameflow":null,"champSelect":null,"currentRunePage":null,"runePages":[],"liveGame":null}'
+$script:lastStatusLine = ''
+$script:lastLocalPushAt = [DateTime]::MinValue
+
+function Refresh-LoLState([bool]$pushLocalServer = $true) {
+  $liveRaw = (& curl.exe -sk --noproxy "*" --max-time 1 https://127.0.0.1:2999/liveclientdata/allgamedata) -join ' '
+  $hasLive = Test-ValidLiveJson $liveRaw
+  $liveJson = if ($hasLive) { $liveRaw } else { 'null' }
+  $script:cachedLive = if ($hasLive) { $liveRaw } else { $null }
+
+  $gfJson = 'null'
+  $csJson = 'null'
+  $rpJson = 'null'
+  $allRpJson = '[]'
+  $phase = if ($hasLive) { 'InProgress' } else { 'None' }
+
+  $creds = Get-LcuCreds
+  if ($creds) {
+    $gfRaw = (& curl.exe -sk --noproxy "*" --max-time 1 -u "riot:$($creds.token)" "https://127.0.0.1:$($creds.port)/lol-gameflow/v1/session") -join ' '
+    if ($gfRaw -and $gfRaw.Trim().StartsWith('{') -and $gfRaw -notmatch '"errorCode"') {
+      $gfJson = $gfRaw
+      try {
+        $gfObj = $gfRaw | ConvertFrom-Json
+        if ($gfObj.phase) { $phase = $gfObj.phase }
+      } catch {}
+    }
+
+    $csRaw = (& curl.exe -sk --noproxy "*" --max-time 1 -u "riot:$($creds.token)" "https://127.0.0.1:$($creds.port)/lol-champ-select/v1/session") -join ' '
+    if ($csRaw -and $csRaw.Trim().StartsWith('{') -and $csRaw -notmatch '"errorCode"') {
+      $csJson = $csRaw
+      if ($phase -eq 'None') { $phase = 'ChampSelect' }
+    }
+
+    $rpRaw = (& curl.exe -sk --noproxy "*" --max-time 1 -u "riot:$($creds.token)" "https://127.0.0.1:$($creds.port)/lol-perks/v1/currentpage") -join ' '
+    if ($rpRaw -and $rpRaw.Trim().StartsWith('{') -and $rpRaw -notmatch '"errorCode"') {
+      $rpJson = $rpRaw
+    }
+
+    $allRpRaw = (& curl.exe -sk --noproxy "*" --max-time 2 -u "riot:$($creds.token)" "https://127.0.0.1:$($creds.port)/lol-perks/v1/pages") -join ' '
+    if ($allRpRaw -and $allRpRaw.Trim().StartsWith('[') -and $allRpRaw -notmatch '"errorCode"') {
+      $allRpJson = $allRpRaw
+    }
+  }
+
+  $script:cachedState = '{"phase":"' + $phase + '","gameflow":' + $gfJson + ',"champSelect":' + $csJson + ',"currentRunePage":' + $rpJson + ',"runePages":' + $allRpJson + ',"liveGame":' + $liveJson + '}'
+
+  $statusLine = ''
+  if ($hasLive) {
+    $modeTxt = 'LIVE'
+    $champTxt = 'Champion'
+    $playersCount = 0
+    try {
+      $liveObj = $liveRaw | ConvertFrom-Json
+      if ($liveObj.gameData.gameMode) { $modeTxt = $liveObj.gameData.gameMode }
+      if ($liveObj.allPlayers) { $playersCount = $liveObj.allPlayers.Count }
+      if ($liveObj.activePlayer.championName) { $champTxt = $liveObj.activePlayer.championName }
+      elseif ($playersCount -gt 0 -and $liveObj.allPlayers[0].championName) { $champTxt = $liveObj.allPlayers[0].championName }
+    } catch {}
+    $statusLine = "[OK] Partie detectee sur 127.0.0.1:2999 -> $champTxt | Mode: $modeTxt | Joueurs: $playersCount"
+
+    if ($pushLocalServer -and (((Get-Date) - $script:lastLocalPushAt).TotalSeconds -ge 1.5)) {
+      $script:lastLocalPushAt = Get-Date
+      try {
+        $payloadBytes = [System.Text.Encoding]::UTF8.GetBytes(('{"allgamedata":' + $liveRaw + '}'))
+        $null = Invoke-RestMethod -Uri 'http://127.0.0.1:3000/api/live/ingest' -Method Post -ContentType 'application/json; charset=utf-8' -Body $payloadBytes -TimeoutSec 1
+      } catch {}
+    }
+  } elseif ($creds) {
+    $statusLine = "[INFO] Client LoL detecte (phase: $phase) | En attente qu'une partie soit chargee sur la carte (port 2999)"
+  } else {
+    $statusLine = "[ATTENTE] Client LoL et partie (port 2999) non detectes pour le moment"
+  }
+
+  if ($statusLine -ne $script:lastStatusLine) {
+    $script:lastStatusLine = $statusLine
+    $ts = (Get-Date).ToString('HH:mm:ss')
+    if ($hasLive) {
+      Write-Host "[$ts] $statusLine" -ForegroundColor Green
+    } else {
+      Write-Host "[$ts] $statusLine" -ForegroundColor DarkGray
+    }
+  }
 }
 
 $listener = New-Object System.Net.HttpListener
@@ -83,18 +185,51 @@ try {
   exit 1
 }
 
-Write-Host "Pont actif sur http://127.0.0.1:38421 (/health, /live, /state)" -ForegroundColor Green
-Write-Host "Compatible : Champ Select, ARAM, Classee, Normale, Partie acceleree et Outil d'entrainement." -ForegroundColor Cyan
+Write-Host "Pont LoL AI Coach v3.4 actif sur http://127.0.0.1:38421 (/health, /live, /state, /perks/*, /history)" -ForegroundColor Green
+Write-Host "Compatible : Champ Select, Runes Bidirectionnelles (Lecture/Ecriture), ARAM, Classee, Entrainement." -ForegroundColor Cyan
+Write-Host "Important : Si vous utilisez l'apercu integre AI Studio, cliquez sur 'Ouvrir dans un onglet dedie' dans l'app." -ForegroundColor Yellow
 Write-Host "Laissez cette fenetre ouverte (Ctrl+C pour quitter)."
+Write-Host ""
+
+function Read-RequestBodyText($req) {
+  $sr = New-Object System.IO.StreamReader($req.InputStream, [System.Text.Encoding]::UTF8)
+  $txt = $sr.ReadToEnd()
+  $sr.Close()
+  return $txt
+}
+
+Refresh-LoLState $false
+$lastRefreshAt = Get-Date
+$ctxTask = $null
 
 while ($listener.IsListening) {
   try {
-    $ctx = $listener.GetContext()
+    if (-not $ctxTask) {
+      $ctxTask = $listener.GetContextAsync()
+    }
+    $completed = $false
+    try {
+      $completed = $ctxTask.Wait(300)
+    } catch {
+      $ctxTask = $null
+    }
+
+    if (((Get-Date) - $lastRefreshAt).TotalSeconds -ge 1.5) {
+      $lastRefreshAt = Get-Date
+      Refresh-LoLState $true
+    }
+
+    if (-not $completed -or -not $ctxTask) {
+      continue
+    }
+
+    $ctx = $ctxTask.Result
+    $ctxTask = $null
     $req = $ctx.Request
     $res = $ctx.Response
 
     $res.Headers.Add('Access-Control-Allow-Origin', '*')
-    $res.Headers.Add('Access-Control-Allow-Methods', 'GET, OPTIONS')
+    $res.Headers.Add('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
     $res.Headers.Add('Access-Control-Allow-Headers', '*')
     $res.Headers.Add('Access-Control-Allow-Private-Network', 'true')
 
@@ -107,7 +242,81 @@ while ($listener.IsListening) {
     $reqPath = $req.Url.AbsolutePath
 
     if ($reqPath -eq '/health') {
-      Write-JsonResponse $res 200 '{"ok":true,"port":38421,"bridge":"lol-ai-coach-v3.1"}'
+      Write-JsonResponse $res 200 '{"ok":true,"port":38421,"bridge":"lol-ai-coach-v3.4"}'
+      continue
+    }
+
+    if ($reqPath -eq '/perks/pages') {
+      $creds = Get-LcuCreds
+      if (-not $creds) {
+        Write-JsonResponse $res 503 '{"error":"Client League of Legends non detecte"}'
+        continue
+      }
+      $allRpRaw = (& curl.exe -sk --noproxy "*" --max-time 3 -u "riot:$($creds.token)" "https://127.0.0.1:$($creds.port)/lol-perks/v1/pages") -join ' '
+      if ($allRpRaw -and $allRpRaw.Trim().StartsWith('[') -and $allRpRaw -notmatch '"errorCode"') {
+        Write-JsonResponse $res 200 $allRpRaw
+      } else {
+        Write-JsonResponse $res 503 '{"error":"Pages de runes LCU indisponibles"}'
+      }
+      continue
+    }
+
+    if ($reqPath -eq '/perks/save') {
+      $creds = Get-LcuCreds
+      if (-not $creds) {
+        Write-JsonResponse $res 503 '{"error":"Client League of Legends non detecte"}'
+        continue
+      }
+      $bodyTxt = Read-RequestBodyText $req
+      $bodyObj = $bodyTxt | ConvertFrom-Json
+      $tmpFile = [System.IO.Path]::GetTempFileName()
+      try {
+        [System.IO.File]::WriteAllText($tmpFile, $bodyTxt, (New-Object System.Text.UTF8Encoding($false)))
+        $hasId = ($bodyObj.id -ne $null) -and ([int64]$bodyObj.id -gt 0)
+        if ($hasId) {
+          $outRaw = (& curl.exe -sk --noproxy "*" --max-time 3 -X PUT -H "Content-Type: application/json" --data-binary "@$tmpFile" -u "riot:$($creds.token)" "https://127.0.0.1:$($creds.port)/lol-perks/v1/pages/$($bodyObj.id)") -join ' '
+        } else {
+          $outRaw = (& curl.exe -sk --noproxy "*" --max-time 3 -X POST -H "Content-Type: application/json" --data-binary "@$tmpFile" -u "riot:$($creds.token)" "https://127.0.0.1:$($creds.port)/lol-perks/v1/pages") -join ' '
+        }
+        Refresh-LoLState $false
+        if ($outRaw -and $outRaw.Trim().StartsWith('{') -and $outRaw -notmatch '"errorCode"') {
+          Write-JsonResponse $res 200 $outRaw
+        } elseif (-not $outRaw) {
+          Write-JsonResponse $res 200 '{"ok":true}'
+        } else {
+          Write-JsonResponse $res 400 $outRaw
+        }
+      } finally {
+        Remove-Item -Path $tmpFile -ErrorAction SilentlyContinue
+      }
+      continue
+    }
+
+    if ($reqPath -eq '/perks/delete') {
+      $creds = Get-LcuCreds
+      if (-not $creds) {
+        Write-JsonResponse $res 503 '{"error":"Client League of Legends non detecte"}'
+        continue
+      }
+      $bodyTxt = Read-RequestBodyText $req
+      $bodyObj = $bodyTxt | ConvertFrom-Json
+      $null = (& curl.exe -sk --noproxy "*" --max-time 3 -X DELETE -u "riot:$($creds.token)" "https://127.0.0.1:$($creds.port)/lol-perks/v1/pages/$($bodyObj.id)") -join ' '
+      Refresh-LoLState $false
+      Write-JsonResponse $res 200 '{"ok":true}'
+      continue
+    }
+
+    if ($reqPath -eq '/perks/current') {
+      $creds = Get-LcuCreds
+      if (-not $creds) {
+        Write-JsonResponse $res 503 '{"error":"Client League of Legends non detecte"}'
+        continue
+      }
+      $bodyTxt = Read-RequestBodyText $req
+      $bodyObj = $bodyTxt | ConvertFrom-Json
+      $null = (& curl.exe -sk --noproxy "*" --max-time 3 -X PUT -H "Content-Type: application/json" -d "$($bodyObj.id)" -u "riot:$($creds.token)" "https://127.0.0.1:$($creds.port)/lol-perks/v1/currentpage") -join ' '
+      Refresh-LoLState $false
+      Write-JsonResponse $res 200 '{"ok":true}'
       continue
     }
 
@@ -117,7 +326,7 @@ while ($listener.IsListening) {
         Write-JsonResponse $res 503 '{"error":"Client League of Legends non detecte"}'
         continue
       }
-      $mhRaw = (& curl.exe -sk --max-time 3 -u "riot:$($creds.token)" "https://127.0.0.1:$($creds.port)/lol-match-history/v1/products/lol/current-summoner/matches?begIndex=0&endIndex=12") -join ' '
+      $mhRaw = (& curl.exe -sk --noproxy "*" --max-time 3 -u "riot:$($creds.token)" "https://127.0.0.1:$($creds.port)/lol-match-history/v1/products/lol/current-summoner/matches?begIndex=0&endIndex=12") -join ' '
       if ($mhRaw -and $mhRaw.Trim().StartsWith('{') -and $mhRaw -notmatch '"errorCode"') {
         Write-JsonResponse $res 200 $mhRaw
       } else {
@@ -127,47 +336,23 @@ while ($listener.IsListening) {
     }
 
     if ($reqPath -eq '/live') {
-      $raw = (& curl.exe -sk --max-time 2 https://127.0.0.1:2999/liveclientdata/allgamedata) -join ' '
-      if ($raw -and $raw.Trim().StartsWith('{')) {
-        Write-JsonResponse $res 200 $raw
+      if (-not $script:cachedLive -or (((Get-Date) - $lastRefreshAt).TotalSeconds -ge 1.5)) {
+        $lastRefreshAt = Get-Date
+        Refresh-LoLState $false
+      }
+      if ($script:cachedLive) {
+        Write-JsonResponse $res 200 $script:cachedLive
       } else {
-        Write-JsonResponse $res 503 '{"error":"Aucune partie ou Outil d''entrainement actif sur 127.0.0.1:2999"}'
+        Write-JsonResponse $res 503 '{"error":"Aucune partie ou Outil d''entrainement actif sur 127.0.0.1:2999 (entrez sur la carte apres ecran de chargement)"}'
       }
       continue
     }
 
-    $liveRaw = (& curl.exe -sk --max-time 1 https://127.0.0.1:2999/liveclientdata/allgamedata) -join ' '
-    $liveJson = if ($liveRaw -and $liveRaw.Trim().StartsWith('{')) { $liveRaw } else { 'null' }
-    $gfJson = 'null'
-    $csJson = 'null'
-    $rpJson = 'null'
-    $phase = if ($liveJson -ne 'null') { 'InProgress' } else { 'None' }
-
-    $creds = Get-LcuCreds
-    if ($creds) {
-      $gfRaw = (& curl.exe -sk --max-time 1 -u "riot:$($creds.token)" "https://127.0.0.1:$($creds.port)/lol-gameflow/v1/session") -join ' '
-      if ($gfRaw -and $gfRaw.Trim().StartsWith('{') -and $gfRaw -notmatch '"errorCode"') {
-        $gfJson = $gfRaw
-        try {
-          $gfObj = $gfRaw | ConvertFrom-Json
-          if ($gfObj.phase) { $phase = $gfObj.phase }
-        } catch {}
-      }
-
-      $csRaw = (& curl.exe -sk --max-time 1 -u "riot:$($creds.token)" "https://127.0.0.1:$($creds.port)/lol-champ-select/v1/session") -join ' '
-      if ($csRaw -and $csRaw.Trim().StartsWith('{') -and $csRaw -notmatch '"errorCode"') {
-        $csJson = $csRaw
-        if ($phase -eq 'None') { $phase = 'ChampSelect' }
-      }
-
-      $rpRaw = (& curl.exe -sk --max-time 1 -u "riot:$($creds.token)" "https://127.0.0.1:$($creds.port)/lol-perks/v1/currentpage") -join ' '
-      if ($rpRaw -and $rpRaw.Trim().StartsWith('{') -and $rpRaw -notmatch '"errorCode"') {
-        $rpJson = $rpRaw
-      }
+    if (((Get-Date) - $lastRefreshAt).TotalSeconds -ge 1.5) {
+      $lastRefreshAt = Get-Date
+      Refresh-LoLState $false
     }
-
-    $out = '{"phase":"' + $phase + '","gameflow":' + $gfJson + ',"champSelect":' + $csJson + ',"currentRunePage":' + $rpJson + ',"liveGame":' + $liveJson + '}'
-    Write-JsonResponse $res 200 $out
+    Write-JsonResponse $res 200 $script:cachedState
   } catch {
     try {
       Write-JsonResponse $ctx.Response 500 '{"error":"Erreur interne du pont local"}'
@@ -176,33 +361,30 @@ while ($listener.IsListening) {
 }
 `.trim();
 
-function encodePowerShellUtf16LeBase64(script: string): string {
-  const bytes = new Uint8Array(script.length * 2);
-  for (let i = 0; i < script.length; i++) {
-    const code = script.charCodeAt(i);
-    bytes[i * 2] = code & 0xff;
-    bytes[i * 2 + 1] = (code >> 8) & 0xff;
-  }
-  let binary = '';
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary);
-}
-
 export function buildWindowsBridgeBat(): string {
-  const encoded = encodePowerShellUtf16LeBase64(PS_BRIDGE_SCRIPT);
   return [
     '@echo off',
     'chcp 65001 >nul',
-    'title LoL AI Coach - Pont Temps Reel ^& Champ Select (Port 38421)',
-    "echo Demarrage du pont local LoL AI Coach (Champ Select + Partie + Outil d'entrainement)...",
+    'title LoL AI Coach v3.4 - Pont Temps Reel ^& Runes LCU (Port 38421)',
+    "echo Demarrage du pont local LoL AI Coach v3.4 (Champ Select + Runes + Partie + Outil d'entrainement)...",
     'echo Gardez cette fenetre ouverte pendant votre session de League of Legends.',
     'echo.',
-    `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encoded}`,
+    'set "BRIDGE_BAT=%~f0"',
+    'set "PS_EXE=powershell.exe"',
+    'where powershell.exe >nul 2>&1',
+    'if errorlevel 1 (',
+    '  if exist "%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" (',
+    '    set "PS_EXE=%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"',
+    '  )',
+    ')',
+    '"%PS_EXE%" -NoProfile -ExecutionPolicy Bypass -Command "$c=[System.IO.File]::ReadAllText($env:BRIDGE_BAT,[System.Text.Encoding]::UTF8);$m=\'#===\'+\'PS_START===\';$i=$c.LastIndexOf($m);if($i -lt 0){Write-Host \'Bloc PowerShell introuvable.\' -ForegroundColor Red;exit 1};$tmp=[System.IO.Path]::Combine([System.IO.Path]::GetTempPath(),\'lol-coach-bridge-v34.ps1\');[System.IO.File]::WriteAllText($tmp,$c.Substring($i+$m.Length),(New-Object System.Text.UTF8Encoding($true)));try{. $tmp}finally{Remove-Item -LiteralPath $tmp -ErrorAction SilentlyContinue}"',
     'echo.',
     "echo Le pont s'est arrete. Appuyez sur une touche pour fermer cette fenetre.",
     'pause',
+    'exit /b',
+    '',
+    '#===PS_START===',
+    PS_BRIDGE_SCRIPT,
   ].join('\r\n');
 }
 
@@ -684,4 +866,145 @@ export function normalizeLcuHistoryToMatches(
     };
   });
 }
+
+const SHARD_ROW_OPTIONS: [[number, number, number], [number, number, number], [number, number, number]] = [
+  [5008, 5005, 5007],
+  [5008, 5010, 5001],
+  [5011, 5013, 5001],
+];
+
+export function selectionToLcuPerkIds(selection: RunePageSelection): number[] {
+  const s1 = SHARD_ROW_OPTIONS[0][selection.shardIndices[0] ?? 0] ?? 5008;
+  const s2 = SHARD_ROW_OPTIONS[1][selection.shardIndices[1] ?? 0] ?? 5008;
+  const s3 = SHARD_ROW_OPTIONS[2][selection.shardIndices[2] ?? 0] ?? 5011;
+  return [
+    selection.keystoneId,
+    ...selection.primaryMinorIds.slice(0, 3),
+    ...selection.secondaryMinorIds.slice(0, 2),
+    s1,
+    s2,
+    s3,
+  ].filter((id) => Number.isFinite(id) && id > 0);
+}
+
+export interface NormalizedLcuRunePage {
+  lcuId: number;
+  name: string;
+  selection: RunePageSelection;
+  isCurrent: boolean;
+  isEditable: boolean;
+}
+
+export function extractAllLcuRunePages(
+  rawInput: LocalBridgeStatePayload | LcuRunePageRaw[] | null | undefined,
+): NormalizedLcuRunePage[] {
+  if (!rawInput) return [];
+  const rawList: LcuRunePageRaw[] = Array.isArray(rawInput)
+    ? rawInput
+    : Array.isArray((rawInput as LocalBridgeStatePayload).runePages)
+      ? ((rawInput as LocalBridgeStatePayload).runePages as LcuRunePageRaw[])
+      : [];
+
+  const activeId = !Array.isArray(rawInput)
+    ? (rawInput as LocalBridgeStatePayload).currentRunePage?.id ?? null
+    : null;
+
+  return rawList
+    .filter(
+      (p) =>
+        Boolean(p) &&
+        typeof p.id === 'number' &&
+        p.primaryStyleId > 0 &&
+        p.subStyleId > 0 &&
+        Array.isArray(p.selectedPerkIds) &&
+        p.selectedPerkIds.length >= 6 &&
+        p.isEditable !== false &&
+        p.isTemporary !== true,
+    )
+    .map((p): NormalizedLcuRunePage => {
+      const perks = p.selectedPerkIds;
+      const shards = perks.slice(6, 9);
+      const { indices } = mapShardIdsToIndicesAndLabels(shards);
+      return {
+        lcuId: p.id,
+        name: p.name || `Page #${p.id}`,
+        selection: {
+          primaryTreeId: p.primaryStyleId,
+          secondaryTreeId: p.subStyleId,
+          keystoneId: perks[0],
+          primaryMinorIds: perks.slice(1, 4),
+          secondaryMinorIds: perks.slice(4, 6),
+          shardIndices: indices || [0, 0, 0],
+        },
+        isCurrent: Boolean(p.current || p.isActive || (activeId !== null && p.id === activeId)),
+        isEditable: p.isEditable !== false,
+      };
+    });
+}
+
+export async function fetchLcuRunePagesFromBridge(): Promise<NormalizedLcuRunePage[]> {
+  const res = await fetch('http://127.0.0.1:38421/perks/pages');
+  if (!res.ok) {
+    throw new Error('Client LoL ou pont v3.4 inaccessible sur 127.0.0.1:38421.');
+  }
+  const rawPages = (await res.json()) as LcuRunePageRaw[];
+  return extractAllLcuRunePages(rawPages);
+}
+
+export async function saveRunePageToLcuBridge(params: {
+  lcuId?: number | null;
+  name: string;
+  selection: RunePageSelection;
+  makeCurrent?: boolean;
+}): Promise<{ ok: boolean; lcuId?: number; error?: string }> {
+  try {
+    const payload = {
+      id: params.lcuId || undefined,
+      name: params.name,
+      primaryStyleId: params.selection.primaryTreeId,
+      subStyleId: params.selection.secondaryTreeId,
+      selectedPerkIds: selectionToLcuPerkIds(params.selection),
+      current: params.makeCurrent ?? true,
+    };
+    const res = await fetch('http://127.0.0.1:38421/perks/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const json = (await res.json().catch(() => ({}))) as { id?: number; message?: string; error?: string };
+    if (!res.ok) {
+      return { ok: false, error: json.message || json.error || `HTTP ${res.status}` };
+    }
+    return { ok: true, lcuId: typeof json.id === 'number' ? json.id : params.lcuId || undefined };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Erreur pont local' };
+  }
+}
+
+export async function deleteRunePageFromLcuBridge(lcuId: number): Promise<boolean> {
+  try {
+    const res = await fetch('http://127.0.0.1:38421/perks/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: lcuId }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function activateRunePageInLcuBridge(lcuId: number): Promise<boolean> {
+  try {
+    const res = await fetch('http://127.0.0.1:38421/perks/current', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: lcuId }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 

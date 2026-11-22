@@ -478,19 +478,68 @@ export interface ChampionMasteryEntry {
   championPoints: number;
 }
 
+export interface RankedQueueSummary {
+  tier: string;
+  rank: string;
+  lp: number;
+  wins: number;
+  losses: number;
+  hotStreak?: boolean;
+  veteran?: boolean;
+}
+
+export interface RiotChallengeSummary {
+  level: string;
+  currentPoints: number;
+  maxPoints: number;
+  percentile: number;
+  categories: Array<{
+    key: string;
+    label: string;
+    level: string;
+    current: number;
+    max: number;
+    percentile: number;
+  }>;
+}
+
+export interface RiotServerStatusSummary {
+  platform: string;
+  healthy: boolean;
+  incidents: Array<{
+    id: number;
+    severity: string;
+    title: string;
+  }>;
+  maintenances: Array<{
+    id: number;
+    status: string;
+    title: string;
+  }>;
+}
+
+export interface LobbyScoutParticipant {
+  puuid?: string;
+  riotId: string;
+  championId: number;
+  teamId: number;
+  soloRank: RankedQueueSummary | null;
+  flexRank: RankedQueueSummary | null;
+  championMasteryLevel: number;
+  championMasteryPoints: number;
+  tags: string[];
+}
+
 export interface PlayerProfileResponse {
   source: 'Riot API Live' | 'Données de démonstration (RIOT_API_KEY requise pour le live)';
   riotId: string;
   region: string;
   level: number;
   profileIconId: number;
-  rankedSolo: {
-    tier: string;
-    rank: string;
-    lp: number;
-    wins: number;
-    losses: number;
-  } | null;
+  rankedSolo: RankedQueueSummary | null;
+  rankedFlex?: RankedQueueSummary | null;
+  challenges?: RiotChallengeSummary | null;
+  serverStatus?: RiotServerStatusSummary | null;
   championMasteries?: ChampionMasteryEntry[];
   activeGame: {
     inGame: boolean;
@@ -505,6 +554,21 @@ export interface PlayerProfileResponse {
   };
   matches: MatchRecord[];
   tendencies: PlayerTendencies;
+}
+
+export interface LcuRunePageRaw {
+  id: number;
+  name: string;
+  primaryStyleId: number;
+  subStyleId: number;
+  selectedPerkIds: number[];
+  isActive?: boolean;
+  isEditable?: boolean;
+  isDeletable?: boolean;
+  isTemporary?: boolean;
+  isValid?: boolean;
+  current?: boolean;
+  order?: number;
 }
 
 export interface LocalBridgeStatePayload {
@@ -555,14 +619,8 @@ export interface LocalBridgeStatePayload {
     benchEnabled?: boolean;
     benchChampions?: Array<{ championId: number }>;
   } | null;
-  currentRunePage?: {
-    id?: number;
-    name?: string;
-    primaryStyleId?: number;
-    subStyleId?: number;
-    selectedPerkIds?: number[];
-    isActive?: boolean;
-  } | null;
+  currentRunePage?: LcuRunePageRaw | null;
+  runePages?: LcuRunePageRaw[] | null;
   liveGame?: LiveClientAllGameData | null;
 }
 
@@ -579,7 +637,15 @@ export interface LiveClientAllGameData {
       generalRunes?: Array<{ id: number; displayName: string }>;
       statRunes?: Array<{ id: number; rawDescription?: string }>;
     };
+    abilities?: {
+      Passive?: { displayName?: string; id?: string; rawDescription?: string };
+      Q?: { abilityLevel?: number; displayName?: string; id?: string };
+      W?: { abilityLevel?: number; displayName?: string; id?: string };
+      E?: { abilityLevel?: number; displayName?: string; id?: string };
+      R?: { abilityLevel?: number; displayName?: string; id?: string };
+    };
     championStats?: {
+      abilityHaste?: number;
       abilityPower?: number;
       armor?: number;
       attackDamage?: number;
@@ -610,21 +676,95 @@ export interface LiveClientAllGameData {
       displayName: string;
       price: number;
     }>;
+    summonerSpells?: {
+      summonerSpellOne?: {
+        displayName?: string;
+        rawDescription?: string;
+      };
+      summonerSpellTwo?: {
+        displayName?: string;
+        rawDescription?: string;
+      };
+    };
   }>;
   events?: {
-    Events?: Array<{
-      EventID: number;
-      EventName: string;
-      EventTime: number;
-      DragonType?: string;
-      KillerName?: string;
-    }>;
+    Events?: Array<LiveClientRawGameEvent>;
   };
+  gameEvents?: Array<LiveClientRawGameEvent>;
+  gameEvent?: LiveClientRawGameEvent | Array<LiveClientRawGameEvent>;
   gameData?: {
     gameMode?: string;
     gameTime?: number;
     mapName?: string;
   };
+}
+
+export interface LiveClientRawGameEvent {
+  EventID?: number;
+  eventId?: number;
+  EventName?: string;
+  eventName?: string;
+  EventTime?: number;
+  eventTime?: number;
+  EventType?: string;
+  eventType?: string;
+  type?: string;
+  DragonType?: string;
+  KillerName?: string;
+  CasterName?: string;
+  casterName?: string;
+  ChampionName?: string;
+  championName?: string;
+  SummonerName?: string;
+  summonerName?: string;
+  ActorName?: string;
+  TargetName?: string;
+  targetName?: string;
+  SpellName?: string;
+  spellName?: string;
+  SummonerSpellName?: string;
+  AbilityName?: string;
+  spell?: string;
+  SpellSlot?: string;
+  spellSlot?: string;
+  AbilityKey?: string;
+  abilityKey?: string;
+  slot?: string;
+  key?: string;
+  CooldownSec?: number;
+  cooldownSec?: number;
+  cooldown?: number;
+  IsMajor?: boolean;
+  isMajor?: boolean;
+  Team?: string;
+  team?: string;
+  gameEvent?: LiveClientRawGameEvent;
+  payload?: LiveClientRawGameEvent;
+  data?: LiveClientRawGameEvent;
+}
+
+export type LiveGameEventCategory =
+  | 'flash'
+  | 'ultimate'
+  | 'summoner_spell'
+  | 'ability'
+  | 'other';
+
+export interface LiveParsedGameEvent {
+  id: string;
+  eventId: number;
+  eventName: string;
+  eventTimeSec: number;
+  category: LiveGameEventCategory;
+  isMajor: boolean;
+  spellName: string;
+  spellSlot?: 'Q' | 'W' | 'E' | 'R' | 'D' | 'F' | 'SUMMONER' | string;
+  casterChampionName?: string;
+  casterRiotId?: string;
+  casterTeam: 'ALLY' | 'ENEMY' | 'NEUTRAL';
+  targetName?: string;
+  estimatedCooldownSec?: number;
+  summary: string;
 }
 
 export interface LivePlayerEquipmentRow {
@@ -638,6 +778,8 @@ export interface LivePlayerEquipmentRow {
   assists: number;
   cs: number;
   isDead: boolean;
+  spell1Id?: number;
+  spell2Id?: number;
   items: Array<{
     itemId: number;
     displayName: string;
@@ -649,6 +791,7 @@ export interface LivePlayerEquipmentRow {
 export interface LiveCoachSnapshot {
   source: 'Live Client Data (127.0.0.1:2999)' | 'Simulation Live Client Data';
   receivedAt: string;
+  gameMode?: string;
   gameTimeSec: number;
   championName: string;
   level: number;
@@ -661,6 +804,7 @@ export interface LiveCoachSnapshot {
     magicResist: number;
     attackSpeed: number;
     moveSpeed: number;
+    abilityHaste?: number;
   } | null;
   kda: string;
   cs: number;
@@ -699,10 +843,49 @@ export interface LiveCoachSnapshot {
     selectedRuneIds: number[];
     statRuneIds: number[];
   } | null;
+  activeAbilityLevels?: {
+    Q: number;
+    W: number;
+    E: number;
+    R: number;
+  } | null;
   gameState?: 'AHEAD' | 'EVEN' | 'BEHIND';
   comebackAdvice?: {
     triggerReason: string;
     priorityItemHint: string;
     gameplayPivot: string;
   } | null;
+  gameEvents?: LiveParsedGameEvent[];
 }
+
+export interface LaneMatchupWinRateRow {
+  championName: string;
+  enemyPosition: string;
+  isDirectLaneOpponent: boolean;
+  /** Head-to-head dans la voie actuelle (Match-V5 : adversaire dans la même voie vs vous dans cette voie) */
+  laneH2HGames: number;
+  laneH2HEnemyWins: number;
+  laneH2HEnemyWinRate: number | null;
+  /** Head-to-head toutes voies confondues dans Match-V5 */
+  overallH2HGames: number;
+  overallH2HEnemyWins: number;
+  overallH2HEnemyWinRate: number | null;
+  /** Performance globale du champion ennemi dans cette voie (Match-V5 scannés) */
+  enemyChampInLaneGames: number;
+  enemyChampInLaneWins: number;
+  enemyChampInLaneWinRate: number | null;
+  /** Win Rate Ranked Solo/Flex du joueur ennemi via Riot League-V4 (si PUUID Spectator présent) */
+  enemyPlayerRankedWinRate: number | null;
+  enemyPlayerRankedGames: number;
+  enemyPlayerRankLabel: string | null;
+}
+
+export interface LaneMatchupWinRateResponse {
+  available: boolean;
+  targetLane: string;
+  playerChampion: string;
+  scannedMatchesCount: number;
+  rows: LaneMatchupWinRateRow[];
+  note?: string;
+}
+
