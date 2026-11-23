@@ -1,3 +1,4 @@
+import { filterStandardCareerMatches } from './postGameEngine.ts';
 import type { MatchRecord, Role } from './types.ts';
 
 export interface PerformanceAxis {
@@ -55,7 +56,7 @@ export function computeMobalyticsStyleProfile(
 ): MobalyticsStyleProfile | null {
   if (!matches || matches.length === 0) return null;
 
-  const sample = matches.slice(0, 20);
+  const sample = filterStandardCareerMatches(matches).slice(0, 20);
   const roleCounts = new Map<Role, number>();
 
   let sumDamageShare = 0;
@@ -267,7 +268,7 @@ export function computeFrequentTeammates(
 
   const byAlly = new Map<string, Accumulator>();
 
-  for (const m of matches) {
+  for (const m of filterStandardCareerMatches(matches)) {
     const selfPuuid = m.player.puuid;
     const allies = (m.participants || []).filter(
       (p) =>

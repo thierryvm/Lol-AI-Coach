@@ -14,10 +14,11 @@ import {
   SlidersHorizontal,
   Sparkles,
   Target,
+  Trash2,
 } from 'lucide-react';
 import { postCoachJson } from '../engines/aiConfig.ts';
 import { downloadRecentMatchesExport } from '../engines/matchExportEngine.ts';
-import { analyzePostGameMatch } from '../engines/postGameEngine.ts';
+import { analyzePostGameMatch, isPracticeToolMatch } from '../engines/postGameEngine.ts';
 import {
   evaluateMatchAgainstGoals,
   type TrainingIntensity,
@@ -31,7 +32,7 @@ import type { ToastItem } from './ToastContainer.tsx';
 import { formatChampionDisplayName, resolveChampionDisplay } from '../utils/championDisplay.ts';
 import { getSummonerSpellById, getSummonerSpellIconUrl } from '../utils/summonerSpells.ts';
 
-type MatchResultFilter = 'ALL' | 'WIN' | 'LOSS';
+type MatchResultFilter = 'ALL' | 'WIN' | 'LOSS' | 'PRACTICE';
 type MatchRoleFilter = 'ALL' | 'TOP' | 'JUNGLE' | 'MID' | 'ADC' | 'SUPPORT';
 type MatchSortMode = 'RECENT' | 'KDA' | 'CS' | 'DURATION';
 
@@ -66,6 +67,7 @@ interface PostGameViewProps {
   trainingIntensity?: TrainingIntensity;
   onSelectMatchId: (id: string) => void;
   onImportMatch: (match: MatchRecord) => void;
+  onDeleteMatch?: (matchId: string) => void;
   onNotify?: (toast: Omit<ToastItem, 'id'>) => void;
 }
 
@@ -89,6 +91,7 @@ export function PostGameView({
   trainingIntensity = 'standard',
   onSelectMatchId,
   onImportMatch,
+  onDeleteMatch,
   onNotify,
 }: PostGameViewProps) {
   const activeMatch = useMemo(
@@ -151,8 +154,12 @@ export function PostGameView({
 
   const filteredMatches = useMemo(() => {
     const list = matches.filter((m) => {
-      if (resultFilter === 'WIN' && !m.player.win) return false;
-      if (resultFilter === 'LOSS' && m.player.win) return false;
+      if (resultFilter === 'PRACTICE') {
+        if (!isPracticeToolMatch(m)) return false;
+      } else {
+        if (resultFilter === 'WIN' && (!m.player.win || isPracticeToolMatch(m))) return false;
+        if (resultFilter === 'LOSS' && (m.player.win || isPracticeToolMatch(m))) return false;
+      }
       if (roleFilter !== 'ALL' && normalizePostGameRole(m.player.teamPosition) !== roleFilter) {
         return false;
       }
@@ -373,7 +380,7 @@ export function PostGameView({
       data: itemMap.get(id),
     }));
 
-    const bootIds = new Set([3006, 3009, 3020, 3047, 3111, 3117, 3158]);
+    const bootIds = new Set([3006, 3009, 3010, 3013, 3020, 3047, 3111, 3117, 3158]);
     const antiHealIds = new Set([3076, 3075, 3123, 3033, 3916, 3165, 3011]);
     const hasBoots = validIds.some((id) => bootIds.has(id));
     const hasAntiHeal = validIds.some((id) => antiHealIds.has(id));
@@ -399,7 +406,9 @@ export function PostGameView({
     let totalHp = 0;
     let totalAp = 0;
     let totalAd = 0;
+    let totalGold = 0;
     for (const oi of ownedItems) {
+      totalGold += oi.data?.gold?.total || 0;
       const st = oi.data?.stats;
       if (!st) continue;
       totalMr += st.FlatSpellBlockMod || 0;
@@ -441,6 +450,20 @@ export function PostGameView({
         text: 'Investissement anti-soin présent dans votre build (réduit efficacement la régénération ennemie).',
       });
     }
+    if (enemies.length === 0 && ownedItems.length > 0) {
+      const profileTag =
+        totalAp >= 160
+          ? 'orienté Puissance (AP)'
+          : totalAd >= 120
+            ? 'orienté Dégâts Physiques (AD)'
+            : totalHp >= 600 || totalArmor + totalMr >= 80
+              ? 'orienté Tank / Frontline'
+              : 'intermédiaire / utilitaire';
+      notes.push({
+        ok: true,
+        text: `Build ${profileTag} d’une valeur totale de ${totalGold.toLocaleString('fr-FR')} po (${ownedItems.length} emplacement${ownedItems.length > 1 ? 's' : ''} rempli${ownedItems.length > 1 ? 's' : ''}).`,
+      });
+    }
 
     return {
       ownedItems,
@@ -449,6 +472,7 @@ export function PostGameView({
       totalHp: Math.round(totalHp),
       totalAp: Math.round(totalAp),
       totalAd: Math.round(totalAd),
+      totalGold: Math.round(totalGold),
       notes,
     };
   }, [activeMatch, itemMap, champions]);
@@ -496,17 +520,36 @@ export function PostGameView({
               sizeClass="w-12 h-12"
             />
             <div>
-              <h1 className="text-xl font-bold text-slate-900 dark:text-white">
-                Analyse Post-Game · {pDisp.displayName} ({p.kills}/{p.deaths}/{p.assists})
-              </h1>
+              <div className="flex flex-wrap items-center gap-2">
+                <h1 className="text-xl font-bold text-slate-900 dark:text-white">
+                  Analyse Post-Game · {pDisp.displayName} ({p.kills}/{p.deaths}/{p.assists})
+                </h1>
+                {isPracticeToolMatch(activeMatch) && (
+                  <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-sky-500/15 text-sky-700 dark:text-sky-300 text-[11px] font-semibold">
+                    Outil d’entraînement
+                  </span>
+                )}
+              </div>
               <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                <span className={p.win ? 'text-emerald-600 dark:text-emerald-400 font-semibold' : 'text-rose-600 dark:text-rose-400 font-semibold'}>
-                  {p.win ? 'Victoire' : 'Défaite'}
-                </span>
+                {isPracticeToolMatch(activeMatch) ? (
+                  <span className="text-sky-600 dark:text-sky-400 font-semibold">
+                    Session d’entraînement
+                  </span>
+                ) : (
+                  <span
+                    className={
+                      p.win
+                        ? 'text-emerald-600 dark:text-emerald-400 font-semibold'
+                        : 'text-rose-600 dark:text-rose-400 font-semibold'
+                    }
+                  >
+                    {p.win ? 'Victoire' : 'Défaite'}
+                  </span>
+                )}
                 <span aria-hidden="true" className="mx-2">·</span>
                 <span>{p.teamPosition}</span>
                 <span aria-hidden="true" className="mx-2">·</span>
-                <span className="font-mono tabular-nums">{Math.round(activeMatch.gameDurationSec / 60)} min</span>
+                <span className="font-mono tabular-nums">{Math.max(1, Math.round(activeMatch.gameDurationSec / 60))} min</span>
                 <span aria-hidden="true" className="mx-2">·</span>
                 <span className="font-mono">{activeMatch.matchId}</span>
                 <span aria-hidden="true" className="mx-2">·</span>
@@ -516,6 +559,18 @@ export function PostGameView({
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5">
+            {isPracticeToolMatch(activeMatch) && onDeleteMatch && (
+              <button
+                type="button"
+                onClick={() => onDeleteMatch(activeMatch.matchId)}
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border border-rose-500/30 bg-rose-500/5 text-rose-600 dark:text-rose-400 hover:bg-rose-500/15 transition-colors whitespace-nowrap shrink-0"
+                title="Retirer cette session d’entraînement de l’archive locale"
+              >
+                <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+                Supprimer session
+              </button>
+            )}
+
             <select
               value={activeMatch.matchId}
               onChange={(e) => {
@@ -527,7 +582,9 @@ export function PostGameView({
             >
               {(filteredMatches.length > 0 ? filteredMatches : matches).map((m) => (
                 <option key={m.matchId} value={m.matchId}>
-                  {formatChampionDisplayName(champions, m.player.championName)} ({m.player.win ? 'V' : 'D'} · {m.player.kills}/{m.player.deaths}/{m.player.assists})
+                  {formatChampionDisplayName(champions, m.player.championName)} (
+                  {isPracticeToolMatch(m) ? 'Entraîn.' : m.player.win ? 'V' : 'D'} ·{' '}
+                  {m.player.kills}/{m.player.deaths}/{m.player.assists})
                 </option>
               ))}
             </select>
@@ -676,6 +733,7 @@ export function PostGameView({
                     { id: 'ALL', label: 'Toutes' },
                     { id: 'WIN', label: 'Victoires' },
                     { id: 'LOSS', label: 'Défaites' },
+                    { id: 'PRACTICE', label: 'Entraînement' },
                   ] as Array<{ id: MatchResultFilter; label: string }>
                 ).map((opt) => (
                   <button
@@ -794,18 +852,24 @@ export function PostGameView({
                       <div className="min-w-0">
                         <div className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-900 dark:text-white whitespace-nowrap">
                           <span>{mChampDisp.displayName}</span>
-                          <span
-                            className={`font-mono ${
-                              m.player.win
-                                ? 'text-emerald-600 dark:text-emerald-400'
-                                : 'text-rose-600 dark:text-rose-400'
-                            }`}
-                          >
-                            {m.player.win ? 'V' : 'D'}
-                          </span>
+                          {isPracticeToolMatch(m) ? (
+                            <span className="px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-600 dark:text-sky-300 text-[9px] font-semibold">
+                              Entraîn.
+                            </span>
+                          ) : (
+                            <span
+                              className={`font-mono ${
+                                m.player.win
+                                  ? 'text-emerald-600 dark:text-emerald-400'
+                                  : 'text-rose-600 dark:text-rose-400'
+                              }`}
+                            >
+                              {m.player.win ? 'V' : 'D'}
+                            </span>
+                          )}
                         </div>
                         <div className="text-[10px] font-mono tabular-nums text-slate-500 dark:text-slate-400 whitespace-nowrap">
-                          {m.player.kills}/{m.player.deaths}/{m.player.assists} · {formatRoleShort(m.player.teamPosition)} · {durMin}m
+                          {m.player.kills}/{m.player.deaths}/{m.player.assists} · {formatRoleShort(m.player.teamPosition)} · {Math.max(1, durMin)}m
                         </div>
                       </div>
                     </button>
@@ -859,6 +923,14 @@ export function PostGameView({
               : 'Astuce : ouvrez « Carte Tactique & Morts » pour inspecter chaque mort en grand format.'}
           </span>
         </div>
+
+        {isPracticeToolMatch(activeMatch) && (
+          <div className="rounded-xl border border-sky-500/30 bg-sky-500/[0.06] px-4 py-2.5 text-xs text-sky-800 dark:text-sky-200 flex flex-wrap items-center justify-between gap-2">
+            <span>
+              Session Outil d’entraînement capturée en direct — votre équipement final et vos statistiques sont analysés ci-dessous sans modifier vos KPIs Classés / Carrière.
+            </span>
+          </div>
+        )}
       </section>
 
       <AnimatePresence mode="wait">
@@ -1042,7 +1114,7 @@ export function PostGameView({
               Bilan de votre équipement final ({pDisp.displayName})
             </h2>
             <div className="text-xs font-mono tabular-nums text-slate-500 dark:text-slate-400">
-              Bonus objets : +{itemAudit.totalHp} PV · +{itemAudit.totalArmor} Armure · +{itemAudit.totalMr} RM
+              Coût total : {itemAudit.totalGold.toLocaleString('fr-FR')} po · Bonus : +{itemAudit.totalHp} PV · +{itemAudit.totalArmor} Armure · +{itemAudit.totalMr} RM
               {itemAudit.totalAp > 0 ? ` · +${itemAudit.totalAp} AP` : ''}
               {itemAudit.totalAd > 0 ? ` · +${itemAudit.totalAd} AD` : ''}
             </div>

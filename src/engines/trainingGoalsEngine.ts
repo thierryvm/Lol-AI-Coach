@@ -1,3 +1,4 @@
+import { filterStandardCareerMatches } from './postGameEngine.ts';
 import type { MatchRecord, Role } from './types.ts';
 
 export type TrainingIntensity = 'standard' | 'strict';
@@ -83,7 +84,8 @@ export function buildTrainingFocusReport(
   intensity: TrainingIntensity = 'standard',
   fallbackRole: Role = 'SUPPORT',
 ): TrainingFocusReport {
-  const sorted = [...matches].sort((a, b) => (b.gameCreation || 0) - (a.gameCreation || 0));
+  const careerMatches = filterStandardCareerMatches(matches);
+  const sorted = [...careerMatches].sort((a, b) => (b.gameCreation || 0) - (a.gameCreation || 0));
   const recent = sorted.slice(0, 5);
   const dominantRole = detectDominantRole(sorted, fallbackRole);
   const isStrict = intensity === 'strict';

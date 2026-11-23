@@ -9,6 +9,27 @@ import type {
 } from './types.ts';
 
 /**
+ * Indique si une partie provient d'une session locale d'Outil d'entraînement.
+ */
+export function isPracticeToolMatch(
+  match: Pick<MatchRecord, 'gameMode' | 'source'>,
+): boolean {
+  return (
+    match.gameMode?.toUpperCase() === 'PRACTICETOOL' ||
+    match.source === 'Outil d’entraînement (Live)'
+  );
+}
+
+/**
+ * Exclut les parties d'Outil d'entraînement des indicateurs de carrière / rangs
+ * dès qu'au moins une partie standard (Classée, Normale, ARAM...) est présente.
+ */
+export function filterStandardCareerMatches(matches: MatchRecord[]): MatchRecord[] {
+  const standard = matches.filter((m) => !isPracticeToolMatch(m));
+  return standard.length > 0 ? standard : matches;
+}
+
+/**
  * Traduit des coordonnées Riot Summoner's Rift (0..14870) en zone tactique lisible.
  */
 export function classifySummonersRiftZone(x: number, y: number): string {
@@ -164,7 +185,8 @@ export function analyzePostGameMatch(match: MatchRecord): PostGameAnalysis {
  * incluant les statistiques par champion, la progression temporelle et les alertes proactives.
  */
 export function computePlayerTendencies(matches: MatchRecord[]): PlayerTendencies {
-  if (matches.length === 0) {
+  const careerMatches = filterStandardCareerMatches(matches);
+  if (careerMatches.length === 0) {
     return {
       avgCsPerMin: 0,
       avgDeaths: 0,
@@ -179,7 +201,7 @@ export function computePlayerTendencies(matches: MatchRecord[]): PlayerTendencie
     };
   }
 
-  const ordered = [...matches].sort((a, b) => b.gameCreation - a.gameCreation);
+  const ordered = [...careerMatches].sort((a, b) => b.gameCreation - a.gameCreation);
   let totalCsMin = 0;
   let totalDeaths = 0;
   let totalVisionMin = 0;
@@ -418,7 +440,8 @@ export function buildCareerSynthesisDataset(
   matches: MatchRecord[],
   tendenciesInput?: PlayerTendencies,
 ): CareerSynthesisDataset {
-  const ordered = [...matches].sort((a, b) => b.gameCreation - a.gameCreation);
+  const careerMatches = filterStandardCareerMatches(matches);
+  const ordered = [...careerMatches].sort((a, b) => b.gameCreation - a.gameCreation);
   const tendencies = tendenciesInput || computePlayerTendencies(ordered);
 
   let wins = 0;

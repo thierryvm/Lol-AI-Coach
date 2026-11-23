@@ -46,7 +46,10 @@ import {
   computeFrequentTeammates,
   computeMobalyticsStyleProfile,
 } from '../engines/performanceProfileEngine.ts';
-import { buildCareerSynthesisDataset } from '../engines/postGameEngine.ts';
+import {
+  buildCareerSynthesisDataset,
+  isPracticeToolMatch,
+} from '../engines/postGameEngine.ts';
 import {
   buildTrainingFocusReport,
   type TrainingIntensity,
@@ -2032,11 +2035,14 @@ export function DashboardView({
                 const oppName = m.laneOpponent
                   ? formatChampionDisplayName(champions, m.laneOpponent.championName)
                   : '';
-                const queueLabel = formatMatchQueueLabel(
-                  m.queueId,
-                  m.gameMode,
-                  m.queueId === 0 ? 'CUSTOM_GAME' : undefined,
-                );
+                const isPractice = isPracticeToolMatch(m);
+                const queueLabel = isPractice
+                  ? 'Outil d’entraînement'
+                  : formatMatchQueueLabel(
+                      m.queueId,
+                      m.gameMode,
+                      m.queueId === 0 ? 'CUSTOM_GAME' : undefined,
+                    );
                 const dateLabel = m.gameCreation
                   ? new Date(m.gameCreation).toLocaleDateString('fr-FR', {
                       day: '2-digit',
@@ -2060,7 +2066,13 @@ export function DashboardView({
                         <div>
                           <div className="font-semibold text-slate-900 dark:text-slate-100 flex items-center gap-2">
                             <span>{pDisp.displayName}</span>
-                            <span className="text-[11px] font-medium text-amber-600 dark:text-amber-400">
+                            <span
+                              className={`text-[11px] font-medium ${
+                                isPractice
+                                  ? 'text-sky-600 dark:text-sky-400'
+                                  : 'text-amber-600 dark:text-amber-400'
+                              }`}
+                            >
                               {queueLabel}
                             </span>
                           </div>
@@ -2074,15 +2086,21 @@ export function DashboardView({
                       </div>
                     </td>
                     <td className="py-3.5 px-4">
-                      <span
-                        className={`text-xs font-semibold ${
-                          p.win
-                            ? 'text-emerald-600 dark:text-emerald-400'
-                            : 'text-rose-600 dark:text-rose-400'
-                        }`}
-                      >
-                        {p.win ? 'Victoire' : 'Défaite'}
-                      </span>
+                      {isPractice ? (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-sky-500/10 text-sky-700 dark:text-sky-300 text-xs font-semibold">
+                          Entraînement
+                        </span>
+                      ) : (
+                        <span
+                          className={`text-xs font-semibold ${
+                            p.win
+                              ? 'text-emerald-600 dark:text-emerald-400'
+                              : 'text-rose-600 dark:text-rose-400'
+                          }`}
+                        >
+                          {p.win ? 'Victoire' : 'Défaite'}
+                        </span>
+                      )}
                     </td>
                     <td className="py-3.5 px-4 text-right font-mono tabular-nums text-slate-900 dark:text-slate-100">
                       {p.kills}/{p.deaths}/{p.assists}
@@ -2097,7 +2115,7 @@ export function DashboardView({
                       {p.visionScore}
                     </td>
                     <td className="py-3.5 px-4 text-right font-mono tabular-nums">
-                      <div className="text-slate-700 dark:text-slate-300">{durMin} min</div>
+                      <div className="text-slate-700 dark:text-slate-300">{Math.max(1, durMin)} min</div>
                       {dateLabel && (
                         <div className="text-[11px] text-slate-500 dark:text-slate-400">
                           {dateLabel}

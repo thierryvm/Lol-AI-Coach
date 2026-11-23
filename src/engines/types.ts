@@ -432,7 +432,8 @@ export interface MatchRecord {
     | 'Riot API Match-V5'
     | 'Import Match-V5'
     | 'Match de référence'
-    | 'Client LoL Local (LCU)';
+    | 'Client LoL Local (LCU)'
+    | 'Outil d’entraînement (Live)';
   player: MatchParticipantSummary;
   laneOpponent: MatchParticipantSummary | null;
   participants: MatchParticipantSummary[];

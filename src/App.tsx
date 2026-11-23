@@ -35,7 +35,11 @@ import { formatChampionDisplayName } from './utils/championDisplay.ts';
 import { buildLiveMenuQuickSummary } from './utils/liveNavSummary.ts';
 import { formatRankedQueue } from './utils/rankedDisplay.ts';
 import { computePlayerTendencies } from './engines/postGameEngine.ts';
-import { parseLiveClientSnapshot } from './engines/liveCoachEngine.ts';
+import {
+  convertLiveSnapshotToMatchRecord,
+  isPracticeToolSnapshot,
+  parseLiveClientSnapshot,
+} from './engines/liveCoachEngine.ts';
 import {
   buildTrainingFocusReport,
   evaluateMatchAgainstGoals,
@@ -51,6 +55,7 @@ import type {
   RiotPlatform,
   Role,
   SavedPlayerProfile,
+  TimelineSplitPoint,
 } from './engines/types.ts';
 
 type NavTab =
@@ -381,6 +386,7 @@ function mergeAccountMatches(existing: MatchRecord[], incoming: MatchRecord[]): 
         (em) =>
           em.source !== 'Match de référence' &&
           m.source !== 'Match de référence' &&
+          !(em.source === 'Outil d’entraînement (Live)' && m.source === 'Outil d’entraînement (Live)') &&
           Math.abs(em.gameCreation - m.gameCreation) < 90_000 &&
           em.player.championName === m.player.championName,
       );
@@ -392,6 +398,12 @@ function mergeAccountMatches(existing: MatchRecord[], incoming: MatchRecord[]): 
       (m.timelineSplits.length > prev.timelineSplits.length ||
         m.participants.length > prev.participants.length ||
         m.mapEvents.length > prev.mapEvents.length ||
+        (m.source === 'Outil d’entraînement (Live)' &&
+          (m.gameDurationSec > prev.gameDurationSec ||
+            JSON.stringify(m.player.items) !== JSON.stringify(prev.player.items) ||
+            m.player.kills !== prev.player.kills ||
+            m.player.deaths !== prev.player.deaths ||
+            m.player.cs !== prev.player.cs)) ||
         (m.mapEvents.some((e) => (e.participantSnapshots?.length || 0) > 0) &&
           !prev.mapEvents.some((e) => (e.participantSnapshots?.length || 0) > 0)))
     ) {
@@ -678,6 +690,25 @@ export default function App() {
   }, []);
 
   const lastLocalBridgeLiveAtRef = useRef<number>(0);
+  const activePracticeSessionRef = useRef<{
+    sessionId: string;
+    startedAtMs: number;
+    lastUpdatedAtMs: number;
+    lastSavedHash: string;
+    lastSnapshot: LiveCoachSnapshot;
+    timelineSplits: TimelineSplitPoint[];
+    finalized: boolean;
+  } | null>(null);
+  const practiceSyncHooksRef = useRef<{
+    upsertMatch: (
+      match: MatchRecord,
+      opts?: { showToastOnFinish?: boolean; openPostGame?: boolean },
+    ) => void;
+    finalizeActive: (reason?: string) => void;
+  }>({
+    upsertMatch: () => {},
+    finalizeActive: () => {},
+  });
 
   // Synchronise en arrière-plan le dernier snapshot Live (pont local 127.0.0.1:38421 hors iframe + /api/live/latest)
   useEffect(() => {
@@ -688,7 +719,13 @@ export default function App() {
       if (isInsideIframe) return false;
       try {
         const res = await fetch('http://127.0.0.1:38421/live');
-        if (!res.ok || cancelled) return false;
+        if (cancelled) return false;
+        if (res.status === 503) {
+          // Pont joignable mais partie quittée : finaliser la session Outil d'entraînement en cours s'il y en a une
+          practiceSyncHooksRef.current.finalizeActive('bridge-ended');
+          return false;
+        }
+        if (!res.ok) return false;
         const candidate = await res.json();
         if (
           !cancelled &&
@@ -1180,6 +1217,325 @@ export default function App() {
       defaultRole,
     );
     return Math.max(newOnes.length, merged.length - beforeCount);
+  };
+
+  const upsertCapturedPracticeMatch = useCallback(
+    (
+      matchRecord: MatchRecord,
+      options: { showToastOnFinish?: boolean; openPostGame?: boolean } = {},
+    ) => {
+      const targetAccountKey = getAccountArchiveKey(riotIdInput, region);
+      setProfile((prev) => {
+        if (prev) {
+          const merged = mergeAccountMatches(prev.matches, [matchRecord]);
+          saveArchiveForAccount(targetAccountKey, merged);
+          return {
+            ...prev,
+            matches: merged,
+            tendencies: computePlayerTendencies(merged),
+          };
+        }
+        const existingArchive = loadArchiveMap()[targetAccountKey] || [];
+        const merged = mergeAccountMatches(existingArchive, [matchRecord]);
+        saveArchiveForAccount(targetAccountKey, merged);
+        return {
+          source: 'Riot API Live',
+          riotId: riotIdInput,
+          region,
+          level: 30,
+          profileIconId: 29,
+          rankedSolo: null,
+          activeGame: { inGame: false },
+          matches: merged,
+          tendencies: computePlayerTendencies(merged),
+        };
+      });
+
+      if (options.openPostGame) {
+        setSelectedMatchId(matchRecord.matchId);
+        setActiveTab('postgame');
+      }
+
+      if (options.showToastOnFinish) {
+        const champLabel = formatChampionDisplayName(
+          ddragon?.champions || [],
+          matchRecord.player.championName,
+        );
+        const itemCount = matchRecord.player.items.filter((id) => id > 0).length;
+        const mins = Math.floor(matchRecord.gameDurationSec / 60);
+        const secs = matchRecord.gameDurationSec % 60;
+        const durLabel = `${mins}m${String(secs).padStart(2, '0')}`;
+        pushToast({
+          variant: 'postgame',
+          title: `Outil d’entraînement enregistré · ${champLabel}`,
+          description: `${itemCount} objet${itemCount > 1 ? 's' : ''} sauvegardé${itemCount > 1 ? 's' : ''} (${durLabel}). Ouvrez Après la partie pour analyser votre stuff.`,
+          durationMs: 9000,
+          action: {
+            label: 'Analyser le stuff →',
+            onClick: () => {
+              setSelectedMatchId(matchRecord.matchId);
+              setActiveTab('postgame');
+            },
+          },
+        });
+      }
+    },
+    [riotIdInput, region, ddragon?.champions, pushToast],
+  );
+
+  const finalizeActivePracticeSession = useCallback(
+    (forceToast = true) => {
+      const current = activePracticeSessionRef.current;
+      if (!current || current.finalized) return;
+      current.finalized = true;
+      const converted = convertLiveSnapshotToMatchRecord(
+        current.lastSnapshot,
+        ddragon?.champions || [],
+        ddragon?.items || [],
+        {
+          riotId: riotIdInput,
+          defaultRole,
+          startedAtMs: current.startedAtMs,
+          matchId: current.sessionId,
+          timelineSplits: current.timelineSplits,
+        },
+      );
+      upsertCapturedPracticeMatch(converted, { showToastOnFinish: forceToast });
+    },
+    [ddragon?.champions, ddragon?.items, riotIdInput, defaultRole, upsertCapturedPracticeMatch],
+  );
+
+  practiceSyncHooksRef.current = {
+    upsertMatch: upsertCapturedPracticeMatch,
+    finalizeActive: () => finalizeActivePracticeSession(true),
+  };
+
+  // Suivi continu + archivage automatique des sessions Outil d'entraînement en direct
+  useEffect(() => {
+    if (!liveMenuSnapshot) return;
+    if (liveMenuSnapshot.source !== 'Live Client Data (127.0.0.1:2999)') return;
+    if (!isPracticeToolSnapshot(liveMenuSnapshot)) return;
+
+    const now = Date.now();
+    const prev = activePracticeSessionRef.current;
+    const isContinuingSameRun =
+      prev &&
+      !prev.finalized &&
+      prev.lastSnapshot.championName === liveMenuSnapshot.championName &&
+      liveMenuSnapshot.gameTimeSec + 45 >= prev.lastSnapshot.gameTimeSec &&
+      now - prev.lastUpdatedAtMs < 15 * 60 * 1000;
+
+    if (!isContinuingSameRun && prev && !prev.finalized) {
+      finalizeActivePracticeSession(true);
+    }
+
+    const currentMinute = Math.max(0, Math.floor(liveMenuSnapshot.gameTimeSec / 60));
+    const selfRow =
+      liveMenuSnapshot.allyPlayers.find(
+        (p) => p.championName === liveMenuSnapshot.championName,
+      ) || liveMenuSnapshot.allyPlayers[0];
+    const spentGold = selfRow?.items.reduce((s, it) => s + (it.price || 0), 0) || 0;
+    const approxGold = Math.round(spentGold + (liveMenuSnapshot.currentGold || 0));
+    const oppGold =
+      liveMenuSnapshot.enemyPlayers[0]?.items.reduce((s, it) => s + (it.price || 0), 0) || 0;
+    const oppCs = liveMenuSnapshot.enemyPlayers[0]?.cs || 0;
+
+    if (!isContinuingSameRun) {
+      const startedAtMs = Math.max(1000, now - liveMenuSnapshot.gameTimeSec * 1000);
+      const initialSplits: TimelineSplitPoint[] = [
+        {
+          minute: 0,
+          playerGold: 500,
+          opponentGold: oppGold > 0 ? 500 : 0,
+          goldDiff: oppGold > 0 ? 0 : 500,
+          playerCs: 0,
+          opponentCs: 0,
+          csDiff: 0,
+        },
+      ];
+      if (currentMinute > 0) {
+        initialSplits.push({
+          minute: currentMinute,
+          playerGold: approxGold,
+          opponentGold: oppGold,
+          goldDiff: approxGold - oppGold,
+          playerCs: liveMenuSnapshot.cs,
+          opponentCs: oppCs,
+          csDiff: liveMenuSnapshot.cs - oppCs,
+        });
+      }
+      activePracticeSessionRef.current = {
+        sessionId: `PRACTICE_${startedAtMs}`,
+        startedAtMs,
+        lastUpdatedAtMs: now,
+        lastSavedHash: '',
+        lastSnapshot: liveMenuSnapshot,
+        timelineSplits: initialSplits,
+        finalized: false,
+      };
+    } else if (prev) {
+      prev.lastUpdatedAtMs = now;
+      prev.lastSnapshot = liveMenuSnapshot;
+      const lastSplit = prev.timelineSplits[prev.timelineSplits.length - 1];
+      if (!lastSplit || currentMinute > lastSplit.minute) {
+        prev.timelineSplits.push({
+          minute: currentMinute,
+          playerGold: approxGold,
+          opponentGold: oppGold,
+          goldDiff: approxGold - oppGold,
+          playerCs: liveMenuSnapshot.cs,
+          opponentCs: oppCs,
+          csDiff: liveMenuSnapshot.cs - oppCs,
+        });
+      } else if (currentMinute === lastSplit.minute) {
+        lastSplit.playerGold = approxGold;
+        lastSplit.opponentGold = oppGold;
+        lastSplit.goldDiff = approxGold - oppGold;
+        lastSplit.playerCs = liveMenuSnapshot.cs;
+        lastSplit.opponentCs = oppCs;
+        lastSplit.csDiff = liveMenuSnapshot.cs - oppCs;
+      }
+    }
+
+    const session = activePracticeSessionRef.current;
+    if (!session) return;
+
+    const itemIds = (selfRow?.items || []).map((i) => i.itemId).join(',');
+    const stateHash = `${itemIds}|${liveMenuSnapshot.kda}|${Math.floor(liveMenuSnapshot.gameTimeSec / 20)}`;
+    if (
+      stateHash !== session.lastSavedHash &&
+      (liveMenuSnapshot.gameTimeSec >= 15 || (selfRow?.items.length || 0) > 0)
+    ) {
+      session.lastSavedHash = stateHash;
+      const converted = convertLiveSnapshotToMatchRecord(
+        liveMenuSnapshot,
+        ddragon?.champions || [],
+        ddragon?.items || [],
+        {
+          riotId: riotIdInput,
+          defaultRole,
+          startedAtMs: session.startedAtMs,
+          matchId: session.sessionId,
+          timelineSplits: session.timelineSplits,
+        },
+      );
+      upsertCapturedPracticeMatch(converted, { showToastOnFinish: false });
+    }
+  }, [
+    liveMenuSnapshot,
+    ddragon?.champions,
+    ddragon?.items,
+    riotIdInput,
+    defaultRole,
+    finalizeActivePracticeSession,
+    upsertCapturedPracticeMatch,
+  ]);
+
+  // Récupération des sessions Outil d'entraînement capturées par le serveur (/api/live/ingest)
+  const syncServerPracticeSessions = useCallback(async () => {
+    try {
+      const res = await fetch('/api/live/practice-sessions');
+      if (!res.ok) return 0;
+      const data = (await res.json()) as {
+        sessions?: Array<{
+          sessionId: string;
+          startedAtMs: number;
+          role: Role;
+          snapshot: LiveCoachSnapshot;
+          timelineSplits: TimelineSplitPoint[];
+        }>;
+      };
+      const list = data.sessions || [];
+      if (list.length === 0) return 0;
+      const converted = list.map((s) =>
+        convertLiveSnapshotToMatchRecord(
+          s.snapshot,
+          ddragon?.champions || [],
+          ddragon?.items || [],
+          {
+            riotId: riotIdInput,
+            defaultRole: s.role || defaultRole,
+            startedAtMs: s.startedAtMs,
+            matchId: s.sessionId,
+            timelineSplits: s.timelineSplits,
+          },
+        ),
+      );
+      let importedCount = 0;
+      setProfile((prev) => {
+        if (!prev) return prev;
+        const merged = mergeAccountMatches(prev.matches, converted);
+        if (merged.length !== prev.matches.length) {
+          importedCount = Math.max(0, merged.length - prev.matches.length);
+        }
+        saveArchiveForAccount(getAccountArchiveKey(riotIdInput, region), merged);
+        return {
+          ...prev,
+          matches: merged,
+          tendencies: computePlayerTendencies(merged),
+        };
+      });
+      return importedCount;
+    } catch {
+      return 0;
+    }
+  }, [ddragon?.champions, ddragon?.items, riotIdInput, region, defaultRole]);
+
+  useEffect(() => {
+    if (!ddragon) return;
+    if (activeTab === 'postgame' || activeTab === 'dashboard') {
+      void syncServerPracticeSessions();
+    }
+  }, [ddragon, activeTab, syncServerPracticeSessions]);
+
+  const handleSaveLiveSnapshotAsPostGame = (
+    snap: LiveCoachSnapshot,
+    openPostGame = true,
+  ) => {
+    const active = activePracticeSessionRef.current;
+    const isSame =
+      active && active.lastSnapshot.championName === snap.championName;
+    const record = convertLiveSnapshotToMatchRecord(
+      snap,
+      ddragon?.champions || [],
+      ddragon?.items || [],
+      {
+        riotId: riotIdInput,
+        defaultRole,
+        startedAtMs: isSame ? active.startedAtMs : Date.now() - snap.gameTimeSec * 1000,
+        matchId: isSame ? active.sessionId : undefined,
+        timelineSplits: isSame ? active.timelineSplits : undefined,
+      },
+    );
+    if (isSame && active) {
+      active.finalized = true;
+    }
+    upsertCapturedPracticeMatch(record, {
+      showToastOnFinish: true,
+      openPostGame,
+    });
+  };
+
+  const handleDeleteLocalMatch = (matchId: string) => {
+    setProfile((prev) => {
+      if (!prev) return prev;
+      const remaining = prev.matches.filter((m) => m.matchId !== matchId);
+      saveArchiveForAccount(getAccountArchiveKey(riotIdInput, region), remaining);
+      if (selectedMatchId === matchId) {
+        setSelectedMatchId(remaining[0]?.matchId || null);
+      }
+      return {
+        ...prev,
+        matches: remaining,
+        tendencies: computePlayerTendencies(remaining),
+      };
+    });
+    pushToast({
+      variant: 'info',
+      title: 'Session supprimée de l’archive',
+      description: 'La session d’entraînement a été retirée de votre historique local.',
+      durationMs: 4000,
+    });
   };
 
   const activeNavItem = NAV_ITEMS.find((n) => n.id === activeTab) || NAV_ITEMS[0];
@@ -1914,6 +2270,7 @@ export default function App() {
                   trainingIntensity={trainingIntensity}
                   onSelectMatchId={setSelectedMatchId}
                   onImportMatch={handleImportMatch}
+                  onDeleteMatch={handleDeleteLocalMatch}
                   onNotify={pushToast}
                 />
               )}
@@ -1936,6 +2293,8 @@ export default function App() {
                     setLiveMenuSnapshot(snap);
                     setLiveSnapshotFetchedAtMs(Date.now());
                   }}
+                  onSaveLiveSessionMatch={handleSaveLiveSnapshotAsPostGame}
+                  onLiveGameEnded={() => finalizeActivePracticeSession(true)}
                   onNotify={pushToast}
                 />
               )}

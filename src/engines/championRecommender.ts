@@ -1,4 +1,5 @@
 import { classifyChampionProfile, isJunglerChampion } from './championEngine.ts';
+import { filterStandardCareerMatches } from './postGameEngine.ts';
 import type {
   ChampionMasteryEntry,
   ChampionSummary,
@@ -295,7 +296,8 @@ export function analyzePlayerPlaystyleAndRecommendChampions(
     masteryByKey.set(m.championId, m);
   }
 
-  const ordered = [...matches].sort((a, b) => b.gameCreation - a.gameCreation);
+  const careerMatches = filterStandardCareerMatches(matches);
+  const ordered = [...careerMatches].sort((a, b) => b.gameCreation - a.gameCreation);
   const gamesAnalyzed = ordered.length;
 
   const roleCounts = new Map<Role, number>([

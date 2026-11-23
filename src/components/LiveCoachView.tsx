@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
+  Archive,
   BookOpen,
   Brain,
   Check,
@@ -120,6 +121,8 @@ interface LiveCoachViewProps {
   matches?: MatchRecord[];
   onActiveGameDetected?: (game: PlayerProfileResponse['activeGame']) => void;
   onSnapshotChange?: (snapshot: LiveCoachSnapshot) => void;
+  onSaveLiveSessionMatch?: (snapshot: LiveCoachSnapshot, openPostGame?: boolean) => void;
+  onLiveGameEnded?: () => void;
   trainingFocus?: TrainingFocusReport | null;
   onNotify?: (toast: Omit<ToastItem, 'id'>) => void;
 }
@@ -291,6 +294,8 @@ export function LiveCoachView({
   matches = [],
   onActiveGameDetected,
   onSnapshotChange,
+  onSaveLiveSessionMatch,
+  onLiveGameEnded,
   trainingFocus,
   onNotify,
 }: LiveCoachViewProps) {
@@ -807,6 +812,7 @@ export function LiveCoachView({
               // ignore
             }
             if (!raw) {
+              onLiveGameEnded?.();
               setBridgeStatus(
                 'Pont Windows connecté (port 38421) ! En attente que vous soyez chargé sur la carte (après l’écran de chargement de la partie ou de l’Outil d’entraînement)...',
               );
@@ -1574,6 +1580,18 @@ export function LiveCoachView({
               <Radio className="w-3.5 h-3.5" aria-hidden="true" />
               {bridgePollActive ? 'Pont auto (3s)' : 'Pont auto'}
             </button>
+
+            {snapshot.source === 'Live Client Data (127.0.0.1:2999)' && onSaveLiveSessionMatch && (
+              <button
+                type="button"
+                onClick={() => onSaveLiveSessionMatch(snapshot, true)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-300 hover:bg-sky-500/15 transition-colors whitespace-nowrap shrink-0"
+                title="Enregistrer le stuff et les statistiques de cette session dans Après la partie"
+              >
+                <Archive className="w-3.5 h-3.5" aria-hidden="true" />
+                Sauvegarder en Post-Game
+              </button>
+            )}
 
             <button
               type="button"

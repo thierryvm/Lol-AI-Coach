@@ -4,13 +4,18 @@ import {
   resolveSummonerSpell,
 } from '../utils/summonerSpells.ts';
 import type {
+  ChampionSummary,
+  ItemData,
   LiveClientAllGameData,
   LiveClientRawGameEvent,
   LiveCoachSnapshot,
   LiveGameEventCategory,
   LiveParsedGameEvent,
   LivePlayerEquipmentRow,
+  MatchParticipantSummary,
+  MatchRecord,
   Role,
+  TimelineSplitPoint,
 } from './types.ts';
 
 function targetCsForRole(role: Role): number {
@@ -576,5 +581,216 @@ export function parseLiveClientSnapshot(
     gameState,
     comebackAdvice,
     gameEvents,
+  };
+}
+
+/**
+ * Détermine si un snapshot Live correspond à une session d'Outil d'entraînement
+ * (mode officiel PRACTICETOOL ou session solo/duo 1-2 joueurs hors ARAM/modes spéciaux).
+ */
+export function isPracticeToolSnapshot(
+  snapshot: Pick<LiveCoachSnapshot, 'gameMode' | 'allyPlayers' | 'enemyPlayers'>,
+): boolean {
+  const mode = (snapshot.gameMode || '').trim().toUpperCase();
+  if (mode === 'PRACTICETOOL') return true;
+  const totalPlayers =
+    (snapshot.allyPlayers?.length || 0) + (snapshot.enemyPlayers?.length || 0);
+  if (
+    totalPlayers > 0 &&
+    totalPlayers <= 2 &&
+    !['ARAM', 'URF', 'CHERRY', 'NEXUSBLITZ', 'SWIFTPLAY'].includes(mode)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function mapRoleToTeamPosition(role?: string): string {
+  const upper = (role || '').trim().toUpperCase();
+  if (upper === 'TOP') return 'TOP';
+  if (upper === 'JUNGLE') return 'JUNGLE';
+  if (upper === 'MID' || upper === 'MIDDLE') return 'MIDDLE';
+  if (upper === 'ADC' || upper === 'BOTTOM') return 'BOTTOM';
+  if (upper === 'SUPPORT' || upper === 'UTILITY') return 'UTILITY';
+  return 'MIDDLE';
+}
+
+function splitRiotId(raw?: string): { gameName: string; tagLine: string } {
+  const clean = (raw || '').trim();
+  if (clean.includes('#')) {
+    const [g, t] = clean.split('#');
+    return { gameName: g || clean, tagLine: t || '' };
+  }
+  return { gameName: clean || 'Joueur', tagLine: '' };
+}
+
+function resolveChampionKeyByName(
+  champions: ChampionSummary[],
+  rawName?: string,
+): { championId: number; championKey: string } {
+  const norm = normalizeNameToken(rawName);
+  const found = champions.find(
+    (c) => normalizeNameToken(c.id) === norm || normalizeNameToken(c.name) === norm,
+  );
+  return {
+    championId: found ? Number(found.key) || 0 : 0,
+    championKey: found?.id || rawName || 'Unknown',
+  };
+}
+
+/**
+ * Convertit un snapshot Live Client Data (notamment Outil d'entraînement) en MatchRecord
+ * exploitable par Après la partie pour analyser le stuff final, les stats et la progression.
+ */
+export function convertLiveSnapshotToMatchRecord(
+  snapshot: LiveCoachSnapshot,
+  champions: ChampionSummary[] = [],
+  items: ItemData[] = [],
+  options: {
+    riotId?: string;
+    defaultRole?: Role;
+    startedAtMs?: number;
+    matchId?: string;
+    timelineSplits?: TimelineSplitPoint[];
+  } = {},
+): MatchRecord {
+  const durationSec = Math.max(15, Math.round(snapshot.gameTimeSec || 15));
+  const durationMin = Math.max(1, durationSec / 60);
+  const startedAtMs = options.startedAtMs || Date.now() - durationSec * 1000;
+  const isPractice = isPracticeToolSnapshot(snapshot);
+  const matchId = options.matchId || `${isPractice ? 'PRACTICE' : 'LIVE'}_${startedAtMs}`;
+
+  const itemPriceLookup = new Map<number, number>();
+  for (const it of items) {
+    itemPriceLookup.set(Number(it.id), it.gold?.total ?? 0);
+  }
+
+  const allRows = [...(snapshot.allyPlayers || []), ...(snapshot.enemyPlayers || [])];
+  const selfNorm = normalizeNameToken(snapshot.championName);
+  const selfRow =
+    allRows.find((r) => normalizeNameToken(r.championName) === selfNorm) ||
+    snapshot.allyPlayers?.[0];
+
+  const buildParticipant = (
+    row: LivePlayerEquipmentRow | undefined,
+    teamId: number,
+    isSelf: boolean,
+  ): MatchParticipantSummary => {
+    const kdaParts = (snapshot.kda || '0/0/0').split('/').map((n) => Number(n) || 0);
+    const kills = row ? row.kills : kdaParts[0] || 0;
+    const deaths = row ? row.deaths : kdaParts[1] || 0;
+    const assists = row ? row.assists : kdaParts[2] || 0;
+    const cs = row ? row.cs : snapshot.cs || 0;
+    const rawItems = (row?.items || []).map((it) => Number(it.itemId) || 0).filter((id) => id > 0);
+    const paddedItems = Array.from({ length: 7 }, (_, idx) => rawItems[idx] ?? 0);
+
+    const spentGold = (row?.items || []).reduce((sum, it) => {
+      const price = it.price > 0 ? it.price : itemPriceLookup.get(it.itemId) || 0;
+      return sum + price;
+    }, 0);
+    const goldEarned = Math.max(
+      500,
+      Math.round(spentGold + (isSelf ? snapshot.currentGold || 0 : cs * 20 + kills * 300)),
+    );
+
+    const champMeta = resolveChampionKeyByName(
+      champions,
+      row?.championName || snapshot.championName,
+    );
+    const idParts = splitRiotId(row?.riotId || (isSelf ? options.riotId : row?.championName));
+    const win =
+      teamId === 100
+        ? snapshot.allyKills >= snapshot.enemyKills
+        : snapshot.enemyKills > snapshot.allyKills;
+
+    return {
+      puuid: isSelf
+        ? `local-self-${idParts.gameName.toLowerCase()}`
+        : `local-${teamId}-${normalizeNameToken(row?.championName || 'bot')}`,
+      riotIdGameName: idParts.gameName,
+      riotIdTagline: idParts.tagLine,
+      championId: champMeta.championId,
+      championName: champMeta.championKey,
+      teamId,
+      teamPosition: mapRoleToTeamPosition(
+        row?.position && row.position !== '-' ? row.position : isSelf ? options.defaultRole : undefined,
+      ),
+      win,
+      kills,
+      deaths,
+      assists,
+      cs,
+      csPerMin: Number((cs / durationMin).toFixed(1)),
+      goldEarned,
+      totalDamageDealtToChampions: Math.round(kills * 2200 + assists * 900 + cs * 35),
+      totalDamageTaken: Math.round(deaths * 2400 + durationMin * 320),
+      visionScore: Math.round(durationMin * 0.6),
+      wardsPlaced: Math.max(0, Math.round(durationMin / 3)),
+      wardsKilled: 0,
+      items: paddedItems,
+      summoner1Id: row?.spell1Id ?? 4,
+      summoner2Id: row?.spell2Id ?? 12,
+      champLevel: row?.level ?? snapshot.level ?? 1,
+    };
+  };
+
+  const player = buildParticipant(selfRow, 100, true);
+  const participants: MatchParticipantSummary[] = [
+    player,
+    ...(snapshot.allyPlayers || [])
+      .filter((r) => r !== selfRow)
+      .map((r) => buildParticipant(r, 100, false)),
+    ...(snapshot.enemyPlayers || []).map((r) => buildParticipant(r, 200, false)),
+  ];
+
+  const enemyParticipants = participants.filter((p) => p.teamId === 200);
+  const laneOpponent =
+    enemyParticipants.find((p) => p.teamPosition === player.teamPosition) ||
+    enemyParticipants[0] ||
+    null;
+
+  const finalMinute = Math.max(1, Math.round(durationMin));
+  const opponentFinalGold = laneOpponent?.goldEarned ?? 0;
+  const opponentFinalCs = laneOpponent?.cs ?? 0;
+  const rawSplits =
+    options.timelineSplits && options.timelineSplits.length > 0
+      ? [...options.timelineSplits]
+      : [
+          {
+            minute: 0,
+            playerGold: 500,
+            opponentGold: opponentFinalGold > 0 ? 500 : 0,
+            goldDiff: opponentFinalGold > 0 ? 0 : 500,
+            playerCs: 0,
+            opponentCs: 0,
+            csDiff: 0,
+          },
+        ];
+
+  if (rawSplits[rawSplits.length - 1]?.minute < finalMinute) {
+    rawSplits.push({
+      minute: finalMinute,
+      playerGold: player.goldEarned,
+      opponentGold: opponentFinalGold,
+      goldDiff: player.goldEarned - opponentFinalGold,
+      playerCs: player.cs,
+      opponentCs: opponentFinalCs,
+      csDiff: player.cs - opponentFinalCs,
+    });
+  }
+
+  return {
+    matchId,
+    gameCreation: startedAtMs,
+    gameDurationSec: durationSec,
+    gameMode: isPractice ? 'PRACTICETOOL' : snapshot.gameMode || 'CLASSIC',
+    queueId: isPractice ? 0 : 400,
+    gameVersion: 'Live',
+    source: isPractice ? 'Outil d’entraînement (Live)' : 'Client LoL Local (LCU)',
+    player,
+    laneOpponent,
+    participants,
+    timelineSplits: rawSplits,
+    mapEvents: [],
   };
 }

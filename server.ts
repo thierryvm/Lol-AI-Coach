@@ -2,8 +2,17 @@ import 'dotenv/config';
 import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
-import { parseLiveClientSnapshot } from './src/engines/liveCoachEngine.ts';
-import type { LiveClientAllGameData, LiveCoachSnapshot, RiotPlatform, Role } from './src/engines/types.ts';
+import {
+  isPracticeToolSnapshot,
+  parseLiveClientSnapshot,
+} from './src/engines/liveCoachEngine.ts';
+import type {
+  LiveClientAllGameData,
+  LiveCoachSnapshot,
+  RiotPlatform,
+  Role,
+  TimelineSplitPoint,
+} from './src/engines/types.ts';
 import {
   analyzeVoiceMomentWithAi,
   generateBuildCoachingRationale,
@@ -38,6 +47,100 @@ let latestLiveSnapshot: LiveCoachSnapshot = parseLiveClientSnapshot(
   'Simulation Live Client Data',
   'MID',
 );
+
+interface PracticeToolBufferedSession {
+  sessionId: string;
+  startedAtMs: number;
+  updatedAtMs: number;
+  role: Role;
+  snapshot: LiveCoachSnapshot;
+  timelineSplits: TimelineSplitPoint[];
+}
+
+const recentPracticeSessions: PracticeToolBufferedSession[] = [];
+
+function recordPracticeSessionIfNeeded(snapshot: LiveCoachSnapshot, role: Role) {
+  if (snapshot.source !== 'Live Client Data (127.0.0.1:2999)') return;
+  if (!isPracticeToolSnapshot(snapshot)) return;
+
+  const now = Date.now();
+  const currentMinute = Math.max(0, Math.floor(snapshot.gameTimeSec / 60));
+  const spentGold = snapshot.allyPlayers
+    .find((p) => p.championName === snapshot.championName)
+    ?.items.reduce((s, it) => s + (it.price || 0), 0) || 0;
+  const approxGold = Math.round(spentGold + (snapshot.currentGold || 0));
+  const oppGold = snapshot.enemyPlayers[0]?.items.reduce((s, it) => s + (it.price || 0), 0) || 0;
+  const oppCs = snapshot.enemyPlayers[0]?.cs || 0;
+
+  const existing = recentPracticeSessions[0];
+  const isSameActiveSession =
+    existing &&
+    existing.snapshot.championName === snapshot.championName &&
+    snapshot.gameTimeSec + 45 >= existing.snapshot.gameTimeSec &&
+    now - existing.updatedAtMs < 15 * 60 * 1000;
+
+  if (isSameActiveSession && existing) {
+    existing.updatedAtMs = now;
+    existing.role = role;
+    existing.snapshot = snapshot;
+    const lastSplit = existing.timelineSplits[existing.timelineSplits.length - 1];
+    if (!lastSplit || currentMinute > lastSplit.minute) {
+      existing.timelineSplits.push({
+        minute: currentMinute,
+        playerGold: approxGold,
+        opponentGold: oppGold,
+        goldDiff: approxGold - oppGold,
+        playerCs: snapshot.cs,
+        opponentCs: oppCs,
+        csDiff: snapshot.cs - oppCs,
+      });
+    } else if (currentMinute === lastSplit.minute) {
+      lastSplit.playerGold = approxGold;
+      lastSplit.opponentGold = oppGold;
+      lastSplit.goldDiff = approxGold - oppGold;
+      lastSplit.playerCs = snapshot.cs;
+      lastSplit.opponentCs = oppCs;
+      lastSplit.csDiff = snapshot.cs - oppCs;
+    }
+    return;
+  }
+
+  const startedAtMs = Math.max(1000, now - snapshot.gameTimeSec * 1000);
+  recentPracticeSessions.unshift({
+    sessionId: `PRACTICE_${startedAtMs}`,
+    startedAtMs,
+    updatedAtMs: now,
+    role,
+    snapshot,
+    timelineSplits: [
+      {
+        minute: 0,
+        playerGold: 500,
+        opponentGold: oppGold > 0 ? 500 : 0,
+        goldDiff: oppGold > 0 ? 0 : 500,
+        playerCs: 0,
+        opponentCs: 0,
+        csDiff: 0,
+      },
+      ...(currentMinute > 0
+        ? [
+            {
+              minute: currentMinute,
+              playerGold: approxGold,
+              opponentGold: oppGold,
+              goldDiff: approxGold - oppGold,
+              playerCs: snapshot.cs,
+              opponentCs: oppCs,
+              csDiff: snapshot.cs - oppCs,
+            },
+          ]
+        : []),
+    ],
+  });
+  if (recentPracticeSessions.length > 5) {
+    recentPracticeSessions.length = 5;
+  }
+}
 
 async function startServer() {
   const app = express();
@@ -255,6 +358,10 @@ async function startServer() {
     res.json(latestLiveSnapshot);
   });
 
+  app.get('/api/live/practice-sessions', (_req, res) => {
+    res.json({ sessions: recentPracticeSessions });
+  });
+
   app.post('/api/live/ingest', (req, res) => {
     try {
       const body = req.body || {};
@@ -273,6 +380,9 @@ async function startServer() {
         isSimulation ? 'Simulation Live Client Data' : 'Live Client Data (127.0.0.1:2999)',
         role,
       );
+      if (!isSimulation) {
+        recordPracticeSessionIfNeeded(latestLiveSnapshot, role);
+      }
       return res.json(latestLiveSnapshot);
     } catch (err) {
       return res.status(400).json({

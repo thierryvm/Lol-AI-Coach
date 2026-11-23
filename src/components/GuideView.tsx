@@ -581,11 +581,11 @@ const TROUBLESHOOTING_ITEMS: TroubleshootingItem[] = [
   },
   {
     id: 'practice-tool',
-    question: 'Ma partie Outil d’entraînement ou Personnalisée n’apparaît pas dans l’historique',
+    question: 'Comment retrouver et analyser le stuff de mes sessions Outil d’entraînement ?',
     cause:
-      'Par conception, l’API officielle Riot Match-V5 ne publie pas les parties d’Outil d’entraînement ni certaines parties personnalisées privées.',
+      'Par conception, l’API officielle Riot Match-V5 ne publie pas les parties solo d’Outil d’entraînement dans l’historique Riot.',
     solution:
-      'Ouvrez « En partie · Live » avec lol-coach-bridge.bat v3.4 pendant votre session d’entraînement (ou utilisez l’import local LCU /history dans « Après la partie »).',
+      'Avec lol-coach-bridge.bat v3.4 ouvert, LoL AI Coach capture désormais automatiquement votre session d’entraînement en direct et l’archive dans « Après la partie » dès que vous quittez (filtre « Entraînement »), avec le bilan complet de vos objets et stats — sans modifier vos statistiques Classées. Vous pouvez aussi cliquer sur « Sauvegarder en Post-Game » à tout moment dans « En partie · Live ».',
     targetTab: 'postgame',
     actionLabel: 'Ouvrir Après la partie',
   },
