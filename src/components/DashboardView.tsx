@@ -610,7 +610,7 @@ export function DashboardView({
                 <SectionInfoTooltip
                   title="Profil & Niveau en Classé"
                   description="Affiche l’identité du compte Riot actif, ses rangs officiels Solo/Duo et Flex 5v5 (League-V4), la provenance des données et le raccourci vers l’optimisation de build ou le Coach Live."
-                  usageTip="Si une partie en cours est détectée, un bouton vert apparaît ici pour ouvrir le Coach Temps Réel en un clic."
+                  usageTip="Si une partie en cours est détectée, un bouton vert apparaît ici pour ouvrir En partie · Live en un clic."
                 />
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
@@ -968,7 +968,7 @@ export function DashboardView({
                 <SectionInfoTooltip
                   title="Programme d’Entraînement & Score de Forme"
                   description="Transforme automatiquement vos faiblesses récentes en 3 défis mesurables adaptés à votre rôle principal, vérifiés sur vos 5 dernières parties."
-                  usageTip="Cliquez sur une pastille de match (V/×) pour ouvrir la partie correspondante en Analyse Post-Game. Ces objectifs sont aussi rappelés dans le Coach Temps Réel."
+                  usageTip="Cliquez sur une pastille de match (V/×) pour ouvrir la partie correspondante dans Après la partie. Ces objectifs sont aussi rappelés dans En partie · Live."
                 />
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
@@ -1672,7 +1672,7 @@ export function DashboardView({
                 onClick={onNavigateToSettings}
                 className="text-xs font-semibold text-amber-600 dark:text-amber-400 hover:underline whitespace-nowrap"
               >
-                Ouvrir Compte &amp; Réglages
+                Ouvrir Réglages &amp; Compte
               </button>
             )}
           </div>

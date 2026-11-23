@@ -275,8 +275,19 @@ while ($listener.IsListening) {
         $hasId = ($bodyObj.id -ne $null) -and ([int64]$bodyObj.id -gt 0)
         if ($hasId) {
           $outRaw = (& curl.exe -sk --noproxy "*" --max-time 3 -X PUT -H "Content-Type: application/json" --data-binary "@$tmpFile" -u "riot:$($creds.token)" "https://127.0.0.1:$($creds.port)/lol-perks/v1/pages/$($bodyObj.id)") -join ' '
+          if ($bodyObj.current -eq $true) {
+            $null = (& curl.exe -sk --noproxy "*" --max-time 2 -X PUT -H "Content-Type: application/json" -d "$($bodyObj.id)" -u "riot:$($creds.token)" "https://127.0.0.1:$($creds.port)/lol-perks/v1/currentpage") -join ' '
+          }
         } else {
           $outRaw = (& curl.exe -sk --noproxy "*" --max-time 3 -X POST -H "Content-Type: application/json" --data-binary "@$tmpFile" -u "riot:$($creds.token)" "https://127.0.0.1:$($creds.port)/lol-perks/v1/pages") -join ' '
+          if ($bodyObj.current -eq $true -and $outRaw -and $outRaw.Trim().StartsWith('{')) {
+            try {
+              $createdObj = $outRaw | ConvertFrom-Json
+              if ($createdObj.id) {
+                $null = (& curl.exe -sk --noproxy "*" --max-time 2 -X PUT -H "Content-Type: application/json" -d "$($createdObj.id)" -u "riot:$($creds.token)" "https://127.0.0.1:$($creds.port)/lol-perks/v1/currentpage") -join ' '
+              }
+            } catch {}
+          }
         }
         Refresh-LoLState $false
         if ($outRaw -and $outRaw.Trim().StartsWith('{') -and $outRaw -notmatch '"errorCode"') {

@@ -322,8 +322,18 @@ export function LiveJungleGankAlertPanel({
                 return (
                   <g
                     key={z.zone}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Signaler le jungler ennemi en ${z.shortLabel}`}
+                    aria-pressed={isSpottedHere}
                     onClick={() => onUpdateSighting(z.zone)}
-                    className="cursor-pointer"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        onUpdateSighting(z.zone);
+                      }
+                    }}
+                    className="cursor-pointer focus:outline-none"
                   >
                     <circle
                       cx={z.svgX}
@@ -354,9 +364,9 @@ export function LiveJungleGankAlertPanel({
             </svg>
           </div>
 
-          {/* Boutons rapides tactiles sous la mini-map */}
+          {/* Boutons rapides tactiles sous la mini-map (toutes les zones) */}
           <div className="flex flex-wrap justify-center gap-1.5">
-            {MAP_ZONES.slice(0, 5).map((z) => {
+            {MAP_ZONES.map((z) => {
               const active = sighting.zone === z.zone;
               return (
                 <button

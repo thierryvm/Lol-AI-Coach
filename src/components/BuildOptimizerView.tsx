@@ -631,9 +631,6 @@ export function BuildOptimizerView({
         lcuPages = await fetchLcuRunePagesFromBridge().catch(() => []);
       }
       const importedCount = syncNormalizedLcuPages(lcuPages);
-      if (importedCount > 0) {
-        setLcuSyncFeedback(`${importedCount} page(s) synchronisée(s) avec votre client LoL.`);
-      }
 
       const runePage = extractDetectedRunePage(payload);
       if (runePage) {
@@ -1214,7 +1211,9 @@ export function BuildOptimizerView({
       if (lcuRes.ok) {
         syncedLcuId = lcuRes.lcuId ?? syncedLcuId;
         syncedSuccess = true;
-        setLcuSyncFeedback(`Page « ${resolvedName} » enregistrée et équipée directement dans votre client LoL !`);
+        setLcuSyncFeedback(
+          `Page « ${resolvedName} » enregistrée et activée dans LoL ! (Si la page était déjà ouverte à l’écran dans le client Riot, fermez puis rouvrez-la pour rafraîchir l’aperçu visuel — elle est déjà prise en compte en jeu.)`,
+        );
       } else {
         setLcuSyncFeedback(
           `Sauvegardé localement, mais refusé par le client LoL (${lcuRes.error || 'limite atteinte ou erreur LCU'}).`,
@@ -1223,10 +1222,12 @@ export function BuildOptimizerView({
     }
 
     if (existingIdx !== -1) {
+      const nextId = syncedLcuId ? `lcu-${syncedLcuId}` : savedRunePages[existingIdx].id;
       const next = savedRunePages.map((p, idx) =>
         idx === existingIdx
           ? {
               ...p,
+              id: nextId,
               name: resolvedName,
               championId: playerChampion.id,
               selection: activeSandboxSelection,
@@ -1241,6 +1242,7 @@ export function BuildOptimizerView({
       );
       setSavedRunePages(next);
       saveRunePagesToStorage(next);
+      setActiveSavedPageId(nextId);
       setActiveRunePageTitle(resolvedName);
       setIsRunePageDirty(false);
       return;

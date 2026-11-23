@@ -831,7 +831,7 @@ export function LiveCoachView({
       }
 
       if (!raw || raw.error || raw.errorCode) {
-        // En local (localhost:3000), le pont v3.3 pousse aussi directement sur /api/live/ingest
+        // En local (localhost:3000), le pont v3.4 pousse aussi directement sur /api/live/ingest
         if (!bridgeReachable) {
           try {
             const serverRes = await fetch('/api/live/latest');
@@ -1506,7 +1506,7 @@ export function LiveCoachView({
             <div>
               <div className="flex flex-wrap items-center gap-2">
                 <h1 className="text-xl font-bold text-slate-900 dark:text-white">
-                  Coach Temps Réel · {selfChampDisplay.displayName} (Niv. {snapshot.level})
+                  En partie · Live — {selfChampDisplay.displayName} (Niv. {snapshot.level})
                 </h1>
                 {snapshot.gameMode?.toUpperCase() === 'PRACTICETOOL' && (
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-sky-500/15 text-sky-700 dark:text-sky-300 text-[11px] font-semibold">
@@ -1515,7 +1515,7 @@ export function LiveCoachView({
                 )}
                 {spectatorGame?.inGame && (
                   <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 text-[11px] font-semibold">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" aria-hidden="true" />
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" aria-hidden="true" />
                     Partie active détectée
                   </span>
                 )}
@@ -1694,7 +1694,7 @@ export function LiveCoachView({
                       disabled={scoutingLobby}
                       className="inline-flex items-center gap-1.5 px-3 py-1 text-[11px] font-semibold rounded-lg border border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-300 hover:bg-sky-500/15 disabled:opacity-50 transition-colors"
                     >
-                      <Users className={`w-3.5 h-3.5 ${scoutingLobby ? 'animate-pulse' : ''}`} aria-hidden="true" />
+                      <Users className="w-3.5 h-3.5" aria-hidden="true" />
                       {scoutingLobby ? 'Scan rangs & maîtrises...' : 'Scanner le lobby (Rangs & Maîtrises)'}
                     </button>
                     <button

@@ -971,7 +971,7 @@ export function LoLItemShopPanel({
                     type="button"
                     onClick={() => onAssignSlot(idx, null)}
                     aria-label={`Retirer ${it.name}`}
-                    className="hidden group-hover:flex absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-rose-600 text-white items-center justify-center shadow"
+                    className="flex sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 focus:opacity-100 transition-opacity absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-rose-600 text-white items-center justify-center shadow"
                   >
                     <X className="w-2.5 h-2.5" />
                   </button>

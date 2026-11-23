@@ -41,8 +41,8 @@ export function LiveMenuSummaryPopover({
     <AnimatePresence>
       {open && (
         <motion.aside
-          role="tooltip"
-          aria-label="Résumé rapide de la partie en cours"
+          role="region"
+          aria-label="Aperçu rapide En partie · Live"
           onMouseEnter={onMouseEnter}
           onMouseLeave={onMouseLeave}
           initial={{ opacity: 0, x: -6, scale: 0.98 }}
@@ -66,7 +66,7 @@ export function LiveMenuSummaryPopover({
               <span
                 className={`w-2 h-2 rounded-full shrink-0 ${
                   summary.isRealActiveGame
-                    ? 'bg-emerald-500 animate-pulse'
+                    ? 'bg-emerald-500'
                     : 'bg-[#007AFF] dark:bg-[#0A84FF]'
                 }`}
                 aria-hidden="true"

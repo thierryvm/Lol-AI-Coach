@@ -554,7 +554,7 @@ export default function App() {
           title: `Palier « En pleine forme » atteint (${nextReport.formScore}/100) !`,
           description: `Vos objectifs sur ${newestChampLabel} propulsent votre Score de Forme dans la zone haute.`,
           action: {
-            label: 'Voir le Tableau de bord',
+            label: 'Voir Aujourd’hui',
             onClick: () => setActiveTab('dashboard'),
           },
         });
@@ -624,13 +624,14 @@ export default function App() {
     }
   }, [darkMode]);
 
-  // Fermeture du drawer mobile et du menu compte via touche Escape ou clic extérieur
+  // Fermeture du drawer mobile, du menu compte et du popover Live via Escape ou clic extérieur
   useEffect(() => {
-    if (!mobileNavOpen && !accountMenuOpen) return;
+    if (!mobileNavOpen && !accountMenuOpen && !liveMenuOpen) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setMobileNavOpen(false);
         setAccountMenuOpen(false);
+        setLiveMenuOpen(false);
       }
     };
     const onPointerDown = (e: MouseEvent) => {
@@ -648,7 +649,7 @@ export default function App() {
       window.removeEventListener('keydown', onKeyDown);
       document.removeEventListener('mousedown', onPointerDown);
     };
-  }, [mobileNavOpen, accountMenuOpen]);
+  }, [mobileNavOpen, accountMenuOpen, liveMenuOpen]);
 
   const loadBootstrap = async (forceRefresh = false) => {
     const [ddRes, statusRes] = await Promise.all([
@@ -1308,17 +1309,10 @@ export default function App() {
                       <span className="block truncate">{item.label}</span>
                       {isLiveItem && liveMenuSummary.hasLiveData && (
                         <span className="block text-[10px] font-normal font-mono tabular-nums text-slate-500 dark:text-slate-400 truncate mt-0.5">
-                          {liveMenuSummary.championName} · {liveMenuSummary.clockLabel} · {liveMenuSummary.averageRank.label}
-                        </span>
-                      )}
-                      {isLiveItem && liveMenuSummary.nextRecallItem && (
-                        <span className="block text-[10px] font-medium text-[#007AFF] dark:text-[#0A84FF] truncate mt-0.5">
-                          Back : {liveMenuSummary.nextRecallItem.itemName} ({liveMenuSummary.nextRecallItem.goldCost} po)
-                        </span>
-                      )}
-                      {isLiveItem && liveMenuSummary.neutralObjectives && (
-                        <span className="block text-[10px] font-normal font-mono tabular-nums text-amber-600 dark:text-amber-400 truncate mt-0.5">
-                          {liveMenuSummary.neutralObjectives.headline}
+                          {liveMenuSummary.championName} · {liveMenuSummary.clockLabel}
+                          {liveMenuSummary.nextRecallItem
+                            ? ` · ${liveMenuSummary.nextRecallItem.goldCost} po`
+                            : ''}
                         </span>
                       )}
                     </span>

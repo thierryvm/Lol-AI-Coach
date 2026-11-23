@@ -230,7 +230,7 @@ export function OnboardingShareWizard({
         `Tu n’as RIEN à installer ni aucune clé API à créer (tout passe par ma clé serveur).`,
         `Pour afficher tes parties en 10 secondes :`,
         `1. Ouvre le lien ci-dessus.`,
-        `2. Clique sur le bouton de compte en haut à droite (ou va dans « Compte & Réglages »).`,
+        `2. Clique sur le bouton de compte en bas à gauche (ou va dans « Réglages & Compte »).`,
         `3. Ajoute ton Riot ID complet « ${latestTargetRiotId} » puis clique sur « Synchroniser ».`,
       ].join('\n');
     }
@@ -248,9 +248,9 @@ export function OnboardingShareWizard({
     return [
       `Mémo rapide LoL AI Coach (${appPublicUrl}) :`,
       `- Compte actif : ${activeRiotId} (${activeRegion})`,
-      `- Avant la partie : Builds & Match-ups`,
-      `- En partie : Coach Temps Réel (bouton Analyser vocal + micro)`,
-      `- Après la partie : Analyse Post-Game & Export CSV/JSON`,
+      `- Avant la partie : Builds, Runes LCU & Boutique LoL`,
+      `- En partie · Live : Télémétrie, Sorts ennemis (gameEvent), Synergie & Micro`,
+      `- Après la partie : Débriefing, Timeline & Export CSV/JSON`,
     ].join('\n');
   }, [mode, appPublicUrl, latestTargetRiotId, activeRiotId, activeRegion]);
 
@@ -822,9 +822,10 @@ export function OnboardingShareWizard({
                 04. Vos 3 premiers clics dès que vous êtes prêts à jouer
               </h3>
               <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-                Chaque moment de la soirée a son écran dédié. Note : sur un lien web partagé, le mode Live utilise{' '}
-                <span className="font-mono">Spectator-V5</span> automatiquement ; le Pont Windows{' '}
-                <span className="font-mono">127.0.0.1:2999</span> (or en poche &amp; CS temps réel) ne sert que si le jeu tourne sur le même PC que l’app.
+                Chaque moment de la soirée a son écran dédié. Sur un lien web partagé, le mode Live utilise{' '}
+                <span className="font-mono">Spectator-V5</span> automatiquement ; sur PC Windows, le Pont{' '}
+                <span className="font-mono">lol-coach-bridge.bat</span> v3.4 (<span className="font-mono">127.0.0.1:38421</span> &amp;{' '}
+                <span className="font-mono">2999</span>) synchronise en plus vos pages de runes avec le client LoL et lit vos stats/achats en temps réel.
               </p>
             </div>
 
@@ -837,7 +838,7 @@ export function OnboardingShareWizard({
                 <div className="flex items-center justify-between text-xs font-bold text-slate-900 dark:text-white">
                   <span className="flex items-center gap-1.5">
                     <LayoutDashboard className="w-4 h-4 text-amber-500" aria-hidden="true" />
-                    1. Tableau de bord
+                    1. Aujourd’hui
                   </span>
                   <ArrowRight className="w-3.5 h-3.5 text-slate-400" aria-hidden="true" />
                 </div>
@@ -854,12 +855,12 @@ export function OnboardingShareWizard({
                 <div className="flex items-center justify-between text-xs font-bold text-slate-900 dark:text-white">
                   <span className="flex items-center gap-1.5">
                     <Swords className="w-4 h-4 text-sky-500" aria-hidden="true" />
-                    2. Builds &amp; Match-ups
+                    2. Avant la partie
                   </span>
                   <ArrowRight className="w-3.5 h-3.5 text-slate-400" aria-hidden="true" />
                 </div>
                 <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
-                  Choisir votre champion, personnaliser les 5 cibles du simulateur et noter vos mémos.
+                  Gérer vos pages de runes (synchro client LoL), explorer la Boutique &amp; Recettes et noter vos mémos.
                 </p>
               </button>
 
@@ -871,12 +872,12 @@ export function OnboardingShareWizard({
                 <div className="flex items-center justify-between text-xs font-bold text-slate-900 dark:text-white">
                   <span className="flex items-center gap-1.5">
                     <Activity className="w-4 h-4 text-emerald-500" aria-hidden="true" />
-                    3. Coach Temps Réel
+                    3. En partie · Live
                   </span>
                   <ArrowRight className="w-3.5 h-3.5 text-slate-400" aria-hidden="true" />
                 </div>
                 <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
-                  Cliquer sur « Analyser » pour entendre les priorités via Web Speech ou activer le micro.
+                  Suivre vos phases de jeu, les sorts ennemis, la synergie combo et le Coach Vocal IA.
                 </p>
               </button>
             </div>
@@ -930,7 +931,7 @@ export function OnboardingShareWizard({
                 className="inline-flex items-center gap-1.5 px-4 py-1.5 text-xs font-semibold rounded-lg bg-emerald-600 text-white hover:bg-emerald-500 transition-colors whitespace-nowrap shrink-0"
               >
                 <CheckCircle2 className="w-3.5 h-3.5" aria-hidden="true" />
-                Terminer &amp; ouvrir le Tableau de bord
+                Terminer &amp; ouvrir Aujourd’hui
               </button>
             )}
           </div>

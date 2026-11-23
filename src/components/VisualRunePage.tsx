@@ -960,18 +960,22 @@ export function VisualRunePage({
             ) : (
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
-                  <h2
-                    onClick={() => {
-                      if (onChangeTitle && editable) {
-                        setDraftTitle(resolvedTitle);
-                        setIsEditingTitle(true);
-                      }
-                    }}
-                    className={`text-base font-bold tracking-wide text-[#F0E6D2] truncate ${
-                      onChangeTitle && editable ? 'cursor-pointer hover:text-[#C8AA6E]' : ''
-                    }`}
-                  >
-                    {resolvedTitle}
+                  <h2 className="text-base font-bold tracking-wide text-[#F0E6D2] truncate">
+                    {onChangeTitle && editable ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDraftTitle(resolvedTitle);
+                          setIsEditingTitle(true);
+                        }}
+                        aria-label={`Renommer la page de runes (${resolvedTitle})`}
+                        className="text-left hover:text-[#C8AA6E] focus:outline-none focus-visible:underline transition-colors truncate max-w-full"
+                      >
+                        {resolvedTitle}
+                      </button>
+                    ) : (
+                      resolvedTitle
+                    )}
                   </h2>
                   {onOpenCollection && (
                     <button
