@@ -2190,35 +2190,35 @@ export default function App() {
               )}
 
               {(activeTab === 'builds' || activeTab === 'champions') && (
-                <div className="space-y-5">
-                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-2xl border border-black/[0.06] dark:border-white/[0.08] bg-white dark:bg-[#16181D] px-4 py-3 shadow-[0_1px_3px_rgba(0,0,0,0.03)]">
-                    <div className="text-xs text-slate-500 dark:text-slate-400">
-                      Préparez votre champion, vos runes et vos achats avant de lancer la partie.
-                    </div>
+                <div className="space-y-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3 px-0.5">
+                    <span className="text-xs text-slate-500 dark:text-slate-400">
+                      Préparez champion, build, runes, comparateur de stats et fiches détaillées.
+                    </span>
                     <div
                       role="tablist"
                       aria-label="Outils d’avant-partie"
-                      className="inline-flex items-center gap-1 p-1 rounded-xl bg-black/[0.04] dark:bg-white/[0.06] self-start sm:self-auto"
+                      className="inline-flex items-center gap-1 p-1 rounded-xl bg-slate-200/70 dark:bg-[#16181D] border border-black/[0.06] dark:border-white/[0.08]"
                     >
                       <button
                         type="button"
                         role="tab"
                         aria-selected={activeTab === 'builds'}
                         onClick={() => setActiveTab('builds')}
-                        className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-all whitespace-nowrap shrink-0 ${
+                        className={`px-3 py-1 text-xs font-medium rounded-lg transition-all whitespace-nowrap shrink-0 ${
                           activeTab === 'builds'
                             ? 'bg-white dark:bg-[#2C2E36] text-slate-900 dark:text-white shadow-xs font-semibold'
                             : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
                         }`}
                       >
-                        Builds &amp; Match-ups
+                        Builds, Atelier &amp; Runes
                       </button>
                       <button
                         type="button"
                         role="tab"
                         aria-selected={activeTab === 'champions'}
                         onClick={() => setActiveTab('champions')}
-                        className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-all whitespace-nowrap shrink-0 ${
+                        className={`px-3 py-1 text-xs font-medium rounded-lg transition-all whitespace-nowrap shrink-0 ${
                           activeTab === 'champions'
                             ? 'bg-white dark:bg-[#2C2E36] text-slate-900 dark:text-white shadow-xs font-semibold'
                             : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
@@ -2233,6 +2233,7 @@ export default function App() {
                     <BuildOptimizerView
                       ddragon={ddragon}
                       tendencies={profile?.tendencies}
+                      matches={profile?.matches}
                       initialChampionName={builderInitialChamp}
                       initialDuoChampionName={builderInitialDuoChamp}
                       initialRole={defaultRole}

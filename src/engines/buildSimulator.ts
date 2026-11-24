@@ -1,5 +1,9 @@
 import { computeStatAtLevel } from './championEngine.ts';
-import { computeRuneStatsAtLevel, type RunePageSelection } from './runeEngine.ts';
+import {
+  computeRuneStatsAtLevel,
+  KEYSTONE_MECHANICS,
+  type RunePageSelection,
+} from './runeEngine.ts';
 import type {
   ChampionSummary,
   EnemyThreatSummary,
@@ -51,6 +55,8 @@ export interface FullBuildStatBreakdown {
     armor: number;
     mr: number;
     attackSpeed: number;
+    uncappedAttackSpeed: number;
+    asOvercapPct: number;
     abilityHaste: number;
     cooldownReductionPct: number;
     moveSpeed: number;
@@ -98,6 +104,36 @@ export interface FullBuildStatBreakdown {
   };
   activePassives: ActiveItemPassiveInfo[];
   itemCount: number;
+  spellbladeItemsCount: number;
+  bootsCount: number;
+}
+
+export type BuildDiagnosticTone = 'emerald' | 'sky' | 'amber' | 'rose';
+
+export interface BuildDiagnosticItem {
+  id: string;
+  category: 'Vitesse d’attaque' | 'Puissance & Dégâts' | 'Survie & Défense' | 'Passifs & Tempo';
+  title: string;
+  statusLabel: string;
+  tone: BuildDiagnosticTone;
+  explanation: string;
+  actionTip?: string;
+}
+
+export interface RuneStuffSynergyItem {
+  runeName: string;
+  category: string;
+  tone: BuildDiagnosticTone;
+  explanation: string;
+}
+
+export interface BuildInterpretationReport {
+  overallHeadline: string;
+  overallTone: BuildDiagnosticTone;
+  profileTags: string[];
+  diagnostics: BuildDiagnosticItem[];
+  runeSynergies: RuneStuffSynergyItem[];
+  suggestedTweaks: string[];
 }
 
 export interface RuneValidationCheck {
@@ -149,7 +185,7 @@ const GOLD_PER_STAT = {
   regenPct: 3,
 };
 
-const HP_SCALING_CHAMPIONS = new Set([
+export const HP_SCALING_CHAMPIONS = new Set([
   'TahmKench',
   'DrMundo',
   'Sion',
@@ -161,7 +197,7 @@ const HP_SCALING_CHAMPIONS = new Set([
   'Skarner',
 ]);
 
-const ONHIT_SPELLWEAVE_CHAMPIONS = new Set([
+export const ONHIT_SPELLWEAVE_CHAMPIONS = new Set([
   'TahmKench',
   'Volibear',
   'Jax',
@@ -456,6 +492,8 @@ export function computeFullChampionBuildStats(params: {
   let hasLichBane = false;
   let hasTrinity = false;
   let hasIceborn = false;
+  let spellbladeItemsCount = 0;
+  let bootsCount = 0;
 
   const activePassives: ActiveItemPassiveInfo[] = [];
 
@@ -491,6 +529,10 @@ export function computeFullChampionBuildStats(params: {
       tenacityMultiplier *= 1 - p.tenacityPct / 100;
     }
 
+    if (it.tags.includes('Boots')) {
+      bootsCount += 1;
+    }
+
     if (it.id === '3084' || lowName.includes('cœuracier') || lowName.includes('heartsteel')) {
       hasHeartsteel = true;
     }
@@ -502,6 +544,7 @@ export function computeFullChampionBuildStats(params: {
     }
     if (it.id === '2510' || lowName.includes('aube et crépuscule') || lowName.includes('dusk and dawn')) {
       hasDuskAndDawn = true;
+      spellbladeItemsCount += 1;
     }
     if (it.id === '3124' || lowName.includes('guinsoo')) {
       hasGuinsoo = true;
@@ -522,9 +565,18 @@ export function computeFullChampionBuildStats(params: {
     if (it.id === '3091' || lowName.includes('bout du rouleau')) hasWitsEnd = true;
     if (it.id === '3153' || lowName.includes('roi déchu')) hasBork = true;
     if (it.id === '6653' || lowName.includes('liandry')) hasLiandry = true;
-    if (it.id === '3100' || lowName.includes('fléau de liche')) hasLichBane = true;
-    if (it.id === '3078' || lowName.includes('force de la trinité')) hasTrinity = true;
-    if (it.id === '6662' || lowName.includes('gantelet givrant')) hasIceborn = true;
+    if (it.id === '3100' || lowName.includes('fléau de liche')) {
+      hasLichBane = true;
+      spellbladeItemsCount += 1;
+    }
+    if (it.id === '3078' || lowName.includes('force de la trinité')) {
+      hasTrinity = true;
+      spellbladeItemsCount += 1;
+    }
+    if (it.id === '6662' || lowName.includes('gantelet givrant')) {
+      hasIceborn = true;
+      spellbladeItemsCount += 1;
+    }
 
     if (lowText.match(/hémorragie|blessures graves|grievous wounds/)) {
       hasAntiHeal = true;
@@ -572,9 +624,13 @@ export function computeFullChampionBuildStats(params: {
       itemAsPct +
       guinsooBonusAsPct) /
     100;
-  const totalAs = Number(
-    Math.min(2.5, champion.stats.attackspeed * (1 + totalAsBonusRatio)).toFixed(3),
-  );
+  const rawUncappedAs = champion.stats.attackspeed * (1 + totalAsBonusRatio);
+  const uncappedAttackSpeed = Number(rawUncappedAs.toFixed(3));
+  const totalAs = Number(Math.min(2.5, rawUncappedAs).toFixed(3));
+  const asOvercapPct =
+    rawUncappedAs > 2.5
+      ? Math.round(((rawUncappedAs - 2.5) / Math.max(0.1, champion.stats.attackspeed)) * 100)
+      : 0;
 
   // Vitesse de déplacement : (Base + FlatObjets + FlatRunes) * (1 + %MS)
   const rawMs = (baseMs + itemFlatMs + runeMs) * (1 + itemPctMs / 100);
@@ -830,6 +886,8 @@ export function computeFullChampionBuildStats(params: {
       armor: totalArmor,
       mr: totalMr,
       attackSpeed: totalAs,
+      uncappedAttackSpeed,
+      asOvercapPct,
       abilityHaste: totalAh,
       cooldownReductionPct,
       moveSpeed: totalMs,
@@ -885,6 +943,8 @@ export function computeFullChampionBuildStats(params: {
     },
     activePassives,
     itemCount: items.length,
+    spellbladeItemsCount,
+    bootsCount,
   };
 }
 
@@ -957,7 +1017,7 @@ export function validateRuneConfiguration(params: {
   return checks;
 }
 
-function inferStyle(
+export function inferStyle(
   champ: ChampionSummary,
   role: Role,
 ): 'AD_CRIT' | 'AD_BRUISER' | 'AD_LETHALITY' | 'AP_MAGE' | 'TANK' | 'ENCHANTER' {
@@ -1530,6 +1590,9 @@ export interface RealTimeCombatDamageResult {
   doubleOnHitBonusMitigated: number;
   spellbladeRaw: number;
   spellbladeMitigated: number;
+  abilityKitRaw: number;
+  abilityKitMitigated: number;
+  spellAndDotMitigated: number;
   itemPassivesBreakdown: CombatItemProcBreakdown[];
   totalRawDamage: number;
   totalMitigatedDamage: number;
@@ -1735,6 +1798,13 @@ export function simulateCombatDamageAgainstTarget(params: {
   const hasWitsEnd = hasItem('3091', 'bout du rouleau');
   const hasBork = hasItem('3153', 'roi déchu');
   const hasLiandry = hasItem('6653', 'liandry');
+  const hasMalignance = hasItem('3118', 'malfaisance') || hasItem('3118', 'malignance');
+  const hasBlackfire = hasItem('2503', 'torche noire') || hasItem('2503', 'blackfire');
+  const hasLuden = hasItem('6655', 'luden');
+  const hasShadowflame = hasItem('4645', 'flamme-ombre') || hasItem('4645', 'shadowflame');
+  const hasStormsurge = hasItem('4646', 'orageuse') || hasItem('4646', 'stormsurge');
+  const hasRiftmaker = hasItem('4633', 'failles') || hasItem('4633', 'riftmaker');
+  const hasHorizon = hasItem('4628', 'horizon');
   const hasLichBane = hasItem('3100', 'fléau de liche');
   const hasTrinity = hasItem('3078', 'trinité');
   const hasIceborn = hasItem('6662', 'gantelet givrant');
@@ -1945,7 +2015,7 @@ export function simulateCombatDamageAgainstTarget(params: {
   }
 
   if (hasLiandry && clampedSpells > 0) {
-    const burnSecs = Math.min(clampedDuration, clampedSpells * 3);
+    const burnSecs = Math.min(clampedDuration + 2, clampedSpells * 3);
     const rawSum = Math.round(0.02 * target.hp * burnSecs);
     const mitSum = Math.round(rawSum * magMult);
     itemPassivesBreakdown.push({
@@ -1958,6 +2028,76 @@ export function simulateCombatDamageAgainstTarget(params: {
       mitigatedDamage: mitSum,
       healingDone: 0,
       formulaNote: `${burnSecs}s de brûlure à 2% de ${target.hp} PV max`,
+    });
+  }
+
+  if (hasMalignance && clampedSpells > 0) {
+    const zoneTicks = Math.min(clampedDuration, 3);
+    const rawSum = Math.round((60 + 0.05 * stats.totals.ap) * zoneTicks);
+    // Malfaisance réduit la RM de 10 dans la zone de haine
+    const malignanceMr = Math.max(0, effectiveMr - 10);
+    const malignanceMult = 100 / (100 + malignanceMr);
+    const mitSum = Math.round(rawSum * malignanceMult);
+    itemPassivesBreakdown.push({
+      itemId: '3118',
+      itemName: 'Malfaisance',
+      effectName: 'Haine (Zone R + -10 RM + +20 Hâte Ultime)',
+      damageType: 'Magique',
+      procsCount: zoneTicks,
+      rawDamage: rawSum,
+      mitigatedDamage: mitSum,
+      healingDone: 0,
+      formulaNote: `${zoneTicks}s de zone (60 + 5% AP/s) avec -10 RM dans la zone`,
+    });
+  }
+
+  if (hasBlackfire && clampedSpells > 0) {
+    const burnSecs = Math.min(clampedDuration + 1, clampedSpells * 3);
+    const rawSum = Math.round((20 + 0.02 * stats.totals.ap) * burnSecs);
+    const mitSum = Math.round(rawSum * magMult);
+    itemPassivesBreakdown.push({
+      itemId: '2503',
+      itemName: 'Torche noire',
+      effectName: 'Combustion funeste (DoT + +4% AP)',
+      damageType: 'Magique',
+      procsCount: burnSecs,
+      rawDamage: rawSum,
+      mitigatedDamage: mitSum,
+      healingDone: 0,
+      formulaNote: `${burnSecs}s de brûlure (20 + 2% AP/s) + aura +4% AP par cible`,
+    });
+  }
+
+  if (hasLuden && clampedSpells > 0) {
+    const ludenCharges = Math.min(6, Math.max(3, Math.round(clampedSpells * 1.5)));
+    const rawSum = Math.round((75 + 0.05 * stats.totals.ap) * (0.35 + ludenCharges * 0.12));
+    const mitSum = Math.round(rawSum * magMult);
+    itemPassivesBreakdown.push({
+      itemId: '6655',
+      itemName: 'Compagnon de Luden',
+      effectName: 'Feu (Décharge de sort)',
+      damageType: 'Magique',
+      procsCount: 1,
+      rawDamage: rawSum,
+      mitigatedDamage: mitSum,
+      healingDone: 0,
+      formulaNote: `Décharge ${ludenCharges} charges (base + 5% AP)`,
+    });
+  }
+
+  if (hasStormsurge && clampedSpells >= 1) {
+    const rawSum = Math.round(125 + 0.15 * stats.totals.ap);
+    const mitSum = Math.round(rawSum * magMult);
+    itemPassivesBreakdown.push({
+      itemId: '4646',
+      itemName: 'Onde orageuse',
+      effectName: 'Bourrasque (Burst magique)',
+      damageType: 'Magique',
+      procsCount: 1,
+      rawDamage: rawSum,
+      mitigatedDamage: mitSum,
+      healingDone: 0,
+      formulaNote: `125 + 15% AP dès que le burst dépasse 25% PV cible`,
     });
   }
 
@@ -1977,7 +2117,74 @@ export function simulateCombatDamageAgainstTarget(params: {
     });
   }
 
-  // Soin additionnel du champion (ex. A de Tahm Kench si sorts > 0) + Vol de vie / Omnivamp
+  // 4. Dégâts des sorts du champion (Kit + Hâte de compétence + Amplification objets/runes)
+  const style = inferStyle(champion, role);
+  const hasteFactor = 1 + stats.totals.abilityHaste / 115;
+  const effectiveCasts =
+    clampedSpells > 0 ? clampedSpells * (0.85 + 0.15 * hasteFactor) : 0;
+  const bonusAd = Math.max(0, stats.totals.ad - baseAd);
+
+  let abilityKitRaw = 0;
+  let abilityIsMagic = style === 'AP_MAGE' || style === 'ENCHANTER';
+
+  if (effectiveCasts > 0) {
+    if (champion.id === 'Teemo') {
+      // Q (80..260 + 80% AP) + E DoT poison (48..240 + 40% AP sur 4s) + 1 champignon R (200..450 + 50% AP) si >= 2 sorts
+      abilityIsMagic = true;
+      const qRankDmg = 80 + ((clampedLvl - 1) / 17) * 180 + stats.totals.ap * 0.8;
+      const eDotDmg = (48 + ((clampedLvl - 1) / 17) * 192 + stats.totals.ap * 0.4) * Math.min(2, clampedDuration / 4);
+      const shroomDmg =
+        clampedLvl >= 6 && clampedSpells >= 2
+          ? (200 + ((Math.max(6, clampedLvl) - 6) / 10) * 250 + stats.totals.ap * 0.5) *
+            (hasMalignance ? 1.15 : 1)
+          : 0;
+      const castScale = Math.max(1, effectiveCasts / 2);
+      abilityKitRaw = Math.round(qRankDmg * castScale + eDotDmg + shroomDmg);
+    } else if (style === 'AP_MAGE') {
+      abilityIsMagic = true;
+      const perCastBase = 95 + clampedLvl * 14 + stats.totals.ap * 0.68;
+      abilityKitRaw = Math.round(perCastBase * effectiveCasts);
+    } else if (style === 'AD_LETHALITY') {
+      abilityIsMagic = false;
+      const perCastBase = 90 + clampedLvl * 14 + bonusAd * 0.95 + baseAd * 0.35;
+      abilityKitRaw = Math.round(perCastBase * effectiveCasts);
+    } else if (style === 'AD_BRUISER') {
+      abilityIsMagic = false;
+      const perCastBase = 75 + clampedLvl * 11 + bonusAd * 0.72 + bonusHp * 0.03;
+      abilityKitRaw = Math.round(perCastBase * effectiveCasts);
+    } else if (style === 'TANK') {
+      abilityIsMagic = true;
+      const perCastBase = 65 + clampedLvl * 10 + bonusHp * 0.065 + stats.totals.ap * 0.45;
+      abilityKitRaw = Math.round(perCastBase * effectiveCasts);
+    } else if (style === 'ENCHANTER') {
+      abilityIsMagic = true;
+      const perCastBase = 65 + clampedLvl * 8 + stats.totals.ap * 0.55;
+      abilityKitRaw = Math.round(perCastBase * effectiveCasts);
+    } else {
+      // AD_CRIT
+      abilityIsMagic = false;
+      const perCastBase = 65 + clampedLvl * 9 + bonusAd * 0.65;
+      abilityKitRaw = Math.round(perCastBase * effectiveCasts);
+    }
+  }
+
+  // Amplificateurs de dégâts (Flamme-ombre sous 40% PV, Créateur de failles, Horizon, Liandry +6%)
+  const spellAmpMult =
+    (hasLiandry ? 1.06 : 1) *
+    (hasRiftmaker ? 1.08 : 1) *
+    (hasHorizon ? 1.1 : 1) *
+    (hasShadowflame ? 1.08 : 1) *
+    (runeSelection.keystoneId === 8005 ? 1.05 : 1);
+
+  if (abilityIsMagic && hasShadowflame) {
+    abilityKitRaw = Math.round(abilityKitRaw * 1.08);
+  }
+  abilityKitRaw = Math.round(abilityKitRaw * (hasRiftmaker || hasLiandry || hasHorizon ? 1.05 : 1));
+  const abilityKitMitigated = Math.round(
+    abilityKitRaw * (abilityIsMagic ? magMult : physMult) * (spellAmpMult > 1 ? 1 + (spellAmpMult - 1) * 0.45 : 1),
+  );
+
+  // Soin additionnel du champion + Vol de vie / Omnivamp (dont Riftmaker)
   if (champion.id === 'TahmKench' && clampedSpells > 0) {
     const qCasts = Math.max(1, Math.min(clampedSpells, Math.ceil(clampedDuration / 4.5)));
     combatHealingTotal += Math.round(qCasts * (20 + bonusHp * 0.03) * healAmp);
@@ -1985,6 +2192,12 @@ export function simulateCombatDamageAgainstTarget(params: {
   if (stats.totals.lifeStealPct > 0) {
     combatHealingTotal += Math.round(
       physicalAutoMitigated * (stats.totals.lifeStealPct / 100) * healAmp,
+    );
+  }
+  if (hasRiftmaker || stats.totals.omnivampPct > 0) {
+    const omniPct = Math.max(stats.totals.omnivampPct, hasRiftmaker ? 10 : 0);
+    combatHealingTotal += Math.round(
+      (abilityKitMitigated + baseOnHitMitigated) * (omniPct / 100) * 0.6 * healAmp,
     );
   }
 
@@ -1996,18 +2209,26 @@ export function simulateCombatDamageAgainstTarget(params: {
     .filter((p) => !['2510', '3100', '3078', '6662'].includes(p.itemId))
     .reduce((acc, p) => acc + p.mitigatedDamage, 0);
 
+  const spellBurnPassiveMitigated = itemPassivesBreakdown
+    .filter((p) => ['6653', '3118', '2503', '6655', '4646'].includes(p.itemId))
+    .reduce((acc, p) => acc + p.mitigatedDamage, 0);
+
+  const spellAndDotMitigated = abilityKitMitigated + spellBurnPassiveMitigated;
+
   const totalRawDamage =
     physicalAutoRaw +
     baseOnHitRaw +
     doubleOnHitBonusRaw +
     spellbladeRaw +
-    extraPassiveRawOnly;
+    extraPassiveRawOnly +
+    abilityKitRaw;
   const totalMitigatedDamage =
     physicalAutoMitigated +
     baseOnHitMitigated +
     doubleOnHitBonusMitigated +
     spellbladeMitigated +
-    extraPassiveMitOnly;
+    extraPassiveMitOnly +
+    abilityKitMitigated;
 
   const realDps = Math.round(totalMitigatedDamage / clampedDuration);
   const targetHpPctRemoved = Math.min(
@@ -2035,6 +2256,9 @@ export function simulateCombatDamageAgainstTarget(params: {
     doubleOnHitBonusMitigated,
     spellbladeRaw,
     spellbladeMitigated,
+    abilityKitRaw,
+    abilityKitMitigated,
+    spellAndDotMitigated,
     itemPassivesBreakdown,
     totalRawDamage,
     totalMitigatedDamage,
@@ -2184,4 +2408,482 @@ export function computePerItemImpactMatrix(params: {
 
   return rows;
 }
+
+/**
+ * Interprète qualitativement le build actuellement équipé + la page de runes active :
+ * détecte les excès (ex. surcap vitesse d'attaque > 2.50/s), les manques (AP/AD, Pén., Armure, Anti-soin),
+ * les doublons de passifs uniques, et explique la synergie exacte Runes × Objets.
+ */
+export function interpretBuildAndRunes(params: {
+  champion: ChampionSummary;
+  role: Role;
+  level: number;
+  items: ItemData[];
+  runeSelection: RunePageSelection;
+  runeTrees: RuneTree[];
+  stats: FullBuildStatBreakdown;
+  threats: EnemyThreatSummary;
+}): BuildInterpretationReport {
+  const { champion, role, level, items, runeSelection, runeTrees, stats, threats } = params;
+  const style = inferStyle(champion, role);
+  const allRuneIds = new Set([
+    runeSelection.keystoneId,
+    ...runeSelection.primaryMinorIds,
+    ...runeSelection.secondaryMinorIds,
+  ]);
+
+  const resolveRuneName = (id: number): string => {
+    for (const tree of runeTrees) {
+      for (const slot of tree.slots) {
+        const hit = slot.runes.find((r) => r.id === id);
+        if (hit) return hit.name;
+      }
+    }
+    return `Rune #${id}`;
+  };
+
+  const keystoneName = resolveRuneName(runeSelection.keystoneId);
+  const hasTempoMortel = runeSelection.keystoneId === 8008;
+  const hasDeluge = runeSelection.keystoneId === 9923;
+  const hasAlacrite = allRuneIds.has(9104);
+  const hasAsShard = runeSelection.shardIndices[0] === 1;
+  const itemAsPctTotal = items.reduce((acc, it) => acc + parseExactItemStats(it).attackSpeedPct, 0);
+  const isApPrimary = style === 'AP_MAGE' || style === 'ENCHANTER';
+  const isAdPrimary = style === 'AD_CRIT' || style === 'AD_BRUISER' || style === 'AD_LETHALITY';
+  const isTankPrimary = style === 'TANK';
+
+  const diagnostics: BuildDiagnosticItem[] = [];
+  const runeSynergies: RuneStuffSynergyItem[] = [];
+  const suggestedTweaks: string[] = [];
+
+  // 1. Diagnostic Vitesse d'attaque & Plafond 2.500/s (y compris marge niveaux 12->18 et Tempo mortel)
+  const tempoExtraAs = hasTempoMortel ? 0.36 * champion.stats.attackspeed : 0;
+  const projectedLvl18As = Number(
+    (
+      stats.totals.uncappedAttackSpeed +
+      (level < 18
+        ? champion.stats.attackspeed *
+          ((champion.stats.attackspeedperlevel * Math.max(0, 18 - level) * 0.85) / 100)
+        : 0) +
+      tempoExtraAs
+    ).toFixed(3),
+  );
+
+  if (stats.totals.asOvercapPct > 0) {
+    const wastedGold = Math.round(stats.totals.asOvercapPct * GOLD_PER_STAT.asPct);
+    diagnostics.push({
+      id: 'as-overcap',
+      category: 'Vitesse d’attaque',
+      title: 'Trop de vitesse d’attaque (Plafond 2.500/s dépassé)',
+      statusLabel: `Brut ${stats.totals.uncappedAttackSpeed}/s · +${stats.totals.asOvercapPct}% perdu`,
+      tone: 'rose',
+      explanation: `En jeu, la vitesse d’attaque est plafonnée à 2.500/s. Votre configuration monte à ${stats.totals.uncappedAttackSpeed}/s au niv.${level} : environ +${stats.totals.asOvercapPct}% de vitesse d’attaque (~${wastedGold} po) sont totalement gaspillés.`,
+      actionTip:
+        'Remplacez les Jambières du berzerker par des Coques/Mercures/Sorcier, ou échangez un objet AS (ex. Statikk) contre de l’AP/Pénétration ou de la défense.',
+    });
+    suggestedTweaks.push(
+      `Réduire l’excès de vitesse d’attaque (+${stats.totals.asOvercapPct}% gaspillés au niv.${level}) pour récupérer ~${wastedGold} po en stats utiles.`,
+    );
+  } else if (stats.totals.attackSpeed >= 2.2 || projectedLvl18As > 2.58) {
+    diagnostics.push({
+      id: 'as-near-cap',
+      category: 'Vitesse d’attaque',
+      title: 'Vitesse d’attaque déjà à la limite du plafond',
+      statusLabel: `${stats.totals.attackSpeed}/s (Niv.${level}) · ${projectedLvl18As}/s au niv.18`,
+      tone: 'amber',
+      explanation: `Vous êtes déjà à ${Math.round((stats.totals.attackSpeed / 2.5) * 100)}% du plafond (2.500/s). Avec la croissance naturelle vers le niveau 18${hasTempoMortel ? ' et Tempo mortel empilé' : ''}, vous déborderez (${projectedLvl18As}/s) et aurez du mal à kiter entre chaque attaque.`,
+      actionTip:
+        'N’ajoutez plus d’AS. Passer sur Force adaptative en fragment ou des bottes défensives/Pén. magique vous donnera plus de dégâts réels.',
+    });
+    suggestedTweaks.push(
+      `Votre vitesse d’attaque (${stats.totals.attackSpeed}/s au niv.${level}) saturera le plafond 2.500/s en fin de partie : privilégiez AP/AD ou Pénétration sur votre prochain choix.`,
+    );
+  } else if (
+    (style === 'AD_CRIT' || ONHIT_SPELLWEAVE_CHAMPIONS.has(champion.id)) &&
+    stats.itemCount >= 3 &&
+    stats.totals.attackSpeed < 1.25
+  ) {
+    diagnostics.push({
+      id: 'as-low',
+      category: 'Vitesse d’attaque',
+      title: 'Vitesse d’attaque un peu faible pour vos autos',
+      statusLabel: `${stats.totals.attackSpeed}/s`,
+      tone: 'amber',
+      explanation: `${champion.name} profite beaucoup des attaques de base/effets à l’impact, mais vous plafonnez à ${stats.totals.attackSpeed}/s avec ${stats.itemCount} objets.`,
+      actionTip: 'Ajoutez un objet AS (Dent de Nashor / Guinsoo / Danseur fantôme) ou Légende : alacrité.',
+    });
+  } else {
+    diagnostics.push({
+      id: 'as-ok',
+      category: 'Vitesse d’attaque',
+      title: 'Vitesse d’attaque équilibrée',
+      statusLabel: `${stats.totals.attackSpeed}/s`,
+      tone: 'emerald',
+      explanation: `Cadence fluide à ${stats.totals.attackSpeed}/s sans gaspillage au-dessus du plafond 2.500/s (projection niv.18 : ${projectedLvl18As}/s).`,
+    });
+  }
+
+  // 2. Puissance (AP) / Dégâts d'attaque (AD) & Pénétration
+  if (isApPrimary) {
+    const expectedApForItems = stats.itemCount >= 5 ? 360 : stats.itemCount >= 3 ? 210 : 95;
+    if (stats.itemCount >= 4 && stats.totals.ap < expectedApForItems) {
+      diagnostics.push({
+        id: 'ap-low',
+        category: 'Puissance & Dégâts',
+        title: 'Puissance (AP) un peu juste pour ce stade',
+        statusLabel: `${stats.totals.ap} AP (${stats.itemCount} objets)`,
+        tone: 'amber',
+        explanation: `Avec ${stats.itemCount} emplacements occupés, ${stats.totals.ap} AP reste modeste (seuil confortable ≥ ${expectedApForItems} AP). Vos ratios AP sur sorts et objets à l’impact (ex. Dent de Nashor, Aube) restent sous-exploités.`,
+        actionTip:
+          'Coiffe de Rabadon (+30% AP total) ou Fléau de liche / Tourment d’ombre feront exploser vos dégâts de sorts et On-Hit.',
+      });
+      suggestedTweaks.push(
+        `Monter au-dessus de ${expectedApForItems} AP (ex. Coiffe de Rabadon) si vous voulez que vos compétences et procs AP frappent plus fort.`,
+      );
+    } else {
+      diagnostics.push({
+        id: 'ap-ok',
+        category: 'Puissance & Dégâts',
+        title: 'Puissance (AP) cohérente',
+        statusLabel: `${stats.totals.ap} AP`,
+        tone: 'emerald',
+        explanation: `Votre total de ${stats.totals.ap} AP (+${stats.sources.ap.runes} via runes) alimente efficacement vos sorts et effets AP.`,
+      });
+    }
+
+    if (stats.itemCount >= 4 && stats.totals.magicPenPct === 0 && stats.totals.magicPenFlat === 0) {
+      diagnostics.push({
+        id: 'mpen-missing',
+        category: 'Puissance & Dégâts',
+        title: 'Aucune Pénétration magique',
+        statusLabel: '0% / +0 Pén. Mag.',
+        tone: threats.tankCount >= 1 ? 'rose' : 'amber',
+        explanation: `Vous n’avez ni Pénétration magique % ni Pénétration fixe. Face à ${threats.tankCount >= 1 ? `${threats.tankCount} tank/bruiser(s)` : 'des adversaires niveau 11+'} qui achètent de la RM, 30 à 45% de vos dégâts magiques sont absorbés.`,
+        actionTip: 'Envisagez Bâton du vide, Cryptofleur ou Chaussures de sorcier.',
+      });
+      suggestedTweaks.push('Ajouter de la Pénétration magique (Bâton du vide / Cryptofleur) face aux résistances.');
+    }
+  } else if (isAdPrimary) {
+    const expectedAd = stats.itemCount >= 5 ? 255 : stats.itemCount >= 3 ? 175 : 105;
+    if (stats.itemCount >= 4 && stats.totals.ad < expectedAd && !ONHIT_SPELLWEAVE_CHAMPIONS.has(champion.id)) {
+      diagnostics.push({
+        id: 'ad-low',
+        category: 'Puissance & Dégâts',
+        title: 'AD total modéré pour un carry AD',
+        statusLabel: `${stats.totals.ad} AD`,
+        tone: 'amber',
+        explanation: `${stats.totals.ad} AD reste léger à ${stats.itemCount} objets (attendu ≥ ${expectedAd} AD) sauf si votre kit repose majoritairement sur du On-Hit pur.`,
+        actionTip: 'Ajoutez Lame d’infini / Soif-de-sang / Serylda pour renforcer vos dégâts par coup.',
+      });
+    } else {
+      diagnostics.push({
+        id: 'ad-ok',
+        category: 'Puissance & Dégâts',
+        title: 'Potentiel offensif AD équilibré',
+        statusLabel: `${stats.totals.ad} AD${stats.totals.critChancePct > 0 ? ` · ${stats.totals.critChancePct}% Crit` : ''}`,
+        tone: 'emerald',
+        explanation: `Bon équilibre avec ${stats.totals.ad} AD et ${stats.combat.autoDps}/s de DPS auto-attaques estimé.`,
+      });
+    }
+
+    if (
+      stats.itemCount >= 4 &&
+      threats.tankCount >= 1 &&
+      stats.totals.armorPenPct === 0 &&
+      stats.totals.lethality < 20
+    ) {
+      diagnostics.push({
+        id: 'apen-missing',
+        category: 'Puissance & Dégâts',
+        title: 'Manque de Pénétration d’armure (%)',
+        statusLabel: '0% Pén. Armure',
+        tone: 'amber',
+        explanation: `L’équipe adverse compte ${threats.tankCount} profil(s) résistant(s) : sans Pénétration d’armure %, vos dégâts physiques chuteront nettement.`,
+        actionTip: 'Ajoutez Salutations de Dominik, Rappel mortel ou Rancune de Serylda.',
+      });
+    }
+  } else if (isTankPrimary) {
+    diagnostics.push({
+      id: 'tank-offense',
+      category: 'Puissance & Dégâts',
+      title: 'Impact Tank & Présence',
+      statusLabel: `${stats.totals.hp} PV · ${stats.combat.abilityImpactIndex} Impact`,
+      tone: stats.totals.hp >= 2800 || stats.itemCount < 4 ? 'emerald' : 'amber',
+      explanation: `Votre pool de ${stats.totals.hp} PV et ${stats.activePassives.length} passif(s) actifs vous permettent de tenir la ligne de front.`,
+    });
+  }
+
+  // 3. Survie face à la compo adverse (Armure, RM, Anti-soin, Ténacité)
+  if (stats.itemCount >= 4) {
+    if (threats.physicalShare >= 58 && stats.totals.armor < 85 && !isTankPrimary) {
+      diagnostics.push({
+        id: 'surv-armor',
+        category: 'Survie & Défense',
+        title: `Vulnérable au Burst Physique (${threats.physicalShare}% AD en face)`,
+        statusLabel: `${stats.totals.armor} Armure · ${stats.combat.physicalEhp} EHP`,
+        tone: threats.burstThreatCount >= 2 ? 'rose' : 'amber',
+        explanation: `Vous n’avez que ${stats.totals.armor} d’Armure (base uniquement) face à une équipe majoritairement physique (${threats.physicalShare}%). Un assassin/combattant peut vous tomber en moins de 2s.`,
+        actionTip: isApPrimary
+          ? 'Ajoutez Sablier de Zhonya ou Coques en acier.'
+          : 'Envisagez Ange gardien, Danse de la mort ou Coques en acier.',
+      });
+      suggestedTweaks.push(
+        `Protégez-vous contre les ${threats.physicalShare}% de dégâts physiques adverses (ex. Sablier de Zhonya ou Coques en acier).`,
+      );
+    } else if (threats.magicShare >= 55 && stats.totals.mr < 65 && !isTankPrimary) {
+      diagnostics.push({
+        id: 'surv-mr',
+        category: 'Survie & Défense',
+        title: `Vulnérable au Burst Magique (${threats.magicShare}% AP en face)`,
+        statusLabel: `${stats.totals.mr} RM · ${stats.combat.magicEhp} EHP`,
+        tone: 'amber',
+        explanation: `Seulement ${stats.totals.mr} de Résistance magique face à ${threats.magicShare}% de dégâts magiques adverses.`,
+        actionTip: isApPrimary
+          ? 'Voile de la banshee ou Sandales de Mercure sécurisent vos combats.'
+          : 'Gueule de Malmortius, Bout du rouleau ou Kaenic Rookern recommandés.',
+      });
+    } else {
+      diagnostics.push({
+        id: 'surv-ok',
+        category: 'Survie & Défense',
+        title: 'Résistances & PV adaptés au niveau',
+        statusLabel: `${stats.totals.hp} PV · ${stats.totals.armor} Arm. · ${stats.totals.mr} RM`,
+        tone: 'emerald',
+        explanation: `Votre tenue défensive (${stats.combat.physicalEhp} EHP phys. / ${stats.combat.magicEhp} EHP mag.) reste cohérente pour ${champion.name}.`,
+      });
+    }
+
+    if (threats.highHealCount >= 1 && stats.totals.antiHealPct === 0) {
+      diagnostics.push({
+        id: 'surv-antiheal',
+        category: 'Survie & Défense',
+        title: `Aucun Anti-soin face à ${threats.highHealCount} champion(s) à soin`,
+        statusLabel: '0% Hémorragie',
+        tone: 'amber',
+        explanation: `L’ennemi possède du soin/vol de vie élevé mais vous n’avez pas d’Hémorragie (40%).`,
+        actionTip: isApPrimary
+          ? 'Orbe de l’oubli (800 po) puis Morellonomicon.'
+          : isTankPrimary
+            ? 'Armure roncière (800 po) puis Cotte épineuse.'
+            : 'Marque du bourreau (800 po) puis Rappel mortel / Épée dentelée.',
+      });
+    }
+
+    if (threats.ccThreatCount >= 2 && stats.totals.tenacityPct === 0 && !isTankPrimary) {
+      diagnostics.push({
+        id: 'surv-cc',
+        category: 'Survie & Défense',
+        title: `0% Ténacité face à ${threats.ccThreatCount} contrôles`,
+        statusLabel: '0% Ténacité',
+        tone: 'sky',
+        explanation: `Vous n’avez ni Sandales de Mercure, ni Bout du rouleau, ni fragment +10% Ténacité contre une compo riche en CC.`,
+        actionTip: 'Le fragment défensif +10% Ténacité ou Sandales de Mercure évitent de vous faire enchaîner.',
+      });
+    }
+  }
+
+  // 4. Passifs uniques en conflit & Hâte de compétence
+  if (stats.spellbladeItemsCount >= 2) {
+    diagnostics.push({
+      id: 'passive-spellblade-dup',
+      category: 'Passifs & Tempo',
+      title: 'Attention : plusieurs objets Lame enchantée équipés',
+      statusLabel: `${stats.spellbladeItemsCount} objets Lame enchantée`,
+      tone: 'rose',
+      explanation: `Le passif Lame enchantée (Brillance) est UNIQUE : équiper ${stats.spellbladeItemsCount} objets de cette famille en même temps en annule au moins un en combat.`,
+      actionTip: 'Ne gardez qu’un seul objet Lame enchantée (ex. Aube et crépuscule OU Fléau de liche OU Trinité).',
+    });
+    suggestedTweaks.push('Supprimer le doublon Lame enchantée : un seul proc s’applique en jeu.');
+  } else if (stats.bootsCount >= 2) {
+    diagnostics.push({
+      id: 'passive-boots-dup',
+      category: 'Passifs & Tempo',
+      title: 'Deux paires de bottes équipées',
+      statusLabel: `${stats.bootsCount} bottes`,
+      tone: 'rose',
+      explanation: 'Vous ne pouvez acheter qu’une seule paire de bottes en partie réelle.',
+    });
+  } else if (stats.itemCount >= 4 && stats.bootsCount === 0) {
+    diagnostics.push({
+      id: 'passive-no-boots',
+      category: 'Passifs & Tempo',
+      title: 'Aucune paire de bottes dans les 6 emplacements',
+      statusLabel: `${stats.totals.moveSpeed} Vit. déplacement`,
+      tone: 'amber',
+      explanation: `À ${stats.totals.moveSpeed} de vitesse de déplacement sans bottes, vous aurez du mal à esquiver et tourner sur la carte avant le full stuff.`,
+    });
+  } else {
+    diagnostics.push({
+      id: 'tempo-haste',
+      category: 'Passifs & Tempo',
+      title: 'Hâte & Passifs uniques sans conflit',
+      statusLabel: `${stats.totals.abilityHaste} Hâte (${stats.totals.cooldownReductionPct}% CDR)`,
+      tone: stats.totals.abilityHaste >= 25 || isAdPrimary ? 'emerald' : 'sky',
+      explanation: `${stats.totals.abilityHaste} d’accélération (${stats.totals.cooldownReductionPct}% de réduction de délais) et ${stats.activePassives.length} passif(s) compatibles.`,
+    });
+  }
+
+  // 5. Analyse croisée Runes × Objets équipés
+  const keystoneMech = KEYSTONE_MECHANICS[runeSelection.keystoneId];
+  const primaryTreeName =
+    runeTrees.find((t) => t.id === runeSelection.primaryTreeId)?.name || 'Arbre principal';
+  const secondaryTreeName =
+    runeTrees.find((t) => t.id === runeSelection.secondaryTreeId)?.name || 'Arbre secondaire';
+
+  if (hasTempoMortel || hasDeluge) {
+    if (stats.totals.uncappedAttackSpeed >= 2.15) {
+      runeSynergies.push({
+        runeName: keystoneName,
+        category: `${primaryTreeName} · Conflit de plafond`,
+        tone: 'amber',
+        explanation: `${keystoneName} ajoute encore plus de vitesse d’attaque en combat alors que votre stuff atteint déjà ${stats.totals.uncappedAttackSpeed}/s (cap à 2.500/s). Pour ce stuff très orienté AS, Attaque soutenue (+8% dégâts sur vos procs), Conquérant ou Moisson noire seront plus rentables.`,
+      });
+    } else {
+      runeSynergies.push({
+        runeName: keystoneName,
+        category: `${primaryTreeName} · Synergie On-Hit`,
+        tone: 'emerald',
+        explanation: `${keystoneName} complète vos +${itemAsPctTotal}% d’AS d’objets sans saturer le cap et accélère l’application de vos effets à l’impact (${stats.combat.onHitPerAttack}/coup).`,
+      });
+    }
+  } else if (runeSelection.keystoneId === 8005) {
+    // Attaque soutenue
+    runeSynergies.push({
+      runeName: keystoneName,
+      category: `${primaryTreeName} · Synergie Burst & On-Hit`,
+      tone: 'emerald',
+      explanation: `Après 3 attaques rapides (facilitées par vos ${stats.totals.attackSpeed}/s), Attaque soutenue amplifie de +8% tous vos dégâts (autos + sorts + passifs d’objets).`,
+    });
+  } else if (runeSelection.keystoneId === 8010) {
+    // Conquérant
+    runeSynergies.push({
+      runeName: keystoneName,
+      category: `${primaryTreeName} · Combat prolongé`,
+      tone: 'emerald',
+      explanation: `Vos ${stats.totals.attackSpeed}/s et ${stats.totals.abilityHaste} Hâte empilent vite les 12 effets de Conquérant pour gagner de l’${isApPrimary ? 'AP' : 'AD'} bonus et 8% d’omnivamp en duel.`,
+    });
+  } else if (runeSelection.keystoneId === 8128 || runeSelection.keystoneId === 8112) {
+    runeSynergies.push({
+      runeName: keystoneName,
+      category: `${primaryTreeName} · Scaling sur vos stats`,
+      tone: stats.totals.ap >= 250 || stats.totals.ad >= 180 ? 'emerald' : 'sky',
+      explanation: `${keystoneName} scale directement avec votre ${isApPrimary ? `${stats.totals.ap} AP` : `${stats.totals.ad} AD`}${stats.totals.magicPenPct > 0 || stats.totals.magicPenFlat > 0 ? ' et votre Pénétration magique' : ''} pour punir sous 50% PV / sur burst court.`,
+    });
+  } else if (runeSelection.keystoneId === 8437) {
+    runeSynergies.push({
+      runeName: keystoneName,
+      category: `${primaryTreeName} · Synergie PV max`,
+      tone: 'emerald',
+      explanation: `Poigne scale sur vos ${stats.totals.hp} PV max (et profite de ${stats.totals.healShieldReceivedPct > 0 ? `+${stats.totals.healShieldReceivedPct}% de soins reçus` : 'vos échanges courts'}) pour vous soigner et grossir vos PV permanents.`,
+    });
+  } else if (keystoneMech) {
+    runeSynergies.push({
+      runeName: keystoneName,
+      category: primaryTreeName,
+      tone: 'sky',
+      explanation: keystoneMech.effect,
+    });
+  }
+
+  // Synergies runes mineures & fragments avec les items équipés
+  if (hasAlacrite || hasAsShard) {
+    if (stats.totals.uncappedAttackSpeed >= 2.35) {
+      runeSynergies.push({
+        runeName:
+          hasAlacrite && hasAsShard
+            ? 'Alacrité + Fragment +10% AS'
+            : hasAlacrite
+              ? 'Légende : alacrité (+18% AS)'
+              : 'Fragment +10% Vitesse d’attaque',
+        category: 'Fragments & Mineures · Overcap',
+        tone: 'amber',
+        explanation: `Avec +${itemAsPctTotal}% d’AS déjà sur vos objets, ce bonus de vitesse d’attaque vous approche/fait dépasser le plafond 2.500/s. En passant sur Légende : hâte (+15 Hâte) ou +9 Force adaptative, vous gagnez des dégâts utiles sans perte.`,
+      });
+    } else {
+      runeSynergies.push({
+        runeName: hasAlacrite ? 'Légende : alacrité (+18% AS)' : 'Fragment +10% AS',
+        category: `${primaryTreeName} · Cadence`,
+        tone: 'emerald',
+        explanation: `Apporte de l’AS gratuite (~${Math.round((hasAlacrite ? 18 : 10) * 25)} po) qui fluidifie vos attaques à ${stats.totals.attackSpeed}/s.`,
+      });
+    }
+  }
+
+  if (allRuneIds.has(8429) && (stats.sources.armor.items > 0 || stats.sources.mr.items > 0)) {
+    runeSynergies.push({
+      runeName: 'Conditionnement (+3% résistances)',
+      category: `${secondaryTreeName} · Synergie Tank/Bruiser`,
+      tone: 'emerald',
+      explanation: `Amplifie vos +${stats.sources.armor.items} Armure et +${stats.sources.mr.items} RM d’objets (soit +${stats.sources.armor.runes} Arm. / +${stats.sources.mr.runes} RM via runes dès le niv.9).`,
+    });
+  }
+
+  if (allRuneIds.has(8453) && (stats.combat.combatSustainPerSec > 0 || stats.totals.healShieldPowerPct > 5)) {
+    runeSynergies.push({
+      runeName: 'Revitalisation (+5–15% Soins/Boucliers)',
+      category: `${secondaryTreeName} · Synergie Sustain`,
+      tone: 'emerald',
+      explanation: `Booste directement votre sustain en combat (~${stats.combat.combatSustainPerSec} PV/s) et vos soins/boucliers d’objets.`,
+    });
+  }
+
+  if (allRuneIds.has(8234) && stats.sources.moveSpeed.items > 0) {
+    runeSynergies.push({
+      runeName: 'Célérité (+7% bonus vitesse)',
+      category: 'Mobilité & Kiting',
+      tone: 'sky',
+      explanation: `Multiplie les +${stats.sources.moveSpeed.items} de vitesse apportés par vos bottes/objets (total ${stats.totals.moveSpeed} MS).`,
+    });
+  }
+
+  if (allRuneIds.has(8210) || allRuneIds.has(9105)) {
+    runeSynergies.push({
+      runeName: allRuneIds.has(8210) ? 'Transcendance (+10 Hâte)' : 'Légende : hâte (+15 Hâte)',
+      category: 'Tempo & Cooldowns',
+      tone: 'emerald',
+      explanation: `Fournit +${stats.sources.abilityHaste.runes} Hâte sur vos ${stats.totals.abilityHaste} au total (${stats.totals.cooldownReductionPct}% CDR), précieux si votre stuff privilégie les dégâts bruts sans Hâte.`,
+    });
+  }
+
+  if (allRuneIds.has(8226) || allRuneIds.has(8009)) {
+    runeSynergies.push({
+      runeName: allRuneIds.has(8226) ? 'Ruban de mana' : 'Présence d’esprit',
+      category: 'Tenue de Mana',
+      tone: stats.totals.manaRegenPct === 0 && stats.totals.mana < 700 ? 'emerald' : 'sky',
+      explanation:
+        stats.totals.manaRegenPct === 0
+          ? `Compense l’absence totale d’objet Mana dans votre stuff actuel (${stats.totals.mana} Mana max).`
+          : `Renforce votre confort de mana (+${stats.totals.manaRegenPct}% régén. sur vos objets).`,
+    });
+  }
+
+  const roseCount = diagnostics.filter((d) => d.tone === 'rose').length;
+  const amberCount = diagnostics.filter((d) => d.tone === 'amber').length;
+
+  let overallTone: BuildDiagnosticTone = 'emerald';
+  let overallHeadline = `Build très équilibré pour ${champion.name} (${role}) face à cette compo`;
+  if (roseCount > 0) {
+    overallTone = 'rose';
+    overallHeadline = `${roseCount} point(s) critique(s) détecté(s) sur ce build (gaspillage ou vulnérabilité majeure)`;
+  } else if (amberCount > 0) {
+    overallTone = 'amber';
+    overallHeadline = `Build jouable mais ${amberCount} ajustement(s) conseillé(s) pour optimiser vos PO et dégâts`;
+  }
+
+  const profileTags: string[] = [
+    `${stats.combat.totalGold} po (${stats.combat.goldEfficiencyPct}% rentabilité)`,
+    `Runes ~${stats.combat.runeGoldValue} po`,
+    stats.totals.attackSpeed >= 2.0 ? 'Cadence rapide / On-Hit' : isApPrimary ? 'Dégâts AP' : isTankPrimary ? 'Frontline Tank' : 'Dégâts AD',
+  ];
+
+  return {
+    overallHeadline,
+    overallTone,
+    profileTags,
+    diagnostics,
+    runeSynergies,
+    suggestedTweaks: suggestedTweaks.slice(0, 3),
+  };
+}
+
 

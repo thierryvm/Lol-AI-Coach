@@ -86,32 +86,32 @@ const WORKFLOW_STAGES: WorkflowStage[] = [
     stepNumber: '01',
     title: 'Avant la partie (Builds, Runes & Boutique LoL)',
     subtitle:
-      'Préparez votre équipement, vos pages de runes synchronisées avec le client LoL et vos mémos avant le lancement.',
+      'Vue complète accessible immédiatement : préparez votre équipement, comparez deux builds A vs B, synchronisez vos runes et notez vos mémos.',
     targetTab: 'builds',
     targetLabel: 'Ouvrir Avant la partie',
     steps: [
       {
-        title: 'Choisir votre champion, votre rôle & les 5 ennemis (ou 5 cibles du simulateur)',
+        title: 'Choisir votre champion, votre rôle & tester la Vue complète ou « Atelier & Comparateur → »',
         detail:
-          'Sélectionnez votre champion parmi les 8 catégories (dont Junglers) et vos adversaires. Dans le Simulateur d’impact en bas de page, cliquez sur le crayon de n’importe laquelle des 5 cibles pour tester un adversaire précis.',
+          'Toutes les sections (Compo, Builds, Runes, Boutique et Atelier) s’affichent directement en Vue complète. Sélectionnez votre champion (8 catégories dont Junglers) et vos 5 adversaires, ou cliquez sur « Atelier & Comparateur → » en haut pour descendre directement aux stats et au comparateur Build A vs Build B.',
       },
       {
-        title: 'Gérer & synchroniser vos Runes (Éditeur officiel & MES PAGES)',
+        title: 'Comparer Build A vs Build B (Stats complètes 1–18) & synchroniser vos Runes',
         detail:
-          'Passez entre « RUNES · ÉDITEUR » (monuments officiels, mode Liste ou Grille, comparaison bleue vs méta, renommage au crayon, boutons SAUVEGARDER / + / Corbeille) et « MES PAGES » pour importer, modifier et activer vos pages directement dans League of Legends via le pont Windows v3.4.',
+          'Dans l’Atelier, cliquez sur « Comparer deux builds (A vs B) » ou utilisez « Mettre en A » et « Mettre en B » sur vos ensembles sauvegardés. Deux menus déroulants vous permettent de choisir librement n’importe quel build sauvegardé en Build A et en Build B, ou d’échanger A ↔ B en 1 clic.',
       },
       {
         title: 'Explorer la Boutique Officielle LoL, cliquer sur « Recette » & noter vos mémos',
         detail:
-          'Cliquez sur « Recette » sur n’importe quel objet conseillé ou populaire (ou ouvrez « OBJETS · BOUTIQUE & RECETTES ») pour inspecter l’arbre complet (sous-composants, coût de fusion, évolutions) et double-cliquez pour équiper l’Atelier 6 emplacements. Enregistrez aussi vos réflexes dans « Mes mémos ».',
+          'Cliquez sur « Recette » sur n’importe quel objet conseillé ou populaire (ou ouvrez « Boutique & Recettes LoL ») pour inspecter l’arbre complet et équiper l’Atelier. Chaque clic sur « Tester dans l’atelier » ou « Charger dans l’Atelier » vous y amène automatiquement.',
       },
     ],
     checklist: [
       { id: 'before-comp', label: 'Renseigner mon champion + les 5 ennemis (ou modifier une cible via le crayon)' },
       { id: 'before-runes', label: 'Personnaliser ou synchroniser une page de runes avec le client LoL' },
-      { id: 'before-shop', label: 'Cliquer sur « Recette » ou explorer « OBJETS · BOUTIQUE & RECETTES »' },
+      { id: 'before-shop', label: 'Épingler un Build A dans l’Atelier et comparer ses stats face à un Build B' },
       { id: 'before-memo', label: 'Créer ou relire un mémo de duel dans « Mes mémos »' },
-      { id: 'before-passive', label: 'Tester un scénario (Retard / Snowball) et cliquer sur (i) « Formule IA »' },
+      { id: 'before-passive', label: 'Tester un scénario (Retard / Snowball) et cliquer sur « Passif IA »' },
     ],
     proNote:
       'Si vous modifiez ou activez une page de runes déjà ouverte à l’écran dans League of Legends, quittez la page puis rouvrez-la dans le client Riot pour rafraîchir son affichage instantanément. Vos mémos restent aussi accessibles partout via Ctrl+K (⌘K).',
@@ -121,14 +121,14 @@ const WORKFLOW_STAGES: WorkflowStage[] = [
     stepNumber: '02',
     title: 'Pendant la partie (En partie · Live & Temps Réel)',
     subtitle:
-      'Vue organisée par phases de jeu avec sorts ennemis (gameEvent), synergie de combo allié, contre-objets et Coach Vocal IA.',
+      'Toutes vos aides live visibles d’un coup d’œil (« Tout voir »), avec filtrage optionnel par phase, synergie de combo et Coach Vocal IA.',
     targetTab: 'live',
     targetLabel: 'Ouvrir En partie · Live',
     steps: [
       {
-        title: 'Survoler « En partie · Live » dans le menu gauche & suivre les phases chronologiques',
+        title: 'Survoler « En partie · Live » dans le menu gauche & filtrer au besoin',
         detail:
-          'Depuis n’importe quel écran, survolez « En partie · Live » dans la barre latérale pour voir votre champion, le rang moyen du lobby, les prochains objectifs neutres et le prochain achat prioritaire. Dans la vue Live, utilisez les onglets « 1. Départ (0–3m) », « 2. Phase de lane », « 3. Mid / Late », « 4. Coach Vocal & IA » ou « Suivi auto selon l’horloge ».',
+          'Depuis n’importe quel écran, survolez « En partie · Live » dans la barre latérale pour voir votre champion, le rang moyen du lobby, les prochains objectifs neutres et le prochain achat prioritaire. Dans la vue Live, tout est visible par défaut (« Tout voir ») et vous pouvez filtrer par phase ou activer « Suivi auto ».',
       },
       {
         title: 'Suivre sorts ennemis (gameEvent), synergie de composition & radar gank',
@@ -143,7 +143,7 @@ const WORKFLOW_STAGES: WorkflowStage[] = [
     ],
     checklist: [
       { id: 'during-hover', label: 'Tester l’aperçu rapide au survol sur « En partie · Live » dans le menu' },
-      { id: 'during-phases', label: 'Basculer entre les phases (Départ / Lane / Mid-Late) ou activer le suivi auto' },
+      { id: 'during-phases', label: 'Parcourir « Tout voir » ou filtrer une phase (Départ / Lane / Mid-Late)' },
       { id: 'during-events', label: 'Vérifier les sorts ennemis (gameEvent), la Synergie de combo et les Contre-Objets' },
       { id: 'during-call', label: 'Cliquer sur « Analyser » pour tester la synthèse vocale Web Speech' },
       { id: 'during-bridge', label: 'Lancer lol-coach-bridge.bat (v3.4) dans un onglet dédié ou Détecter via Spectator-V5' },
@@ -402,14 +402,14 @@ const FEATURE_CARDS: FeatureGuideCard[] = [
   {
     id: 'atelier-sandbox',
     category: 'builds',
-    title: 'Atelier Équipement 6 Emplacements & Comparateur de Deltas',
-    where: 'Avant la partie → Section Atelier & Simulateur',
+    title: 'Atelier 6 Emplacements, Coach Guidé par Spécialisation & Ensembles Sauvegardés',
+    where: 'Avant la partie → Bouton rapide « Atelier & Comparateur → » (Vue complète par défaut)',
     summary:
-      'Testez librement n’importe quel objet dans vos 6 emplacements, ajustez le niveau de 1 à 18 et les charges Cœuracier, et voyez l’écart exact (vert/rouge) par rapport au build conseillé.',
+      'Composez librement 6 objets, chargez n’importe quelle page de runes (Méta, Client LoL ou Mes Pages) et sauvegardez vos ensembles complets pour les comparer Build A vs Build B. Choisissez aussi votre orientation de gameplay (ex. Teemo Champignons & DoT vs On-Hit vs Burst AP) : le Coach d’Optimisation teste réellement des dizaines de builds 6 objets × runes contre la compo adverse en croisant votre historique, vos runes et votre stuff actuel, puis justifie ses corrections face à chaque type d’ennemi.',
     howToUse:
-      'Cliquez sur un emplacement pour choisir un objet dans la Boutique Officielle (ou sur la croix du slot pour le retirer) et comparez vos dégâts en direct.',
+      'Sélectionnez votre spécialisation dans le panneau « Coach d’Optimisation par Simulation Réelle » (dans l’Atelier), inspectez les gains vérifiés Avant → Après et appliquez la solution complète (Objets + Runes) ou comparez-la en 1 clic dans Build A vs Build B.',
     targetTab: 'builds',
-    keywords: 'atelier emplacement equipement stats delta coeuracier niveau retirer croix',
+    keywords: 'atelier emplacement equipement stats delta coeuracier niveau retirer croix comparateur build a b interpreter vitesse attaque plafond runes sauvegarder charger coach specialisation champignons dot teemo gameplay',
   },
   {
     id: 'popular-builds-search',

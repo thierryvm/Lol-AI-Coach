@@ -12,14 +12,19 @@ import {
   X,
 } from 'lucide-react';
 import { extractRawDataDragonItemDetails, parseExactItemStats } from '../engines/buildSimulator.ts';
+import type { RunePageSelection } from '../engines/runeEngine.ts';
 import type { GameModeContext, ItemData } from '../engines/types.ts';
 import { SafeGameIcon } from './SafeGameIcon.tsx';
 
 export interface SavedItemSetEntry {
   id: string;
   name: string;
+  championId?: string;
   championName: string;
   itemIds: (string | null)[];
+  runeSelection?: RunePageSelection;
+  level?: number;
+  heartsteelStacksHp?: number;
   totalGold: number;
   updatedAt: number;
 }
@@ -95,6 +100,11 @@ export interface LoLItemShopPanelProps {
   onResetToRecommended?: () => void;
   onExplainPassive?: (item: ItemData) => void;
   hasPassiveInfo?: (item: ItemData) => boolean;
+  savedSets?: SavedItemSetEntry[];
+  onSaveItemSet?: (name: string) => void;
+  onDeleteItemSet?: (setId: string) => void;
+  onLoadSavedSet?: (entry: SavedItemSetEntry) => void;
+  onPinSavedSetAsA?: (entry: SavedItemSetEntry) => void;
   isModal?: boolean;
   onCloseModal?: () => void;
 }
@@ -112,6 +122,11 @@ export function LoLItemShopPanel({
   onResetToRecommended,
   onExplainPassive,
   hasPassiveInfo,
+  savedSets: controlledSavedSets,
+  onSaveItemSet,
+  onDeleteItemSet,
+  onLoadSavedSet,
+  onPinSavedSetAsA,
   isModal = false,
   onCloseModal,
 }: LoLItemShopPanelProps) {
@@ -129,7 +144,10 @@ export function LoLItemShopPanel({
     resolveDefaultSlotIdx(initialTargetSlotIdx),
   );
 
-  const [savedSets, setSavedSets] = useState<SavedItemSetEntry[]>(() => loadSavedItemSets());
+  const [internalSavedSets, setInternalSavedSets] = useState<SavedItemSetEntry[]>(() =>
+    loadSavedItemSets(),
+  );
+  const savedSets = controlledSavedSets ?? internalSavedSets;
   const [newSetName, setNewSetName] = useState('');
   const [setFeedback, setSetFeedback] = useState<string | null>(null);
 
@@ -320,25 +338,33 @@ export function LoLItemShopPanel({
 
   const handleSaveCurrentItemSet = () => {
     const cleanName = newSetName.trim() || `${championName} · Ensemble S16`;
-    const newEntry: SavedItemSetEntry = {
-      id: `itemset-${Date.now()}`,
-      name: cleanName,
-      championName,
-      itemIds: slots.map((s) => s?.id || null),
-      totalGold: totalSlotsGold,
-      updatedAt: Date.now(),
-    };
-    const next = [newEntry, ...savedSets].slice(0, 20);
-    setSavedSets(next);
-    saveItemSetsToStorage(next);
+    if (onSaveItemSet) {
+      onSaveItemSet(cleanName);
+    } else {
+      const newEntry: SavedItemSetEntry = {
+        id: `itemset-${Date.now()}`,
+        name: cleanName,
+        championName,
+        itemIds: slots.map((s) => s?.id || null),
+        totalGold: totalSlotsGold,
+        updatedAt: Date.now(),
+      };
+      const next = [newEntry, ...internalSavedSets].slice(0, 20);
+      setInternalSavedSets(next);
+      saveItemSetsToStorage(next);
+    }
     setNewSetName('');
     setSetFeedback(`Ensemble « ${cleanName} » enregistré.`);
     window.setTimeout(() => setSetFeedback(null), 2500);
   };
 
   const handleDeleteItemSet = (setId: string) => {
-    const next = savedSets.filter((s) => s.id !== setId);
-    setSavedSets(next);
+    if (onDeleteItemSet) {
+      onDeleteItemSet(setId);
+      return;
+    }
+    const next = internalSavedSets.filter((s) => s.id !== setId);
+    setInternalSavedSets(next);
     saveItemSetsToStorage(next);
   };
 
@@ -347,15 +373,15 @@ export function LoLItemShopPanel({
       {/* Ornements Hextech aux coins */}
       <span
         aria-hidden="true"
-        className="pointer-events-none absolute top-0 left-0 w-3 h-3 border-t-2 border-l-2 border-[#C8AA6E]/75 z-20"
+        className="pointer-events-none absolute top-1 left-1 w-2 h-2 border-t border-l border-[#C8AA6E]/70 z-20"
       />
       <span
         aria-hidden="true"
-        className="pointer-events-none absolute top-0 right-0 w-3 h-3 border-t-2 border-r-2 border-[#C8AA6E]/75 z-20"
+        className="pointer-events-none absolute top-1 right-1 w-2 h-2 border-t border-r border-[#C8AA6E]/70 z-20"
       />
 
       {/* En-tête Boutique officielle LoL */}
-      <div className="px-4 py-3 border-b border-[#C8AA6E]/25 bg-[#040E1A] flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+      <div className="pl-5 pr-4 py-3 border-b border-[#C8AA6E]/25 bg-[#040E1A] flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-2">
             <Coins className="w-4 h-4 text-[#C8AA6E]" aria-hidden="true" />
@@ -903,22 +929,40 @@ export function LoLItemShopPanel({
                       })}
                     </div>
 
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (onApplyItemSet) {
-                          onApplyItemSet(setEntry.itemIds);
-                        } else {
-                          setEntry.itemIds.forEach((id, idx) => {
-                            onAssignSlot(idx, id ? itemById.get(id) || null : null);
-                          });
-                        }
-                        setActiveTab('shop');
-                      }}
-                      className="px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider border border-[#C8AA6E]/70 bg-[#091428] text-[#F0E6D2] hover:bg-[#C8AA6E] hover:text-[#010A13] transition-colors whitespace-nowrap"
-                    >
-                      Charger
-                    </button>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {onPinSavedSetAsA && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onPinSavedSetAsA(setEntry);
+                            setActiveTab('shop');
+                          }}
+                          title="Placer cet ensemble en Build A (référence)"
+                          className="px-2.5 py-1.5 text-[11px] font-bold uppercase tracking-wider border border-sky-400/55 bg-sky-500/10 text-sky-200 hover:bg-sky-500/20 transition-colors whitespace-nowrap"
+                        >
+                          Mettre en A
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (onLoadSavedSet) {
+                            onLoadSavedSet(setEntry);
+                          } else if (onApplyItemSet) {
+                            onApplyItemSet(setEntry.itemIds);
+                          } else {
+                            setEntry.itemIds.forEach((id, idx) => {
+                              onAssignSlot(idx, id ? itemById.get(id) || null : null);
+                            });
+                          }
+                          setActiveTab('shop');
+                        }}
+                        title="Charger cet ensemble dans l’Atelier (Build B)"
+                        className="px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider border border-[#C8AA6E]/70 bg-[#091428] text-[#F0E6D2] hover:bg-[#C8AA6E] hover:text-[#010A13] transition-colors whitespace-nowrap"
+                      >
+                        Mettre en B
+                      </button>
+                    </div>
                   </div>
                 </div>
               ))}

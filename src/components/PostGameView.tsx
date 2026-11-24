@@ -210,7 +210,7 @@ export function PostGameView({
   }, [filteredMatches, activeMatch, onSelectMatchId]);
 
   const [subTab, setSubTab] = useState<'overview' | 'tactical-map'>('overview');
-  const [overviewSection, setOverviewSection] = useState<'coaching' | 'map-curves' | 'players' | 'all'>('coaching');
+  const [overviewSection, setOverviewSection] = useState<'coaching' | 'map-curves' | 'players' | 'all'>('all');
   const [selectedMapTimestampMs, setSelectedMapTimestampMs] = useState<number | null>(null);
 
   const [matchIdQuery, setMatchIdQuery] = useState('');
@@ -1019,10 +1019,10 @@ export function PostGameView({
         >
           {(
             [
-              { id: 'coaching', label: '1. Bilan & Coaching' },
+              { id: 'all', label: 'Tout voir' },
+              { id: 'coaching', label: '1. Bilan & Stuff' },
               { id: 'map-curves', label: '2. Carte & Courbes' },
               { id: 'players', label: '3. 10 Joueurs' },
-              { id: 'all', label: 'Tout voir' },
             ] as const
           ).map((tab) => {
             const active = overviewSection === tab.id;

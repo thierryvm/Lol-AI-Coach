@@ -62,7 +62,7 @@ export interface RuneComparisonResult {
   statRows: RuneStatDeltaRow[];
 }
 
-const KEYSTONE_MECHANICS: Record<
+export const KEYSTONE_MECHANICS: Record<
   number,
   {
     styles: Array<'AD_CRIT' | 'AD_BRUISER' | 'AD_LETHALITY' | 'AP_MAGE' | 'TANK' | 'ENCHANTER'>;

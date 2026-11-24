@@ -383,8 +383,8 @@ export function LiveCoachView({
   const [championKits, setChampionKits] = useState<Record<string, ChampionDetail>>({});
   const [selectedKitChampName, setSelectedKitChampName] = useState<string>('');
   const [showAllAbilitiesPanel, setShowAllAbilitiesPanel] = useState<boolean>(true);
-  const [activeStage, setActiveStage] = useState<LiveGameStage>('start');
-  const [autoFollowStage, setAutoFollowStage] = useState<boolean>(true);
+  const [activeStage, setActiveStage] = useState<LiveGameStage>('all');
+  const [autoFollowStage, setAutoFollowStage] = useState<boolean>(false);
   const [skillTracker, setSkillTracker] = useState<SkillOrderTrackerState | null>(() =>
     loadStoredSkillOrder(),
   );
@@ -2008,11 +2008,11 @@ export function LiveCoachView({
           );
 
         const stageTabs: Array<{ id: LiveGameStage; label: string; hint: string }> = [
+          { id: 'all', label: 'Tout voir', hint: 'Affichage complet sans filtre' },
           { id: 'start', label: '1. Départ (0–3m)', hint: 'Équipement, compétences 1→18 & runes' },
           { id: 'lane', label: '2. Phase de lane', hint: 'Radar jungle, Win Rate voie & sorts' },
           { id: 'teamfight', label: '3. Mid / Late', hint: 'Contre-objets, teamfight & builds' },
           { id: 'voice', label: '4. Coach Vocal & IA', hint: 'Synthèse audio & micro' },
-          { id: 'all', label: 'Tout voir', hint: 'Affichage complet sans filtre' },
         ];
 
         return (

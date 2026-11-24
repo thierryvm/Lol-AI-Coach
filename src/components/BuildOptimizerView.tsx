@@ -2,7 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import {
   AlertTriangle,
+  ArrowLeftRight,
   Ban,
+  BookmarkPlus,
   BookOpen,
   Brain,
   Check,
@@ -12,6 +14,7 @@ import {
   Download,
   ExternalLink,
   FlaskConical,
+  FolderOpen,
   Gauge,
   Globe,
   Info,
@@ -19,6 +22,7 @@ import {
   Library,
   Loader2,
   Pencil,
+  Pin,
   Plus,
   Radar,
   Radio,
@@ -41,6 +45,7 @@ import {
   computePerItemImpactMatrix,
   extractRawDataDragonItemDetails,
   formatItemStatTags,
+  interpretBuildAndRunes,
   runCombinatorialBuildAndRuneSearch,
   simulateCombatDamageAgainstTarget,
   validateRuneConfiguration,
@@ -52,6 +57,11 @@ import {
   selectionFromRecommendation,
   type RunePageSelection,
 } from '../engines/runeEngine.ts';
+import {
+  getChampionGameplaySpecializations,
+  runGuidedCoachOptimization,
+  type GameplaySpecializationId,
+} from '../engines/guidedOptimizerEngine.ts';
 import type {
   ChampionSummary,
   DDragonBootstrap,
@@ -59,6 +69,7 @@ import type {
   GameModeContext,
   GameScenario,
   ItemData,
+  MatchRecord,
   PlayerProfileResponse,
   PlayerTendencies,
   RiotPlatform,
@@ -78,7 +89,12 @@ import {
   type NormalizedLcuRunePage,
   UNIVERSAL_STATE_CLIPBOARD_CMD,
 } from '../utils/liveBridge.ts';
-import { LoLItemShopPanel } from './LoLItemShopPanel.tsx';
+import {
+  loadSavedItemSets,
+  LoLItemShopPanel,
+  saveItemSetsToStorage,
+  type SavedItemSetEntry,
+} from './LoLItemShopPanel.tsx';
 import {
   MatchupNotesModal,
   parseStoredMatchupNotes,
@@ -99,6 +115,7 @@ import { VisualRunePage } from './VisualRunePage.tsx';
 interface BuildOptimizerViewProps {
   ddragon: DDragonBootstrap;
   tendencies?: PlayerTendencies;
+  matches?: MatchRecord[];
   initialChampionName?: string;
   initialDuoChampionName?: string;
   initialRole?: Role;
@@ -336,6 +353,7 @@ function parseRiotId(riotId: string): { gameName: string; tagLine: string } {
 export function BuildOptimizerView({
   ddragon,
   tendencies,
+  matches,
   initialChampionName,
   initialDuoChampionName,
   initialRole = 'SUPPORT',
@@ -356,9 +374,7 @@ export function BuildOptimizerView({
   };
 
   const [playerChampId, setPlayerChampId] = useState<string>(() => findChamp(initialChampionName).id);
-  const [buildStep, setBuildStep] = useState<'setup' | 'build' | 'tools' | 'all'>(() =>
-    initialChampionName ? 'build' : 'setup',
-  );
+  const [buildStep, setBuildStep] = useState<'setup' | 'build' | 'tools' | 'all'>('all');
   const [role, setRole] = useState<Role>(initialRole);
   const [gameMode, setGameMode] = useState<GameModeContext>('CLASSIC');
   const [scenario, setScenario] = useState<GameScenario>('balanced');
@@ -399,13 +415,37 @@ export function BuildOptimizerView({
   const [lcuSyncFeedback, setLcuSyncFeedback] = useState<string | null>(null);
   const hasSeededFallbackRef = useRef(false);
 
-  // Atelier d'équipement interactif (6 emplacements + stacks Cœuracier + Boutique LoL officielle)
+  // Atelier d'équipement interactif (6 emplacements + comparateur Build A vs B + Boutique LoL officielle)
   const [customBuildItemIds, setCustomBuildItemIds] = useState<(string | null)[] | null>(null);
+  const [loadedSavedSetBId, setLoadedSavedSetBId] = useState<string | null>(null);
+  const [pinnedBuildA, setPinnedBuildA] = useState<{
+    savedSetId?: string;
+    label: string;
+    championId: string;
+    itemIds: (string | null)[];
+    runeSelection: RunePageSelection;
+    heartsteelStacksHp: number;
+  } | null>(null);
   const [heartsteelStacksHp, setHeartsteelStacksHp] = useState<number>(300);
   const [itemPickerSlotIdx, setItemPickerSlotIdx] = useState<number | null>(null);
   const [recipeModalItemId, setRecipeModalItemId] = useState<string | null>(null);
   const [inspectedShopItemId, setInspectedShopItemId] = useState<string | null>(null);
   const [showAtelierShopPanel, setShowAtelierShopPanel] = useState<boolean>(true);
+  const atelierSectionRef = useRef<HTMLElement | null>(null);
+  const runesSectionRef = useRef<HTMLDivElement | null>(null);
+
+  // Ensembles & builds sauvegardés (synchronisés entre Atelier et Boutique LoL)
+  const [savedItemSets, setSavedItemSets] = useState<SavedItemSetEntry[]>(() =>
+    loadSavedItemSets(),
+  );
+  const [newBuildSetName, setNewBuildSetName] = useState<string>('');
+  const [buildSetFeedback, setBuildSetFeedback] = useState<string | null>(null);
+  const [showSavedBuildsBar, setShowSavedBuildsBar] = useState<boolean>(
+    () => loadSavedItemSets().length > 0,
+  );
+  const [selectedSpecByKey, setSelectedSpecByKey] = useState<
+    Record<string, GameplaySpecializationId>
+  >({});
 
   // Simulateur d'impact par objet (Data Dragon brut) & dégâts infligés en temps réel
   const [combatDurationSec, setCombatDurationSec] = useState<number>(6);
@@ -997,6 +1037,45 @@ export function BuildOptimizerView({
     ],
   );
 
+  const activePinnedBuildA =
+    pinnedBuildA && pinnedBuildA.championId === playerChampion.id ? pinnedBuildA : null;
+
+  const pinnedBuildAItems = useMemo(
+    () =>
+      activePinnedBuildA
+        ? activePinnedBuildA.itemIds
+            .map((id) => (id ? itemByIdMap.get(id) || null : null))
+            .filter((it): it is ItemData => Boolean(it))
+        : [],
+    [activePinnedBuildA, itemByIdMap],
+  );
+
+  const pinnedBuildAStats = useMemo(
+    () =>
+      activePinnedBuildA
+        ? computeFullChampionBuildStats({
+            champion: playerChampion,
+            role,
+            level: runeSimLevel,
+            items: pinnedBuildAItems,
+            runeSelection: activePinnedBuildA.runeSelection,
+            threats: recommendation.threatSummary,
+            heartsteelStacksHp: activePinnedBuildA.heartsteelStacksHp,
+          })
+        : null,
+    [
+      activePinnedBuildA,
+      playerChampion,
+      role,
+      runeSimLevel,
+      pinnedBuildAItems,
+      recommendation.threatSummary,
+    ],
+  );
+
+  const comparisonBaselineStats = pinnedBuildAStats || recommendedStats;
+  const comparisonBaselineLabel = activePinnedBuildA ? activePinnedBuildA.label : 'Conseillé';
+
   const combinatorialResult = useMemo(
     () =>
       runCombinatorialBuildAndRuneSearch({
@@ -1098,6 +1177,66 @@ export function BuildOptimizerView({
     ],
   );
 
+  const baselineCombatDamageResult = useMemo(
+    () =>
+      simulateCombatDamageAgainstTarget({
+        champion: playerChampion,
+        role,
+        level: runeSimLevel,
+        items: activePinnedBuildA ? pinnedBuildAItems : recommendedBuildItems,
+        runeSelection: activePinnedBuildA ? activePinnedBuildA.runeSelection : metaRuneSelection,
+        target: activeCombatTarget,
+        durationSec: combatDurationSec,
+        spellCasts: combatSpellCasts,
+        heartsteelStacksHp: activePinnedBuildA
+          ? activePinnedBuildA.heartsteelStacksHp
+          : heartsteelStacksHp,
+        threats: recommendation.threatSummary,
+      }),
+    [
+      playerChampion,
+      role,
+      runeSimLevel,
+      activePinnedBuildA,
+      pinnedBuildAItems,
+      recommendedBuildItems,
+      metaRuneSelection,
+      activeCombatTarget,
+      combatDurationSec,
+      combatSpellCasts,
+      heartsteelStacksHp,
+      recommendation.threatSummary,
+    ],
+  );
+
+  const metaRunesCombatDamage = useMemo(
+    () =>
+      simulateCombatDamageAgainstTarget({
+        champion: playerChampion,
+        role,
+        level: runeSimLevel,
+        items: sandboxActiveItems,
+        runeSelection: metaRuneSelection,
+        target: activeCombatTarget,
+        durationSec: combatDurationSec,
+        spellCasts: combatSpellCasts,
+        heartsteelStacksHp,
+        threats: recommendation.threatSummary,
+      }),
+    [
+      playerChampion,
+      role,
+      runeSimLevel,
+      sandboxActiveItems,
+      metaRuneSelection,
+      activeCombatTarget,
+      combatDurationSec,
+      combatSpellCasts,
+      heartsteelStacksHp,
+      recommendation.threatSummary,
+    ],
+  );
+
   const perItemImpactRows = useMemo(
     () =>
       computePerItemImpactMatrix({
@@ -1160,6 +1299,114 @@ export function BuildOptimizerView({
       runeSimLevel,
     ],
   );
+
+  const buildInterpretation = useMemo(
+    () =>
+      interpretBuildAndRunes({
+        champion: playerChampion,
+        role,
+        level: runeSimLevel,
+        items: sandboxActiveItems,
+        runeSelection: activeSandboxSelection,
+        runeTrees: ddragon.runeTrees,
+        stats: sandboxStats,
+        threats: recommendation.threatSummary,
+      }),
+    [
+      playerChampion,
+      role,
+      runeSimLevel,
+      sandboxActiveItems,
+      activeSandboxSelection,
+      ddragon.runeTrees,
+      sandboxStats,
+      recommendation.threatSummary,
+    ],
+  );
+
+  const specCatalog = useMemo(
+    () => getChampionGameplaySpecializations(playerChampion, role),
+    [playerChampion, role],
+  );
+  const specStorageKey = `${playerChampion.id}:${role}`;
+  const activeGameplaySpecId: GameplaySpecializationId =
+    selectedSpecByKey[specStorageKey] &&
+    specCatalog.options.some((o) => o.id === selectedSpecByKey[specStorageKey])
+      ? selectedSpecByKey[specStorageKey]
+      : specCatalog.defaultId;
+
+  const guidedOptimizationReport = useMemo(
+    () =>
+      runGuidedCoachOptimization({
+        gameMode,
+        playerChampion,
+        role,
+        simLevel: runeSimLevel,
+        specializationId: activeGameplaySpecId,
+        currentItems: sandboxActiveItems,
+        currentRuneSelection: activeSandboxSelection,
+        enemyChampions,
+        threats: recommendation.threatSummary,
+        items: ddragon.items,
+        runeTrees: ddragon.runeTrees,
+        matches,
+        tendencies,
+        heartsteelStacksHp,
+      }),
+    [
+      gameMode,
+      playerChampion,
+      role,
+      runeSimLevel,
+      activeGameplaySpecId,
+      sandboxActiveItems,
+      activeSandboxSelection,
+      enemyChampions,
+      recommendation.threatSummary,
+      ddragon.items,
+      ddragon.runeTrees,
+      matches,
+      tendencies,
+      heartsteelStacksHp,
+    ],
+  );
+
+  const activeRuneVisualSummary = useMemo(() => {
+    const findRuneObj = (id: number) => {
+      for (const tree of ddragon.runeTrees) {
+        for (const slot of tree.slots) {
+          const hit = slot.runes.find((r) => r.id === id);
+          if (hit) return hit;
+        }
+      }
+      return null;
+    };
+    const primaryTree = ddragon.runeTrees.find((t) => t.id === activeSandboxSelection.primaryTreeId);
+    const secondaryTree = ddragon.runeTrees.find(
+      (t) => t.id === activeSandboxSelection.secondaryTreeId,
+    );
+    const shardRowLabels: [string[], string[], string[]] = [
+      ['+9 Force adaptative', '+10% Vit. attaque', '+8 Hâte'],
+      ['+9 Force adaptative', '+2% Vit. déplac.', '+10–180 PV'],
+      ['+65 PV fixes', '+10% Ténacité', '+10–180 PV'],
+    ];
+    return {
+      primaryTreeName: primaryTree?.name || 'Principal',
+      secondaryTreeName: secondaryTree?.name || 'Secondaire',
+      keystone: findRuneObj(activeSandboxSelection.keystoneId),
+      primaryMinors: activeSandboxSelection.primaryMinorIds
+        .map((id) => findRuneObj(id))
+        .filter((r): r is NonNullable<ReturnType<typeof findRuneObj>> => Boolean(r)),
+      secondaryMinors: activeSandboxSelection.secondaryMinorIds
+        .map((id) => findRuneObj(id))
+        .filter((r): r is NonNullable<ReturnType<typeof findRuneObj>> => Boolean(r)),
+      shards: [
+        shardRowLabels[0][activeSandboxSelection.shardIndices[0]] || '+9 Force adaptative',
+        shardRowLabels[1][activeSandboxSelection.shardIndices[1]] || '+9 Force adaptative',
+        shardRowLabels[2][activeSandboxSelection.shardIndices[2]] || '+65 PV fixes',
+      ],
+    };
+  }, [ddragon.runeTrees, activeSandboxSelection]);
 
   const recommendedItemIdsSet = useMemo(
     () => new Set(recommendedBuildItems.map((it) => it.id)),
@@ -1401,7 +1648,169 @@ export function BuildOptimizerView({
       next[slotIdx] = item ? item.id : null;
       return next;
     });
+    setLoadedSavedSetBId(null);
     setItemPickerSlotIdx(null);
+  };
+
+  const scrollToAtelier = () => {
+    setBuildStep((prev) => (prev === 'setup' || prev === 'build' ? 'all' : prev));
+    window.setTimeout(() => {
+      atelierSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 80);
+  };
+
+  const handlePinCurrentBuildAsA = () => {
+    const currentIds = sandboxSlots.map((it) => it?.id || null);
+    const currentSig = JSON.stringify(currentIds);
+
+    // Prioriser un build sauvegardé différent du build actuel pour éviter de comparer deux builds identiques
+    const sortedSaved = [...savedItemSets].sort((a, b) => {
+      const aMatch = a.championId === playerChampion.id ? 0 : 1;
+      const bMatch = b.championId === playerChampion.id ? 0 : 1;
+      return aMatch - bMatch;
+    });
+    const differentSaved = sortedSaved.find(
+      (s) => JSON.stringify(s.itemIds) !== currentSig,
+    );
+
+    if (differentSaved) {
+      setPinnedBuildA({
+        savedSetId: differentSaved.id,
+        label: differentSaved.name,
+        championId: playerChampion.id,
+        itemIds: differentSaved.itemIds,
+        runeSelection: differentSaved.runeSelection || metaRuneSelection,
+        heartsteelStacksHp: differentSaved.heartsteelStacksHp ?? heartsteelStacksHp,
+      });
+      return;
+    }
+
+    const recommendedIds = Array.from(
+      { length: 6 },
+      (_, i) => recommendedBuildItems[i]?.id || null,
+    );
+    if (isBuildModified && JSON.stringify(recommendedIds) !== currentSig) {
+      setPinnedBuildA({
+        savedSetId: '__recommended__',
+        label: `Conseillé (${playerChampion.name})`,
+        championId: playerChampion.id,
+        itemIds: recommendedIds,
+        runeSelection: metaRuneSelection,
+        heartsteelStacksHp,
+      });
+      return;
+    }
+
+    setPinnedBuildA({
+      savedSetId: loadedSavedSetBId || undefined,
+      label: isBuildModified ? 'Build A (Épinglé)' : 'Build A (Conseillé)',
+      championId: playerChampion.id,
+      itemIds: currentIds,
+      runeSelection: activeSandboxSelection,
+      heartsteelStacksHp,
+    });
+  };
+
+  const handleSwapPinnedBuildWithB = () => {
+    if (!activePinnedBuildA) return;
+    const currentBIds = sandboxSlots.map((it) => it?.id || null);
+    const currentBRunes = activeSandboxSelection;
+    const currentBStacks = heartsteelStacksHp;
+    const prevBSavedId = loadedSavedSetBId;
+    const prevASavedId = activePinnedBuildA.savedSetId;
+    const prevBLabel = prevBSavedId
+      ? savedItemSets.find((s) => s.id === prevBSavedId)?.name || 'Build B (Épinglé)'
+      : isBuildModified
+        ? 'Build personnalisé'
+        : `Conseillé (${playerChampion.name})`;
+
+    setCustomBuildItemIds(activePinnedBuildA.itemIds);
+    setCustomRuneSelection(activePinnedBuildA.runeSelection);
+    setHeartsteelStacksHp(activePinnedBuildA.heartsteelStacksHp);
+    setLoadedSavedSetBId(prevASavedId && prevASavedId !== '__recommended__' ? prevASavedId : null);
+    setPinnedBuildA({
+      savedSetId: prevBSavedId || undefined,
+      label: prevBLabel,
+      championId: playerChampion.id,
+      itemIds: currentBIds,
+      runeSelection: currentBRunes,
+      heartsteelStacksHp: currentBStacks,
+    });
+  };
+
+  const handleSaveCurrentBuildSet = (explicitName?: string) => {
+    const cleanName =
+      (explicitName ?? newBuildSetName).trim() ||
+      `${playerChampion.name} · Build ${savedItemSets.length + 1}`;
+    const newEntry: SavedItemSetEntry = {
+      id: `itemset-${Date.now()}`,
+      name: cleanName,
+      championId: playerChampion.id,
+      championName: playerChampion.name,
+      itemIds: sandboxSlots.map((s) => s?.id || null),
+      runeSelection: activeSandboxSelection,
+      level: runeSimLevel,
+      heartsteelStacksHp,
+      totalGold: sandboxStats.combat.totalGold,
+      updatedAt: Date.now(),
+    };
+    const next = [newEntry, ...savedItemSets].slice(0, 20);
+    setSavedItemSets(next);
+    saveItemSetsToStorage(next);
+    setLoadedSavedSetBId(newEntry.id);
+    setNewBuildSetName('');
+    setShowSavedBuildsBar(true);
+    setBuildSetFeedback(`Build « ${cleanName} » sauvegardé avec vos 6 objets et runes !`);
+    window.setTimeout(() => setBuildSetFeedback(null), 3000);
+  };
+
+  const handleDeleteSavedBuildSet = (setId: string) => {
+    const next = savedItemSets.filter((s) => s.id !== setId);
+    setSavedItemSets(next);
+    saveItemSetsToStorage(next);
+    if (loadedSavedSetBId === setId) setLoadedSavedSetBId(null);
+  };
+
+  const handleLoadSavedBuildSet = (entry: SavedItemSetEntry) => {
+    setCustomBuildItemIds(entry.itemIds);
+    setLoadedSavedSetBId(entry.id);
+    if (entry.runeSelection) {
+      setRuneViewMode('recommended');
+      setCustomRuneSelection(entry.runeSelection);
+      setActiveSavedPageId(null);
+      setActiveRunePageTitle(entry.name);
+      setIsRunePageDirty(false);
+    }
+    if (typeof entry.level === 'number') {
+      setRuneSimLevel(Math.max(1, Math.min(18, entry.level)));
+    }
+    if (typeof entry.heartsteelStacksHp === 'number') {
+      setHeartsteelStacksHp(entry.heartsteelStacksHp);
+    }
+    setBuildSetFeedback(`Build « ${entry.name} » chargé en Build B dans l’Atelier.`);
+    window.setTimeout(() => setBuildSetFeedback(null), 2600);
+  };
+
+  const handlePinSavedSetAsA = (entry: SavedItemSetEntry) => {
+    setPinnedBuildA({
+      savedSetId: entry.id,
+      label: entry.name,
+      championId: playerChampion.id,
+      itemIds: entry.itemIds,
+      runeSelection: entry.runeSelection || activeSandboxSelection,
+      heartsteelStacksHp: entry.heartsteelStacksHp ?? heartsteelStacksHp,
+    });
+    setBuildSetFeedback(`« ${entry.name} » placé en Build A pour comparaison directe.`);
+    window.setTimeout(() => setBuildSetFeedback(null), 2600);
+    scrollToAtelier();
+  };
+
+  const scrollToRunesEditor = () => {
+    setBuildStep((prev) => (prev === 'setup' || prev === 'tools' ? 'all' : prev));
+    setClientHubTab('editor');
+    window.setTimeout(() => {
+      runesSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 80);
   };
 
   const handleQuickTestItem = (item: ItemData) => {
@@ -1418,11 +1827,13 @@ export function BuildOptimizerView({
       }
       return next;
     });
+    scrollToAtelier();
   };
 
   const handleApplyPopularBuildItems = (items: ItemData[]) => {
     const padded = Array.from({ length: 6 }, (_, i) => items[i]?.id || null);
     setCustomBuildItemIds(padded);
+    scrollToAtelier();
   };
 
   const hasUniquePassiveInfo = (item: ItemData): boolean => {
@@ -1844,47 +2255,65 @@ export function BuildOptimizerView({
                 {buildStep !== 'setup' && (
                   <button
                     type="button"
-                    onClick={() => setBuildStep('setup')}
+                    onClick={() => {
+                      if (buildStep === 'all') {
+                        window.scrollTo({ top: 0, behavior: 'smooth' });
+                      } else {
+                        setBuildStep('setup');
+                      }
+                    }}
                     className="ml-2 text-[11px] font-semibold text-[#007AFF] dark:text-[#0A84FF] hover:underline whitespace-nowrap"
                   >
-                    Modifier
+                    {buildStep === 'all' ? 'Haut / Modifier ↑' : 'Modifier'}
                   </button>
                 )}
               </div>
             </div>
           </div>
 
-          <div
-            role="tablist"
-            aria-label="Étapes de préparation du build"
-            className="inline-flex flex-wrap items-center gap-1 p-1 rounded-xl bg-slate-200/70 dark:bg-[#0D0F14] border border-black/[0.05] dark:border-white/[0.07] self-start lg:self-auto"
-          >
-            {(
-              [
-                { id: 'setup', label: '1. Champion & Compo' },
-                { id: 'build', label: '2. Build & Runes' },
-                { id: 'tools', label: '3. Atelier & Simulateur' },
-                { id: 'all', label: 'Tout voir' },
-              ] as const
-            ).map((step) => {
-              const active = buildStep === step.id;
-              return (
-                <button
-                  key={step.id}
-                  type="button"
-                  role="tab"
-                  aria-selected={active}
-                  onClick={() => setBuildStep(step.id)}
-                  className={`px-3 py-1.5 text-xs rounded-lg transition-all whitespace-nowrap ${
-                    active
-                      ? 'bg-white dark:bg-[#1E222D] text-slate-900 dark:text-white font-semibold shadow-xs'
-                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white font-medium'
-                  }`}
-                >
-                  {step.label}
-                </button>
-              );
-            })}
+          <div className="flex flex-wrap items-center gap-2 self-start lg:self-auto">
+            <div
+              role="tablist"
+              aria-label="Affichage des sections de préparation"
+              className="inline-flex flex-wrap items-center gap-1 p-1 rounded-xl bg-slate-200/70 dark:bg-[#0D0F14] border border-black/[0.05] dark:border-white/[0.07]"
+            >
+              {(
+                [
+                  { id: 'all', label: 'Vue complète' },
+                  { id: 'setup', label: '1. Compo' },
+                  { id: 'build', label: '2. Build & Runes' },
+                  { id: 'tools', label: '3. Atelier & Comparateur' },
+                ] as const
+              ).map((step) => {
+                const active = buildStep === step.id;
+                return (
+                  <button
+                    key={step.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={active}
+                    onClick={() => setBuildStep(step.id)}
+                    className={`px-3 py-1.5 text-xs rounded-lg transition-all whitespace-nowrap ${
+                      active
+                        ? 'bg-white dark:bg-[#1E222D] text-slate-900 dark:text-white font-semibold shadow-xs'
+                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white font-medium'
+                    }`}
+                  >
+                    {step.label}
+                  </button>
+                );
+              })}
+            </div>
+
+            <button
+              type="button"
+              onClick={scrollToAtelier}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-xl bg-amber-600 dark:bg-amber-500 text-white dark:text-slate-950 hover:bg-amber-500 transition-colors whitespace-nowrap shrink-0"
+              title="Aller directement à l’Atelier 6 emplacements, aux stats détaillées et au comparateur Build A vs B"
+            >
+              <FlaskConical className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>Atelier &amp; Comparateur →</span>
+            </button>
           </div>
         </div>
       </div>
@@ -3016,19 +3445,23 @@ export function BuildOptimizerView({
       {/* Atelier Équipement Interactif + Statistiques Exactes & Deltas en Temps Réel */}
       {(buildStep === 'tools' || buildStep === 'all') && (
       <>
-      <section className="rounded-2xl apple-surface p-5 space-y-5">
-        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 pb-4 border-b border-slate-200 dark:border-slate-800">
-          <div className="space-y-1">
-            <h2 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
-              <FlaskConical className="w-4 h-4 text-amber-500 shrink-0" aria-hidden="true" />
-              <span>Atelier Équipement &amp; Statistiques Exactes ({playerChampion.name} Niv.{runeSimLevel})</span>
+      <section
+        id="atelier-comparateur"
+        ref={atelierSectionRef}
+        className="rounded-2xl apple-surface p-5 space-y-5 scroll-mt-24"
+      >
+        <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4 pb-4 border-b border-slate-200 dark:border-slate-800">
+          <div className="space-y-1 min-w-0">
+            <h2 className="text-base font-bold text-slate-900 dark:text-white flex items-start gap-2">
+              <FlaskConical className="w-4 h-4 text-amber-500 shrink-0 mt-1" aria-hidden="true" />
+              <span>Atelier Équipement &amp; Comparateur de Stats ({playerChampion.name} Niv.{runeSimLevel})</span>
             </h2>
             <p className="text-xs text-slate-500 dark:text-slate-400">
-              Modifiez librement vos 6 emplacements ci-dessous : chaque statistique combine exactement la croissance Riot du champion, vos runes/fragments actifs et les statistiques complètes du patch {ddragon.version}.
+              Modifiez vos 6 emplacements et comparez toutes les statistiques exactes (Base + Croissance + Runes + Objets, patch {ddragon.version}) face au build conseillé ou à un Build A épinglé.
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3 shrink-0">
+          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
             {/* Slider Niveau 1 à 18 */}
             <div className="flex items-center gap-2.5 px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-[#0B0E14] border border-slate-200 dark:border-slate-800">
               <span className="text-xs text-slate-600 dark:text-slate-300 whitespace-nowrap">
@@ -3065,10 +3498,46 @@ export function BuildOptimizerView({
               </div>
             )}
 
+            {!activePinnedBuildA ? (
+              <button
+                type="button"
+                onClick={handlePinCurrentBuildAsA}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-300 hover:bg-sky-500/15 transition-colors whitespace-nowrap shrink-0"
+                title="Ouvrir le comparateur côte à côte et choisir quel build sauvegardé comparer en Build A vs Build B"
+              >
+                <Pin className="w-3.5 h-3.5" aria-hidden="true" />
+                Comparer deux builds (A vs B)
+              </button>
+            ) : (
+              <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={handleSwapPinnedBuildWithB}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded-lg border border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-300 hover:bg-sky-500/15 transition-colors whitespace-nowrap"
+                  title="Inverser Build A (référence) et Build B (test actuel)"
+                >
+                  <ArrowLeftRight className="w-3.5 h-3.5" aria-hidden="true" />
+                  Échanger A ↔ B
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPinnedBuildA(null)}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-lg border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 whitespace-nowrap"
+                  title="Revenir à la comparaison par défaut face au build conseillé"
+                >
+                  <X className="w-3.5 h-3.5" aria-hidden="true" />
+                  Fermer A vs B
+                </button>
+              </div>
+            )}
+
             {isBuildModified && (
               <button
                 type="button"
-                onClick={() => setCustomBuildItemIds(null)}
+                onClick={() => {
+                  setCustomBuildItemIds(null);
+                  setLoadedSavedSetBId(null);
+                }}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 whitespace-nowrap shrink-0"
               >
                 <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
@@ -3091,6 +3560,367 @@ export function BuildOptimizerView({
           </div>
         </div>
 
+        {/* Bandeau comparateur Build A (sélectionnable) vs Build B (sélectionnable / Atelier actif) */}
+        {activePinnedBuildA && pinnedBuildAStats && (() => {
+          const orderedSavedSets = [...savedItemSets].sort((a, b) => {
+            const aMatch = a.championId === playerChampion.id ? 0 : 1;
+            const bMatch = b.championId === playerChampion.id ? 0 : 1;
+            return aMatch - bMatch;
+          });
+          const selectValueA =
+            activePinnedBuildA.savedSetId &&
+            (activePinnedBuildA.savedSetId === '__recommended__' ||
+              savedItemSets.some((s) => s.id === activePinnedBuildA.savedSetId))
+              ? activePinnedBuildA.savedSetId
+              : '__custom_a__';
+
+          const currentBIds = sandboxSlots.map((it) => it?.id || null);
+          const currentBIdsSig = JSON.stringify(currentBIds);
+          const currentBRunesSig = JSON.stringify(activeSandboxSelection);
+          const matchedSavedB =
+            (loadedSavedSetBId
+              ? savedItemSets.find(
+                  (s) =>
+                    s.id === loadedSavedSetBId &&
+                    JSON.stringify(s.itemIds) === currentBIdsSig,
+                )
+              : null) ||
+            savedItemSets.find(
+              (s) =>
+                JSON.stringify(s.itemIds) === currentBIdsSig &&
+                (!s.runeSelection ||
+                  JSON.stringify(s.runeSelection) === currentBRunesSig),
+            ) ||
+            null;
+          const selectValueB = matchedSavedB
+            ? matchedSavedB.id
+            : !isBuildModified
+              ? '__recommended__'
+              : '__custom_b__';
+
+          const areSameBuilds =
+            JSON.stringify(activePinnedBuildA.itemIds) === JSON.stringify(currentBIds) &&
+            JSON.stringify(activePinnedBuildA.runeSelection) ===
+              JSON.stringify(activeSandboxSelection);
+
+          return (
+            <div className="rounded-xl border border-sky-500/35 bg-sky-500/[0.06] px-4 py-3 space-y-2.5 text-xs">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-3.5">
+                {/* Colonne Build A */}
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                      <label
+                        htmlFor="compare-select-build-a"
+                        className="font-bold text-sky-700 dark:text-sky-300 whitespace-nowrap"
+                      >
+                        Build A :
+                      </label>
+                      <select
+                        id="compare-select-build-a"
+                        value={selectValueA}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          if (val === '__recommended__') {
+                            setPinnedBuildA({
+                              savedSetId: '__recommended__',
+                              label: `Conseillé (${playerChampion.name})`,
+                              championId: playerChampion.id,
+                              itemIds: Array.from(
+                                { length: 6 },
+                                (_, i) => recommendedBuildItems[i]?.id || null,
+                              ),
+                              runeSelection: metaRuneSelection,
+                              heartsteelStacksHp,
+                            });
+                            return;
+                          }
+                          const picked = savedItemSets.find((s) => s.id === val);
+                          if (picked) {
+                            setPinnedBuildA({
+                              savedSetId: picked.id,
+                              label: picked.name,
+                              championId: playerChampion.id,
+                              itemIds: picked.itemIds,
+                              runeSelection: picked.runeSelection || activeSandboxSelection,
+                              heartsteelStacksHp: picked.heartsteelStacksHp ?? heartsteelStacksHp,
+                            });
+                          }
+                        }}
+                        className="flex-1 min-w-[160px] max-w-[260px] h-7 px-2 text-xs rounded-md border border-sky-500/40 bg-white dark:bg-[#0B0E14] text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                      >
+                        {selectValueA === '__custom_a__' && (
+                          <option value="__custom_a__">{activePinnedBuildA.label}</option>
+                        )}
+                        <option value="__recommended__">
+                          Build Conseillé IA ({playerChampion.name})
+                        </option>
+                        {orderedSavedSets.map((s) => (
+                          <option key={`sel-a-${s.id}`} value={s.id}>
+                            [{s.championName}] {s.name} ({s.totalGold} po)
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="font-mono tabular-nums text-[11px] text-slate-600 dark:text-slate-300">
+                      {pinnedBuildAStats.combat.totalGold} po · {baselineCombatDamageResult.totalMitigatedDamage} dég. ({combatDurationSec}s) · {pinnedBuildAStats.totals.hp} PV
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    {pinnedBuildAItems.map((it, idx) => (
+                      <div key={`pin-a-${it.id}-${idx}`} title={it.name}>
+                        <SafeGameIcon
+                          src={it.imageUrl}
+                          alt={it.name}
+                          fallbackLabel={it.name}
+                          sizeClass="w-7 h-7"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Colonne Build B */}
+                <div className="space-y-2 lg:border-l lg:border-sky-500/25 lg:pl-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                      <label
+                        htmlFor="compare-select-build-b"
+                        className="font-bold text-amber-600 dark:text-amber-400 whitespace-nowrap"
+                      >
+                        Build B :
+                      </label>
+                      <select
+                        id="compare-select-build-b"
+                        value={selectValueB}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          if (val === '__recommended__') {
+                            setCustomBuildItemIds(null);
+                            setLoadedSavedSetBId(null);
+                            return;
+                          }
+                          const picked = savedItemSets.find((s) => s.id === val);
+                          if (picked) {
+                            handleLoadSavedBuildSet(picked);
+                          }
+                        }}
+                        className="flex-1 min-w-[160px] max-w-[260px] h-7 px-2 text-xs rounded-md border border-amber-500/45 bg-white dark:bg-[#0B0E14] text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      >
+                        {selectValueB === '__custom_b__' && (
+                          <option value="__custom_b__">Test libre en cours (Atelier)</option>
+                        )}
+                        <option value="__recommended__">
+                          Build Conseillé IA ({playerChampion.name})
+                        </option>
+                        {orderedSavedSets.map((s) => (
+                          <option key={`sel-b-${s.id}`} value={s.id}>
+                            [{s.championName}] {s.name} ({s.totalGold} po)
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="font-mono tabular-nums text-[11px] font-semibold text-slate-800 dark:text-slate-100">
+                      {sandboxStats.combat.totalGold} po · {combatDamageResult.totalMitigatedDamage} dég. ({combatDurationSec}s) · {sandboxStats.totals.hp} PV
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    {sandboxActiveItems.map((it, idx) => (
+                      <div key={`pin-b-${it.id}-${idx}`} title={it.name}>
+                        <SafeGameIcon
+                          src={it.imageUrl}
+                          alt={it.name}
+                          fallbackLabel={it.name}
+                          sizeClass="w-7 h-7"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {areSameBuilds && (
+                <div className="flex items-center gap-2 pt-2 border-t border-sky-500/20 text-[11px] text-amber-700 dark:text-amber-300">
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                  <span>
+                    Build A et Build B sont actuellement identiques. Sélectionnez un autre build sauvegardé dans l’un des deux menus ci-dessus (ou modifiez un objet dans les emplacements ci-dessous) pour voir les écarts.
+                  </span>
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
+        {/* Sauvegarde rapide & Ensembles de builds (charger / comparer facilement comme en jeu) */}
+        <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-[#0D121C] px-4 py-3 space-y-3">
+          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-2.5">
+            <div className="flex items-center gap-2 text-xs">
+              <FolderOpen className="w-4 h-4 text-amber-500 shrink-0" aria-hidden="true" />
+              <span className="font-semibold text-slate-900 dark:text-white">
+                Ensembles sauvegardés ({savedItemSets.length})
+              </span>
+              <span className="text-[11px] text-slate-500 dark:text-slate-400 hidden sm:inline">
+                · Enregistrez objets + runes + niveau pour les recharger ou les comparer en 1 clic
+              </span>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  handleSaveCurrentBuildSet();
+                }}
+                className="flex items-center gap-1.5"
+              >
+                <input
+                  type="text"
+                  maxLength={40}
+                  value={newBuildSetName}
+                  onChange={(e) => setNewBuildSetName(e.target.value)}
+                  placeholder={`${playerChampion.name} · Build On-Hit / AP...`}
+                  className="w-48 sm:w-56 h-8 px-2.5 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0B0E14] text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                />
+                <button
+                  type="submit"
+                  className="inline-flex items-center gap-1.5 h-8 px-3 text-xs font-semibold rounded-lg bg-amber-600 dark:bg-amber-500 text-white dark:text-slate-950 hover:bg-amber-500 transition-colors whitespace-nowrap shrink-0"
+                >
+                  <BookmarkPlus className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>Sauvegarder</span>
+                </button>
+              </form>
+
+              {savedItemSets.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setShowSavedBuildsBar((v) => !v)}
+                  className="h-8 px-2.5 text-xs font-medium rounded-lg border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 whitespace-nowrap"
+                >
+                  {showSavedBuildsBar ? 'Masquer la liste' : `Voir mes builds (${savedItemSets.length})`}
+                </button>
+              )}
+            </div>
+          </div>
+
+          {buildSetFeedback && (
+            <div className="px-3 py-1.5 rounded-lg border border-emerald-500/35 bg-emerald-500/10 text-xs text-emerald-700 dark:text-emerald-300">
+              {buildSetFeedback}
+            </div>
+          )}
+
+          {showSavedBuildsBar && savedItemSets.length > 0 && (() => {
+            const currentBIdsSig = JSON.stringify(sandboxSlots.map((it) => it?.id || null));
+            const currentBRunesSig = JSON.stringify(activeSandboxSelection);
+            const activeMatchedBId =
+              (loadedSavedSetBId
+                ? savedItemSets.find(
+                    (s) =>
+                      s.id === loadedSavedSetBId &&
+                      JSON.stringify(s.itemIds) === currentBIdsSig,
+                  )?.id
+                : null) ||
+              (isBuildModified
+                ? savedItemSets.find(
+                    (s) =>
+                      JSON.stringify(s.itemIds) === currentBIdsSig &&
+                      (!s.runeSelection ||
+                        JSON.stringify(s.runeSelection) === currentBRunesSig),
+                  )?.id
+                : null) ||
+              null;
+            return (
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2.5 pt-1">
+              {savedItemSets.map((entry) => {
+                const entryItems = entry.itemIds
+                  .map((id) => (id ? itemByIdMap.get(id) || null : null))
+                  .filter((it): it is ItemData => Boolean(it));
+                const isPinnedAsA =
+                  Boolean(activePinnedBuildA) &&
+                  (activePinnedBuildA?.savedSetId === entry.id ||
+                    (activePinnedBuildA?.label === entry.name &&
+                      JSON.stringify(activePinnedBuildA.itemIds) === JSON.stringify(entry.itemIds)));
+                const isLoadedInB = activeMatchedBId === entry.id;
+
+                return (
+                  <div
+                    key={entry.id}
+                    className={`rounded-lg border p-2.5 flex flex-col justify-between gap-2 bg-white dark:bg-[#121722] ${
+                      isPinnedAsA
+                        ? 'border-sky-500/60 ring-1 ring-sky-500/30'
+                        : isLoadedInB
+                          ? 'border-amber-500/60 ring-1 ring-amber-500/30'
+                          : 'border-slate-200 dark:border-slate-800'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="text-xs font-semibold text-slate-900 dark:text-white truncate">
+                          {entry.name}
+                        </div>
+                        <div className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                          {entry.championName}
+                          {entry.level ? ` · Niv.${entry.level}` : ''} · {entry.totalGold} po
+                          {entry.runeSelection ? ' · +Runes' : ''}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteSavedBuildSet(entry.id)}
+                        aria-label={`Supprimer ${entry.name}`}
+                        title="Supprimer cet ensemble"
+                        className="p-1 text-slate-400 hover:text-rose-500 transition-colors shrink-0"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1">
+                        {entryItems.slice(0, 6).map((it, idx) => (
+                          <SafeGameIcon
+                            key={`${entry.id}-${it.id}-${idx}`}
+                            src={it.imageUrl}
+                            alt={it.name}
+                            fallbackLabel={it.name}
+                            sizeClass="w-6 h-6"
+                          />
+                        ))}
+                      </div>
+
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handlePinSavedSetAsA(entry)}
+                          className={`px-2 py-1 text-[11px] font-semibold rounded border transition-colors whitespace-nowrap ${
+                            isPinnedAsA
+                              ? 'border-sky-500 bg-sky-500/15 text-sky-700 dark:text-sky-300'
+                              : 'border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-300 hover:bg-sky-500/20'
+                          }`}
+                          title="Placer cet ensemble en Build A (référence)"
+                        >
+                          {isPinnedAsA ? 'En A ✓' : 'Mettre en A'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleLoadSavedBuildSet(entry)}
+                          className={`px-2 py-1 text-[11px] font-semibold rounded border transition-colors whitespace-nowrap ${
+                            isLoadedInB
+                              ? 'border-amber-500 bg-amber-500/15 text-amber-700 dark:text-amber-300'
+                              : 'border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:border-amber-500 hover:text-amber-600 dark:hover:text-amber-400'
+                          }`}
+                          title="Charger ces objets et runes dans l’Atelier (Build B)"
+                        >
+                          {isLoadedInB ? 'En B ✓' : 'Mettre en B'}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            );
+          })()}
+        </div>
+
         {/* 6 Emplacements d'équipement cliquables */}
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
           {sandboxSlots.map((item, slotIdx) => {
@@ -3104,9 +3934,9 @@ export function BuildOptimizerView({
             return (
               <div
                 key={`sandbox-slot-${slotIdx}-${item?.id || 'empty'}`}
-                className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] p-3 flex flex-col justify-between gap-2"
+                className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] p-3 flex flex-col gap-2.5 h-full"
               >
-                <div className="flex items-center justify-between gap-1 text-[10px] text-slate-400">
+                <div className="min-h-[20px] flex items-center justify-between gap-1 text-[10px] text-slate-400">
                   <span className="font-mono tabular-nums uppercase">Emplacement {slotIdx + 1}</span>
                   {item && (
                     <div className="flex items-center gap-1.5">
@@ -3131,7 +3961,7 @@ export function BuildOptimizerView({
                         onClick={() => handleAssignItemToSlot(slotIdx, null)}
                         title="Vider cet emplacement"
                         aria-label={`Retirer ${item.name}`}
-                        className="text-slate-400 hover:text-rose-500 transition-colors"
+                        className="p-0.5 text-slate-400 hover:text-rose-500 transition-colors"
                       >
                         <Trash2 className="w-3 h-3" />
                       </button>
@@ -3143,16 +3973,16 @@ export function BuildOptimizerView({
                   <button
                     type="button"
                     onClick={() => setItemPickerSlotIdx(slotIdx)}
-                    className="text-left space-y-2 group"
+                    className="flex-1 w-full flex flex-col justify-start text-left gap-2 group"
                   >
-                    <div className="flex items-center gap-2.5">
+                    <div className="flex items-center gap-2.5 w-full">
                       <SafeGameIcon
                         src={item.imageUrl}
                         alt={item.name}
                         fallbackLabel={item.name}
                         sizeClass="w-10 h-10"
                       />
-                      <div className="min-w-0">
+                      <div className="min-w-0 flex-1">
                         <div className="text-xs font-semibold text-slate-900 dark:text-white truncate group-hover:text-amber-500 transition-colors">
                           {item.name}
                         </div>
@@ -3161,17 +3991,15 @@ export function BuildOptimizerView({
                         </div>
                       </div>
                     </div>
-                    {tags.length > 0 && (
-                      <div className="text-[10px] font-mono tabular-nums text-slate-500 dark:text-slate-400 leading-snug">
-                        {tags.join(' · ')}
-                      </div>
-                    )}
+                    <div className="min-h-[28px] text-[10px] font-mono tabular-nums text-slate-500 dark:text-slate-400 leading-snug line-clamp-2">
+                      {tags.length > 0 ? tags.join(' · ') : 'Stats passives uniques'}
+                    </div>
                   </button>
                 ) : (
                   <button
                     type="button"
                     onClick={() => setItemPickerSlotIdx(slotIdx)}
-                    className="py-4 flex flex-col items-center justify-center gap-1 text-slate-400 hover:text-amber-500 transition-colors"
+                    className="flex-1 py-4 flex flex-col items-center justify-center gap-1 text-slate-400 hover:text-amber-500 transition-colors"
                   >
                     <Plus className="w-4 h-4" />
                     <span className="text-[11px] font-medium">Ajouter objet</span>
@@ -3195,6 +4023,11 @@ export function BuildOptimizerView({
             onResetToRecommended={() => setCustomBuildItemIds(null)}
             onExplainPassive={(it) => handleTogglePassiveExplanation(it, 'atelier')}
             hasPassiveInfo={hasUniquePassiveInfo}
+            savedSets={savedItemSets}
+            onSaveItemSet={(name) => handleSaveCurrentBuildSet(name)}
+            onDeleteItemSet={handleDeleteSavedBuildSet}
+            onLoadSavedSet={handleLoadSavedBuildSet}
+            onPinSavedSetAsA={handlePinSavedSetAsA}
           />
         )}
 
@@ -3202,43 +4035,49 @@ export function BuildOptimizerView({
           renderPassiveAiPanel(activePassiveExplain.item)}
 
         {/* Bandeau de synthèse combat & rentabilité Or avec Delta en temps réel */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3">
           {[
             {
               label: 'Coût total',
               val: sandboxStats.combat.totalGold,
-              ref: recommendedStats.combat.totalGold,
+              ref: comparisonBaselineStats.combat.totalGold,
               suffix: ' po',
               inverseGood: true,
             },
             {
               label: 'Rentabilité Or',
               val: sandboxStats.combat.goldEfficiencyPct,
-              ref: recommendedStats.combat.goldEfficiencyPct,
+              ref: comparisonBaselineStats.combat.goldEfficiencyPct,
               suffix: '%',
+            },
+            {
+              label: `Dégâts (${combatDurationSec}s)`,
+              val: combatDamageResult.totalMitigatedDamage,
+              ref: baselineCombatDamageResult.totalMitigatedDamage,
+              suffix: '',
             },
             {
               label: 'EHP Physique',
               val: sandboxStats.combat.physicalEhp,
-              ref: recommendedStats.combat.physicalEhp,
+              ref: comparisonBaselineStats.combat.physicalEhp,
               suffix: '',
             },
             {
               label: 'EHP Magique',
               val: sandboxStats.combat.magicEhp,
-              ref: recommendedStats.combat.magicEhp,
+              ref: comparisonBaselineStats.combat.magicEhp,
               suffix: '',
             },
             {
               label: 'DPS Auto-attaques',
               val: sandboxStats.combat.autoDps,
-              ref: recommendedStats.combat.autoDps,
+              ref: comparisonBaselineStats.combat.autoDps,
               suffix: '/s',
             },
             {
               label: 'Impact Sorts',
               val: sandboxStats.combat.abilityImpactIndex,
-              ref: recommendedStats.combat.abilityImpactIndex,
+              ref: comparisonBaselineStats.combat.abilityImpactIndex,
               suffix: '',
             },
           ].map((kpi) => {
@@ -3249,7 +4088,7 @@ export function BuildOptimizerView({
                 key={kpi.label}
                 className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] px-3.5 py-2.5"
               >
-                <div className="text-[11px] text-slate-500 dark:text-slate-400">{kpi.label}</div>
+                <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">{kpi.label}</div>
                 <div className="mt-1 flex items-baseline justify-between gap-2 font-mono tabular-nums">
                   <span className="text-base font-bold text-slate-900 dark:text-white">
                     {kpi.val}
@@ -3272,16 +4111,20 @@ export function BuildOptimizerView({
           })}
         </div>
 
-        {/* Tableau complet des statistiques exactes (Base + Runes + Objets vs Conseillé) */}
+        {/* Tableau complet des statistiques exactes (Base + Runes + Objets vs Référence) */}
         <div className="grid grid-cols-1 xl:grid-cols-12 gap-5 items-start">
           <div className="xl:col-span-7 overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800">
             <table className="w-full text-xs">
               <thead>
                 <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] text-slate-500 dark:text-slate-400">
                   <th className="py-2.5 px-4 text-left font-medium">Statistique réelle</th>
-                  <th className="py-2.5 px-3 text-right font-medium">Votre test</th>
+                  <th className="py-2.5 px-3 text-right font-medium">
+                    {activePinnedBuildA ? 'Build B (Test)' : 'Votre test'}
+                  </th>
                   <th className="py-2.5 px-3 text-right font-medium">Base + Runes + Objets</th>
-                  <th className="py-2.5 px-4 text-right font-medium">Écart vs Conseillé</th>
+                  <th className="py-2.5 px-4 text-right font-medium">
+                    Écart vs {comparisonBaselineLabel}
+                  </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200/70 dark:divide-slate-800/70 font-mono tabular-nums">
@@ -3289,52 +4132,74 @@ export function BuildOptimizerView({
                   {
                     label: 'Points de vie (PV)',
                     val: sandboxStats.totals.hp,
-                    ref: recommendedStats.totals.hp,
+                    ref: comparisonBaselineStats.totals.hp,
                     breakdown: `${sandboxStats.sources.hp.base} base · +${sandboxStats.sources.hp.runes} run. · +${sandboxStats.sources.hp.items} obj.`,
+                  },
+                  {
+                    label: 'Mana max',
+                    val: sandboxStats.totals.mana,
+                    ref: comparisonBaselineStats.totals.mana,
+                    breakdown: `${sandboxStats.totals.manaRegenPct > 0 ? `+${sandboxStats.totals.manaRegenPct}% régén.` : 'Croissance + Objets'}`,
                   },
                   {
                     label: 'Dégâts d’attaque (AD)',
                     val: sandboxStats.totals.ad,
-                    ref: recommendedStats.totals.ad,
+                    ref: comparisonBaselineStats.totals.ad,
                     breakdown: `${sandboxStats.sources.ad.base} base · +${sandboxStats.sources.ad.runes} run. · +${sandboxStats.sources.ad.items} obj.`,
                   },
                   {
                     label: 'Puissance (AP)',
                     val: sandboxStats.totals.ap,
-                    ref: recommendedStats.totals.ap,
+                    ref: comparisonBaselineStats.totals.ap,
                     breakdown: `0 base · +${sandboxStats.sources.ap.runes} run. · +${sandboxStats.sources.ap.items} obj.`,
                   },
                   {
                     label: 'Armure',
                     val: sandboxStats.totals.armor,
-                    ref: recommendedStats.totals.armor,
+                    ref: comparisonBaselineStats.totals.armor,
                     breakdown: `${sandboxStats.sources.armor.base} base · +${sandboxStats.sources.armor.runes} run. · +${sandboxStats.sources.armor.items} obj.`,
                   },
                   {
                     label: 'Résistance magique',
                     val: sandboxStats.totals.mr,
-                    ref: recommendedStats.totals.mr,
+                    ref: comparisonBaselineStats.totals.mr,
                     breakdown: `${sandboxStats.sources.mr.base} base · +${sandboxStats.sources.mr.runes} run. · +${sandboxStats.sources.mr.items} obj.`,
                   },
                   {
                     label: 'Vitesse d’attaque',
                     val: sandboxStats.totals.attackSpeed,
-                    ref: recommendedStats.totals.attackSpeed,
+                    ref: comparisonBaselineStats.totals.attackSpeed,
                     decimals: 3,
-                    breakdown: 'Base + Croissance + Runes + Objets',
+                    suffix:
+                      sandboxStats.totals.asOvercapPct > 0
+                        ? ` (cap · brut ${sandboxStats.totals.uncappedAttackSpeed})`
+                        : sandboxStats.totals.attackSpeed >= 2.25
+                          ? ' (limite cap)'
+                          : undefined,
+                    breakdown:
+                      sandboxStats.totals.asOvercapPct > 0
+                        ? `+${sandboxStats.totals.asOvercapPct}% AS gaspillée (> 2.500/s)`
+                        : 'Base + Croissance + Runes + Objets',
                   },
                   {
                     label: 'Hâte de compétence (% CDR)',
                     val: sandboxStats.totals.abilityHaste,
-                    ref: recommendedStats.totals.abilityHaste,
+                    ref: comparisonBaselineStats.totals.abilityHaste,
                     suffix: ` (${sandboxStats.totals.cooldownReductionPct}% CDR)`,
                     breakdown: `0 base · +${sandboxStats.sources.abilityHaste.runes} run. · +${sandboxStats.sources.abilityHaste.items} obj.`,
                   },
                   {
                     label: 'Vitesse de déplacement',
                     val: sandboxStats.totals.moveSpeed,
-                    ref: recommendedStats.totals.moveSpeed,
+                    ref: comparisonBaselineStats.totals.moveSpeed,
                     breakdown: `${sandboxStats.sources.moveSpeed.base} base · +${sandboxStats.sources.moveSpeed.runes} run. · +${sandboxStats.sources.moveSpeed.items} obj.`,
+                  },
+                  {
+                    label: `Dégâts réels combo (${combatDurationSec}s)`,
+                    val: combatDamageResult.totalMitigatedDamage,
+                    ref: baselineCombatDamageResult.totalMitigatedDamage,
+                    suffix: ` (${combatDamageResult.realDps}/s)`,
+                    breakdown: `vs ${activeCombatTarget.name}`,
                   },
                 ].map((row) => {
                   const rawDiff = row.decimals
@@ -3493,6 +4358,835 @@ export function BuildOptimizerView({
                   </div>
                 ))}
               </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Interprétation du Build choisi + Page de Runes active & Synergie Runes × Stuff */}
+        <div className="grid grid-cols-1 xl:grid-cols-12 gap-5 items-start">
+          {/* Colonne Gauche (7/12) : Diagnostic & Interprétation des équilibres du build */}
+          <div className="xl:col-span-7 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] p-4 space-y-3">
+            <div className="flex flex-wrap items-start justify-between gap-2 pb-2.5 border-b border-slate-200 dark:border-slate-800">
+              <div className="space-y-0.5">
+                <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                  <Gauge className="w-4 h-4 text-amber-500 shrink-0" aria-hidden="true" />
+                  <span>Interprétation &amp; Équilibre du Build ({playerChampion.name} Niv.{runeSimLevel})</span>
+                </h3>
+                <p
+                  className={`text-xs font-medium ${
+                    buildInterpretation.overallTone === 'rose'
+                      ? 'text-rose-600 dark:text-rose-400'
+                      : buildInterpretation.overallTone === 'amber'
+                        ? 'text-amber-600 dark:text-amber-400'
+                        : 'text-emerald-600 dark:text-emerald-400'
+                  }`}
+                >
+                  {buildInterpretation.overallHeadline}
+                </p>
+              </div>
+              <div className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                {buildInterpretation.profileTags.join(' · ')}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+              {buildInterpretation.diagnostics.map((diag) => {
+                const borderColor =
+                  diag.tone === 'rose'
+                    ? 'border-rose-500/35 bg-rose-500/[0.04]'
+                    : diag.tone === 'amber'
+                      ? 'border-amber-500/35 bg-amber-500/[0.04]'
+                      : diag.tone === 'sky'
+                        ? 'border-sky-500/30 bg-sky-500/[0.03]'
+                        : 'border-emerald-500/30 bg-emerald-500/[0.03]';
+                const statusColor =
+                  diag.tone === 'rose'
+                    ? 'text-rose-600 dark:text-rose-400'
+                    : diag.tone === 'amber'
+                      ? 'text-amber-600 dark:text-amber-400'
+                      : diag.tone === 'sky'
+                        ? 'text-sky-600 dark:text-sky-400'
+                        : 'text-emerald-600 dark:text-emerald-400';
+
+                return (
+                  <div
+                    key={diag.id}
+                    className={`rounded-lg border p-3 space-y-1.5 ${borderColor}`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="text-xs font-semibold text-slate-900 dark:text-white flex items-center gap-1.5">
+                        {diag.tone === 'rose' || diag.tone === 'amber' ? (
+                          <AlertTriangle
+                            className={`w-3.5 h-3.5 shrink-0 ${statusColor}`}
+                            aria-hidden="true"
+                          />
+                        ) : (
+                          <CheckCircle2
+                            className={`w-3.5 h-3.5 shrink-0 ${statusColor}`}
+                            aria-hidden="true"
+                          />
+                        )}
+                        <span>{diag.title}</span>
+                      </div>
+                    </div>
+                    <div className={`text-[11px] font-mono tabular-nums font-semibold ${statusColor}`}>
+                      {diag.category} · {diag.statusLabel}
+                    </div>
+                    <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                      {diag.explanation}
+                    </p>
+                    {diag.actionTip && (
+                      <p className="text-[11px] font-medium text-slate-800 dark:text-slate-100 pt-1 border-t border-slate-200/70 dark:border-slate-800/70">
+                        Piste : {diag.actionTip}
+                      </p>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Colonne Droite (5/12) : Runes actives & Impact combiné avec le stuff choisi */}
+          <div className="xl:col-span-5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] p-4 space-y-3">
+            <div className="flex items-start justify-between gap-2 pb-2.5 border-b border-slate-200 dark:border-slate-800">
+              <div>
+                <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                  <Sparkles className="w-4 h-4 text-amber-500 shrink-0" aria-hidden="true" />
+                  <span>Runes actives &amp; Impact avec ce stuff</span>
+                </h3>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  {activeRuneVisualSummary.primaryTreeName} + {activeRuneVisualSummary.secondaryTreeName} · Valeur stats ~{sandboxStats.combat.runeGoldValue} po
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={scrollToRunesEditor}
+                className="px-2.5 py-1 text-[11px] font-semibold rounded-md border border-[#C8AA6E]/55 bg-[#091428] text-[#F0E6D2] hover:border-[#C8AA6E] transition-colors whitespace-nowrap shrink-0"
+              >
+                Éditeur complet ↓
+              </button>
+            </div>
+
+            {/* Sélecteur direct de page de runes (Méta, Client LoL, ou Mes Pages sauvegardées) */}
+            <div className="flex flex-wrap items-center gap-2">
+              <label htmlFor="atelier-rune-page-select" className="sr-only">
+                Charger une page de runes dans l’atelier
+              </label>
+              <select
+                id="atelier-rune-page-select"
+                value={
+                  customRuneSelection === null
+                    ? '__meta__'
+                    : activeSavedPageId
+                      ? activeSavedPageId
+                      : detectedAsSelection && customRuneSelection === detectedAsSelection
+                        ? '__detected__'
+                        : '__custom__'
+                }
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (val === '__meta__') {
+                    setRuneViewMode('recommended');
+                    setCustomRuneSelection(null);
+                    setActiveSavedPageId(null);
+                    setIsRunePageDirty(false);
+                    return;
+                  }
+                  if (val === '__detected__' && detectedAsSelection) {
+                    setRuneViewMode('recommended');
+                    setCustomRuneSelection(detectedAsSelection);
+                    setActiveSavedPageId(null);
+                    setActiveRunePageTitle(detectedRunePage?.pageName || 'Page client LoL');
+                    setIsRunePageDirty(false);
+                    return;
+                  }
+                  const picked = savedRunePages.find((p) => p.id === val);
+                  if (picked) {
+                    setRuneViewMode('recommended');
+                    setCustomRuneSelection(picked.selection);
+                    setActiveSavedPageId(picked.id);
+                    setActiveRunePageTitle(picked.name);
+                    setIsRunePageDirty(false);
+                  }
+                }}
+                className="flex-1 min-w-[190px] h-8 px-2.5 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#121722] text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-amber-500"
+              >
+                <option value="__meta__">
+                  Page Méta conseillée ({playerChampion.name})
+                </option>
+                {detectedAsSelection && (
+                  <option value="__detected__">
+                    Client LoL actuel : {detectedRunePage?.pageName || 'Page détectée'}
+                  </option>
+                )}
+                {savedRunePages.map((pg) => (
+                  <option key={pg.id} value={pg.id}>
+                    {pg.syncedFromClient ? '[Client LoL] ' : ''}
+                    {pg.name}
+                  </option>
+                ))}
+                {customRuneSelection !== null && !activeSavedPageId && (
+                  <option value="__custom__">
+                    Page personnalisée en cours
+                  </option>
+                )}
+              </select>
+
+              {!lcuBridgeConnected && (
+                <button
+                  type="button"
+                  onClick={handleManualSyncLcuPages}
+                  className="inline-flex items-center gap-1 h-8 px-2.5 text-[11px] font-semibold rounded-lg border border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-300 hover:bg-sky-500/15 whitespace-nowrap shrink-0"
+                  title="Importer toutes vos pages de runes depuis le client League of Legends"
+                >
+                  <RefreshCw className="w-3 h-3" aria-hidden="true" />
+                  <span>Sync LoL</span>
+                </button>
+              )}
+
+              {customRuneSelection !== null && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCustomRuneSelection(null);
+                    setActiveSavedPageId(null);
+                    setIsRunePageDirty(false);
+                  }}
+                  className="h-8 px-2.5 text-[11px] font-medium rounded-lg border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 whitespace-nowrap shrink-0"
+                >
+                  Méta
+                </button>
+              )}
+            </div>
+
+            {/* Aperçu compact de la page de runes actuellement simulée */}
+            <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-3 space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  {activeRuneVisualSummary.keystone && (
+                    <img
+                      src={activeRuneVisualSummary.keystone.imageUrl}
+                      alt={activeRuneVisualSummary.keystone.name}
+                      className="w-9 h-9 rounded-full border border-amber-500/50 bg-[#091428] shrink-0"
+                    />
+                  )}
+                  <div className="min-w-0">
+                    <div className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                      {activeRuneVisualSummary.keystone?.name || 'Fondamentale'}
+                    </div>
+                    <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                      {activeRuneVisualSummary.shards.join(' · ')}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-1">
+                  {[
+                    ...activeRuneVisualSummary.primaryMinors,
+                    ...activeRuneVisualSummary.secondaryMinors,
+                  ].map((r) => (
+                    <img
+                      key={`atelier-rune-${r.id}`}
+                      src={r.imageUrl}
+                      alt={r.name}
+                      title={r.name}
+                      className="w-6 h-6 rounded-full border border-slate-300 dark:border-slate-700 bg-[#091428]"
+                    />
+                  ))}
+                </div>
+              </div>
+
+              <div className="pt-2 border-t border-slate-200/80 dark:border-slate-800/80 flex flex-wrap gap-x-3 gap-y-1 text-[11px] font-mono tabular-nums text-slate-600 dark:text-slate-300">
+                {sandboxStats.sources.hp.runes > 0 && <span>+{sandboxStats.sources.hp.runes} PV</span>}
+                {sandboxStats.sources.ad.runes > 0 && <span>+{sandboxStats.sources.ad.runes} AD</span>}
+                {sandboxStats.sources.ap.runes > 0 && <span>+{sandboxStats.sources.ap.runes} AP</span>}
+                {sandboxStats.sources.armor.runes > 0 && (
+                  <span>+{sandboxStats.sources.armor.runes} Arm.</span>
+                )}
+                {sandboxStats.sources.mr.runes > 0 && (
+                  <span>+{sandboxStats.sources.mr.runes} RM</span>
+                )}
+                {sandboxStats.sources.abilityHaste.runes > 0 && (
+                  <span>+{sandboxStats.sources.abilityHaste.runes} Hâte</span>
+                )}
+                {sandboxStats.sources.moveSpeed.runes > 0 && (
+                  <span>+{sandboxStats.sources.moveSpeed.runes} Vit.</span>
+                )}
+              </div>
+
+              {customRuneSelection !== null && (
+                <div className="pt-2 border-t border-slate-200/80 dark:border-slate-800/80 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] font-mono tabular-nums">
+                  <span className="font-sans font-semibold text-slate-700 dark:text-slate-200">
+                    Impact vs Méta :
+                  </span>
+                  {(() => {
+                    const dmgDiff =
+                      combatDamageResult.totalMitigatedDamage -
+                      metaRunesCombatDamage.totalMitigatedDamage;
+                    return (
+                      <span
+                        className={
+                          dmgDiff > 0
+                            ? 'text-emerald-600 dark:text-emerald-400 font-semibold'
+                            : dmgDiff < 0
+                              ? 'text-rose-600 dark:text-rose-400 font-semibold'
+                              : 'text-slate-500 dark:text-slate-400'
+                        }
+                      >
+                        {dmgDiff > 0 ? `+${dmgDiff}` : dmgDiff} dég. combo
+                      </span>
+                    );
+                  })()}
+                  {runeComparison.statRows
+                    .filter((sr) => sr.direction !== 'equal')
+                    .map((sr) => (
+                      <span
+                        key={sr.key}
+                        className={
+                          sr.direction === 'up'
+                            ? 'text-emerald-600 dark:text-emerald-400'
+                            : 'text-rose-600 dark:text-rose-400'
+                        }
+                      >
+                        {sr.label} {sr.deltaLabel}
+                      </span>
+                    ))}
+                </div>
+              )}
+            </div>
+
+            {/* Synergies & interactions calculées entre vos runes et vos 6 objets */}
+            <div className="space-y-2">
+              {buildInterpretation.runeSynergies.map((syn, idx) => {
+                const colorText =
+                  syn.tone === 'amber'
+                    ? 'text-amber-600 dark:text-amber-400'
+                    : syn.tone === 'rose'
+                      ? 'text-rose-600 dark:text-rose-400'
+                      : syn.tone === 'sky'
+                        ? 'text-sky-600 dark:text-sky-400'
+                        : 'text-emerald-600 dark:text-emerald-400';
+
+                return (
+                  <div
+                    key={`${syn.runeName}-${idx}`}
+                    className="rounded-lg border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-[#121722] px-3 py-2 space-y-0.5 text-xs"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-semibold text-slate-900 dark:text-white">
+                        {syn.runeName}
+                      </span>
+                      <span className={`text-[10px] font-medium ${colorText}`}>
+                        {syn.category}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                      {syn.explanation}
+                    </p>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
+        {/* Coach d’Optimisation Guidée par Spécialisation & Simulation Réelle */}
+        <div className="rounded-xl border border-amber-500/35 bg-gradient-to-b from-amber-500/[0.06] to-slate-50 dark:to-[#0D121C] p-5 space-y-5">
+          {/* En-tête + Choix de l'orientation de gameplay */}
+          <div className="flex flex-col xl:flex-row xl:items-start xl:justify-between gap-4 pb-4 border-b border-slate-200 dark:border-slate-800">
+            <div className="space-y-1 max-w-2xl">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                  <Brain className="w-4 h-4 text-amber-500 shrink-0" aria-hidden="true" />
+                  <span>
+                    Coach d’Optimisation par Simulation Réelle ({playerChampion.name} {role})
+                  </span>
+                </h3>
+                <span className="text-[11px] font-mono tabular-nums px-2 py-0.5 rounded bg-amber-500/15 text-amber-700 dark:text-amber-300 font-semibold">
+                  {guidedOptimizationReport.totalSimulationsRun} tests réels exécutés
+                </span>
+              </div>
+              <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                {guidedOptimizationReport.executiveSummary}
+              </p>
+            </div>
+
+            {/* Boutons de spécialisation gameplay */}
+            <div className="flex flex-col gap-1.5 shrink-0">
+              <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">
+                Votre style / spécialisation voulue :
+              </span>
+              <div className="flex flex-wrap gap-1.5">
+                {specCatalog.options.map((opt) => {
+                  const isActive = opt.id === activeGameplaySpecId;
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() =>
+                        setSelectedSpecByKey((prev) => ({ ...prev, [specStorageKey]: opt.id }))
+                      }
+                      title={opt.description}
+                      className={`px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors whitespace-nowrap ${
+                        isActive
+                          ? 'border-amber-500 bg-amber-600 dark:bg-amber-500 text-white dark:text-slate-950'
+                          : 'border-slate-300 dark:border-slate-700 bg-white dark:bg-[#121722] text-slate-700 dark:text-slate-200 hover:border-amber-500/60'
+                      }`}
+                    >
+                      {opt.shortLabel}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 max-w-md">
+                {guidedOptimizationReport.specialization.description}
+              </p>
+            </div>
+          </div>
+
+          {/* 4 sources de données réellement collectées pour le calcul */}
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-2.5 text-[11px]">
+            <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-3 space-y-1">
+              <div className="font-semibold text-slate-900 dark:text-white">
+                1. Données Gameplay
+              </div>
+              <p className="text-slate-600 dark:text-slate-300 leading-snug">
+                {guidedOptimizationReport.collectedContext.gameplaySummary}
+              </p>
+            </div>
+            <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-3 space-y-1">
+              <div className="font-semibold text-slate-900 dark:text-white">
+                2. Runes testées au départ
+              </div>
+              <p className="text-slate-600 dark:text-slate-300 leading-snug">
+                {guidedOptimizationReport.collectedContext.runesSummary}
+              </p>
+            </div>
+            <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-3 space-y-1">
+              <div className="font-semibold text-slate-900 dark:text-white">
+                3. Équipement en cours
+              </div>
+              <p className="text-slate-600 dark:text-slate-300 leading-snug">
+                {guidedOptimizationReport.collectedContext.equipmentSummary}
+              </p>
+            </div>
+            <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-3 space-y-1">
+              <div className="font-semibold text-slate-900 dark:text-white">
+                4. Cibles &amp; Menaces adverses
+              </div>
+              <p className="text-slate-600 dark:text-slate-300 leading-snug">
+                {guidedOptimizationReport.collectedContext.enemySummary}
+              </p>
+            </div>
+          </div>
+
+          {/* Problèmes détectés sur votre setup actuel + Gains vérifiés Avant → Après */}
+          <div className="grid grid-cols-1 xl:grid-cols-12 gap-4 items-start">
+            <div className="xl:col-span-5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-4 space-y-3">
+              <div className="text-xs font-bold text-slate-900 dark:text-white">
+                Audit de votre setup actuel vs Solution optimisée
+              </div>
+
+              {guidedOptimizationReport.baselineIssues.length > 0 ? (
+                <div className="space-y-1.5">
+                  <div className="text-[11px] font-semibold text-rose-600 dark:text-rose-400">
+                    Points à corriger détectés :
+                  </div>
+                  <ul className="space-y-1 text-[11px] text-slate-600 dark:text-slate-300">
+                    {guidedOptimizationReport.baselineIssues.slice(0, 4).map((iss, idx) => (
+                      <li key={idx} className="flex items-start gap-1.5">
+                        <AlertTriangle
+                          className="w-3.5 h-3.5 text-amber-500 shrink-0 mt-0.5"
+                          aria-hidden="true"
+                        />
+                        <span>{iss}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : (
+                <div className="flex items-center gap-1.5 text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">
+                  <CheckCircle2 className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                  <span>Aucun défaut bloquant dans votre base actuelle — optimisation fine appliquée.</span>
+                </div>
+              )}
+
+              {/* Tableau comparatif Avant -> Après sur vrais tests */}
+              <div className="pt-2 border-t border-slate-200 dark:border-slate-800 space-y-1.5 text-[11px] font-mono tabular-nums">
+                {[
+                  {
+                    label: `Score « ${guidedOptimizationReport.specialization.shortLabel} »`,
+                    before: `${guidedOptimizationReport.baselineMetrics.fitScore}/100`,
+                    after: `${guidedOptimizationReport.recommendedMetrics.fitScore}/100`,
+                    diff:
+                      guidedOptimizationReport.recommendedMetrics.fitScore -
+                      guidedOptimizationReport.baselineMetrics.fitScore,
+                    suffix: ' pts',
+                  },
+                  {
+                    label: `Dégâts vs ${guidedOptimizationReport.frontlineTarget.name.split(' (')[0]} (6s)`,
+                    before: `${guidedOptimizationReport.baselineMetrics.dmgVsFrontline}`,
+                    after: `${guidedOptimizationReport.recommendedMetrics.dmgVsFrontline}`,
+                    diff:
+                      guidedOptimizationReport.recommendedMetrics.dmgVsFrontline -
+                      guidedOptimizationReport.baselineMetrics.dmgVsFrontline,
+                    suffix: '',
+                  },
+                  {
+                    label: `Dégâts vs ${guidedOptimizationReport.squishyTarget.name.split(' (')[0]} (4s)`,
+                    before: `${guidedOptimizationReport.baselineMetrics.dmgVsSquishy}`,
+                    after: `${guidedOptimizationReport.recommendedMetrics.dmgVsSquishy}`,
+                    diff:
+                      guidedOptimizationReport.recommendedMetrics.dmgVsSquishy -
+                      guidedOptimizationReport.baselineMetrics.dmgVsSquishy,
+                    suffix: '',
+                  },
+                  {
+                    label: 'Dégâts Sorts / DoT / Pièges',
+                    before: `${guidedOptimizationReport.baselineMetrics.spellAndDotDmg}`,
+                    after: `${guidedOptimizationReport.recommendedMetrics.spellAndDotDmg}`,
+                    diff:
+                      guidedOptimizationReport.recommendedMetrics.spellAndDotDmg -
+                      guidedOptimizationReport.baselineMetrics.spellAndDotDmg,
+                    suffix: '',
+                  },
+                  {
+                    label: 'Survie (EHP pondéré)',
+                    before: `${guidedOptimizationReport.baselineMetrics.weightedEhp}`,
+                    after: `${guidedOptimizationReport.recommendedMetrics.weightedEhp}`,
+                    diff:
+                      guidedOptimizationReport.recommendedMetrics.weightedEhp -
+                      guidedOptimizationReport.baselineMetrics.weightedEhp,
+                    suffix: '',
+                  },
+                  {
+                    label: 'AS gaspillée (> 2.500/s)',
+                    before: `${guidedOptimizationReport.baselineMetrics.asOvercapPct}%`,
+                    after: `${guidedOptimizationReport.recommendedMetrics.asOvercapPct}%`,
+                    diff:
+                      guidedOptimizationReport.baselineMetrics.asOvercapPct -
+                      guidedOptimizationReport.recommendedMetrics.asOvercapPct,
+                    suffix: '% récup.',
+                  },
+                ].map((metric) => (
+                  <div
+                    key={metric.label}
+                    className="flex items-center justify-between gap-2 py-1 border-b border-slate-100 dark:border-slate-800/60 last:border-none"
+                  >
+                    <span className="font-sans text-slate-600 dark:text-slate-300 truncate">
+                      {metric.label}
+                    </span>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="text-slate-400">
+                        {metric.before} →{' '}
+                        <strong className="text-slate-900 dark:text-white">{metric.after}</strong>
+                      </span>
+                      {metric.diff !== 0 && (
+                        <span
+                          className={
+                            metric.diff > 0
+                              ? 'text-emerald-600 dark:text-emerald-400 font-semibold'
+                              : 'text-amber-600 dark:text-amber-400 font-semibold'
+                          }
+                        >
+                          ({metric.diff > 0 ? `+${metric.diff}` : metric.diff}
+                          {metric.suffix})
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {guidedOptimizationReport.whyPreferredBullets.length > 0 && (
+                <div className="pt-2 border-t border-slate-200 dark:border-slate-800 space-y-1">
+                  <div className="text-[11px] font-semibold text-slate-800 dark:text-slate-200">
+                    Pourquoi cette solution a gagné les tests :
+                  </div>
+                  <ul className="space-y-1 text-[11px] text-slate-600 dark:text-slate-300">
+                    {guidedOptimizationReport.whyPreferredBullets.map((b, i) => (
+                      <li key={i}>· {b}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+
+            {/* Colonne Droite (7/12) : Plan complet 6 objets + Décision Runes + Boutons 1 clic */}
+            <div className="xl:col-span-7 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-4 space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <div className="text-xs font-bold text-slate-900 dark:text-white">
+                    Solution Complète Proposée ({guidedOptimizationReport.recommendedMetrics.totalGold} po ·{' '}
+                    {guidedOptimizationReport.recommendedMetrics.goldEfficiencyPct}% rentabilité)
+                  </div>
+                  <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                    {guidedOptimizationReport.recommendedKeystoneName} ({guidedOptimizationReport.recommendedPrimaryTreeName} +{' '}
+                    {guidedOptimizationReport.recommendedSecondaryTreeName}) ·{' '}
+                    {guidedOptimizationReport.recommendedMetrics.ap} AP ·{' '}
+                    {guidedOptimizationReport.recommendedMetrics.ad} AD ·{' '}
+                    {guidedOptimizationReport.recommendedMetrics.abilityHaste} Hâte ·{' '}
+                    {guidedOptimizationReport.recommendedMetrics.attackSpeed}/s
+                  </div>
+                </div>
+              </div>
+
+              {/* Grille des 6 changements / objets proposés */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {guidedOptimizationReport.itemChanges.map((chg) => (
+                  <div
+                    key={`guided-slot-${chg.slotIndex}-${chg.afterItem.id}`}
+                    className={`rounded-lg border p-2.5 flex items-start gap-2.5 ${
+                      chg.action === 'keep'
+                        ? 'border-emerald-500/30 bg-emerald-500/[0.03]'
+                        : 'border-amber-500/35 bg-amber-500/[0.04]'
+                    }`}
+                  >
+                    <SafeGameIcon
+                      src={chg.afterItem.imageUrl}
+                      alt={chg.afterItem.name}
+                      fallbackLabel={chg.afterItem.name}
+                      sizeClass="w-9 h-9"
+                    />
+                    <div className="min-w-0 flex-1 space-y-0.5">
+                      <div className="flex items-center justify-between gap-1.5">
+                        <span className="text-xs font-semibold text-slate-900 dark:text-white truncate">
+                          {chg.afterItem.name}
+                        </span>
+                        <span
+                          className={`text-[10px] font-semibold px-1.5 py-0.5 rounded shrink-0 ${
+                            chg.action === 'keep'
+                              ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                              : 'bg-amber-500/15 text-amber-700 dark:text-amber-300'
+                          }`}
+                        >
+                          {chg.action === 'keep'
+                            ? 'Conservé'
+                            : chg.beforeItem
+                              ? `Remplace ${chg.beforeItem.name.split(' ')[0]}`
+                              : 'Ajouté'}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-snug">
+                        {chg.reason}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Décision Runes */}
+              <div
+                className={`rounded-lg border p-3 space-y-1.5 ${
+                  guidedOptimizationReport.shouldChangeRunes
+                    ? 'border-amber-500/40 bg-amber-500/[0.05]'
+                    : 'border-emerald-500/30 bg-emerald-500/[0.04]'
+                }`}
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-xs font-bold text-slate-900 dark:text-white">
+                    Décision Runes : {guidedOptimizationReport.runeDecisionTitle}
+                  </span>
+                  {guidedOptimizationReport.runeDeltaNotes.length > 0 && (
+                    <span className="text-[11px] font-mono tabular-nums font-semibold text-emerald-600 dark:text-emerald-400">
+                      {guidedOptimizationReport.runeDeltaNotes.join(' · ')}
+                    </span>
+                  )}
+                </div>
+                {guidedOptimizationReport.runeDecisionReasons.map((r, i) => (
+                  <p key={i} className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                    {r}
+                  </p>
+                ))}
+              </div>
+
+              {/* Boutons d'application en 1 clic */}
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const nextIds: (string | null)[] = Array.from(
+                      { length: 6 },
+                      (_, i) => guidedOptimizationReport.recommendedItems[i]?.id || null,
+                    );
+                    setCustomBuildItemIds(nextIds);
+                    if (guidedOptimizationReport.shouldChangeRunes) {
+                      setCustomRuneSelection(guidedOptimizationReport.recommendedRuneSelection);
+                      setActiveSavedPageId(null);
+                      setRuneViewMode('recommended');
+                      setActiveRunePageTitle(
+                        `${playerChampion.name} · ${guidedOptimizationReport.specialization.shortLabel}`,
+                      );
+                      setIsRunePageDirty(true);
+                    }
+                    setBuildSetFeedback(
+                      `Solution « ${guidedOptimizationReport.specialization.shortLabel} » appliquée dans l’Atelier !`,
+                    );
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg bg-amber-600 dark:bg-amber-500 text-white dark:text-slate-950 hover:bg-amber-500 dark:hover:bg-amber-400 transition-colors"
+                >
+                  <Sparkles className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>
+                    {guidedOptimizationReport.shouldChangeRunes
+                      ? 'Appliquer Objets + Runes'
+                      : 'Appliquer cette solution'}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    const nextIds: (string | null)[] = Array.from(
+                      { length: 6 },
+                      (_, i) => guidedOptimizationReport.recommendedItems[i]?.id || null,
+                    );
+                    setCustomBuildItemIds(nextIds);
+                    setBuildSetFeedback('6 objets de la solution appliqués (runes conservées).');
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:border-amber-500 transition-colors"
+                >
+                  <span>Objets seuls</span>
+                </button>
+
+                {guidedOptimizationReport.shouldChangeRunes && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCustomRuneSelection(guidedOptimizationReport.recommendedRuneSelection);
+                      setActiveSavedPageId(null);
+                      setRuneViewMode('recommended');
+                      setActiveRunePageTitle(
+                        `${playerChampion.name} · ${guidedOptimizationReport.specialization.shortLabel}`,
+                      );
+                      setIsRunePageDirty(true);
+                      setBuildSetFeedback('Page de runes optimisée appliquée dans l’Atelier.');
+                    }}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:border-amber-500 transition-colors"
+                  >
+                    <span>Runes seules</span>
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPinnedBuildA({
+                      label: `Actuel (${playerChampion.name})`,
+                      championId: playerChampion.id,
+                      itemIds: sandboxSlots.map((it) => it?.id || null),
+                      runeSelection: activeSandboxSelection,
+                      heartsteelStacksHp,
+                    });
+                    const nextIds: (string | null)[] = Array.from(
+                      { length: 6 },
+                      (_, i) => guidedOptimizationReport.recommendedItems[i]?.id || null,
+                    );
+                    setCustomBuildItemIds(nextIds);
+                    setCustomRuneSelection(guidedOptimizationReport.recommendedRuneSelection);
+                    setActiveSavedPageId(null);
+                    setRuneViewMode('recommended');
+                    setBuildSetFeedback(
+                      'Votre ancien setup est épinglé en Build A et la solution est chargée en Build B !',
+                    );
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg border border-sky-500/45 bg-sky-500/10 text-sky-700 dark:text-sky-300 hover:bg-sky-500/15 transition-colors"
+                >
+                  <Pin className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>Épingler actuel (A) vs Solution (B)</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Pourquoi cette solution face à chaque type d'ennemi + Alternatives testées */}
+          <div className="grid grid-cols-1 xl:grid-cols-12 gap-4 items-start">
+            <div className="xl:col-span-7 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-4 space-y-2.5">
+              <div className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
+                <Shield className="w-3.5 h-3.5 text-amber-500" aria-hidden="true" />
+                <span>Pourquoi cette solution vs chaque type de champion adverse</span>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                {guidedOptimizationReport.matchupExplanations.map((m, idx) => (
+                  <div
+                    key={idx}
+                    className="rounded-lg border border-slate-200/80 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] p-3 space-y-1 text-[11px]"
+                  >
+                    <div className="font-semibold text-slate-900 dark:text-white">
+                      {m.targetGroupTitle}
+                    </div>
+                    <div className="text-amber-600 dark:text-amber-400 font-medium">
+                      Cibles : {m.enemyNames.join(', ')} → {m.recommendedAnswer}
+                    </div>
+                    <p className="text-slate-600 dark:text-slate-300 leading-relaxed">
+                      {m.whyItWorks}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="xl:col-span-5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-4 space-y-2.5">
+              <div className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
+                <ArrowLeftRight className="w-3.5 h-3.5 text-amber-500" aria-hidden="true" />
+                <span>Alternatives également testées &amp; comparées</span>
+              </div>
+              {guidedOptimizationReport.alternatives.length > 0 ? (
+                <div className="space-y-2">
+                  {guidedOptimizationReport.alternatives.map((alt) => (
+                    <div
+                      key={alt.id}
+                      className="rounded-lg border border-slate-200/80 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] p-3 space-y-2"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <div className="text-xs font-semibold text-slate-900 dark:text-white">
+                            {alt.title} · Score {alt.metrics.fitScore}/100
+                          </div>
+                          <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                            {alt.subtitle}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const nextIds: (string | null)[] = Array.from(
+                              { length: 6 },
+                              (_, i) => alt.items[i]?.id || null,
+                            );
+                            setCustomBuildItemIds(nextIds);
+                            setCustomRuneSelection(alt.runeSelection);
+                            setActiveSavedPageId(null);
+                            setRuneViewMode('recommended');
+                            setBuildSetFeedback(`Variante « ${alt.title} » chargée dans l’Atelier.`);
+                          }}
+                          className="px-2.5 py-1 text-[11px] font-semibold rounded border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:border-amber-500 transition-colors shrink-0"
+                        >
+                          Tester
+                        </button>
+                      </div>
+                      <div className="flex flex-wrap gap-1">
+                        {alt.items.map((it) => (
+                          <div key={it.id} title={it.name}>
+                            <SafeGameIcon
+                              src={it.imageUrl}
+                              alt={it.name}
+                              fallbackLabel={it.name}
+                              sizeClass="w-7 h-7"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                      <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-snug">
+                        {alt.whyBehindWinner}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  La solution retenue domine nettement les autres combinaisons testées pour cette spécialisation.
+                </p>
+              )}
             </div>
           </div>
         </div>
@@ -4084,6 +5778,16 @@ export function BuildOptimizerView({
                     </span>
                   </div>
                 )}
+                {combatDamageResult.abilityKitMitigated > 0 && (
+                  <div className="py-1.5 flex items-center justify-between gap-2">
+                    <span className="font-sans text-emerald-700 dark:text-emerald-300 font-medium">
+                      Sorts, DoT &amp; Kit ({combatDamageResult.spellCasts} lancers)
+                    </span>
+                    <span className="font-semibold text-emerald-600 dark:text-emerald-400">
+                      {combatDamageResult.abilityKitMitigated} ({combatDamageResult.abilityKitRaw} bruts)
+                    </span>
+                  </div>
+                )}
                 {combatDamageResult.itemPassivesBreakdown.map((pas) => (
                   <div key={pas.itemId} className="py-1.5 space-y-0.5">
                     <div className="flex items-center justify-between gap-2">
@@ -4193,10 +5897,11 @@ export function BuildOptimizerView({
                   if (cand.scenarioKey === 'behind') setScenario('behind');
                   else if (cand.scenarioKey === 'ahead') setScenario('ahead');
                   else setScenario('balanced');
+                  scrollToAtelier();
                 }}
                 className="w-full px-3 py-2 text-xs font-semibold rounded-lg bg-amber-600 dark:bg-amber-500 text-white dark:text-slate-950 hover:bg-amber-500 dark:hover:bg-amber-400 transition-colors"
               >
-                Charger ce build + runes
+                Charger &amp; comparer dans l’Atelier
               </button>
             </div>
           ))}
@@ -4247,7 +5952,7 @@ export function BuildOptimizerView({
         }[activeComparison.verdictTone];
 
         return (
-          <div className="space-y-4">
+          <div ref={runesSectionRef} className="space-y-4 scroll-mt-24">
             {/* Barre de navigation Client LoL officielle : RUNES (Éditeur) · MES PAGES (X/15) · OBJETS (Boutique & Recettes) */}
             <div className="rounded-xl border border-[#785A28]/70 bg-[#010A13] px-4 py-2.5 flex flex-wrap items-center justify-between gap-3">
               <div className="flex flex-wrap items-center gap-5">
@@ -4345,6 +6050,11 @@ export function BuildOptimizerView({
                 onAssignSlot={(idx, it) => handleAssignItemToSlot(idx, it)}
                 onApplyItemSet={(ids) => setCustomBuildItemIds(ids)}
                 onResetToRecommended={() => setCustomBuildItemIds(null)}
+                savedSets={savedItemSets}
+                onSaveItemSet={(name) => handleSaveCurrentBuildSet(name)}
+                onDeleteItemSet={handleDeleteSavedBuildSet}
+                onLoadSavedSet={handleLoadSavedBuildSet}
+                onPinSavedSetAsA={handlePinSavedSetAsA}
               />
             )}
 
@@ -4977,6 +6687,19 @@ export function BuildOptimizerView({
                 setRecipeModalItemId(null);
               }}
               onResetToRecommended={() => setCustomBuildItemIds(null)}
+              savedSets={savedItemSets}
+              onSaveItemSet={(name) => handleSaveCurrentBuildSet(name)}
+              onDeleteItemSet={handleDeleteSavedBuildSet}
+              onLoadSavedSet={(entry) => {
+                handleLoadSavedBuildSet(entry);
+                setItemPickerSlotIdx(null);
+                setRecipeModalItemId(null);
+              }}
+              onPinSavedSetAsA={(entry) => {
+                handlePinSavedSetAsA(entry);
+                setItemPickerSlotIdx(null);
+                setRecipeModalItemId(null);
+              }}
               isModal
               onCloseModal={() => {
                 setItemPickerSlotIdx(null);
