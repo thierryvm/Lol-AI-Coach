@@ -1195,6 +1195,268 @@ export async function generateTwoBuildsAiComparison(payload: {
   };
 }
 
+export async function generateRuneItemSynergyAnalysis(payload: {
+  championName: string;
+  role: string;
+  gameMode: string;
+  level: number;
+  combatDurationSec: number;
+  runes: {
+    primaryTreeName: string;
+    secondaryTreeName: string;
+    keystoneName: string;
+    keystoneDesc?: string;
+    minorRunes: Array<{ name: string; desc?: string }>;
+    shards: string[];
+    runeGoldValue: number;
+  };
+  items: Array<{
+    name: string;
+    cost: number;
+    tags: string[];
+    passives: string[];
+  }>;
+  totals: {
+    hp: number;
+    ad: number;
+    ap: number;
+    armor: number;
+    mr: number;
+    attackSpeed: number;
+    asOvercapPct: number;
+    abilityHaste: number;
+    cooldownReductionPct: number;
+    critChancePct: number;
+    lethality: number;
+    armorPenPct: number;
+    magicPenFlat: number;
+    magicPenPct: number;
+    lifestealPct: number;
+    omnivampPct: number;
+    tenacityPct: number;
+    physicalEhp: number;
+    magicEhp: number;
+  };
+  runeSources: {
+    hp: number;
+    ad: number;
+    ap: number;
+    armor: number;
+    mr: number;
+    abilityHaste: number;
+    moveSpeed: number;
+  };
+  combatVsTarget: {
+    targetName: string;
+    targetHp: number;
+    targetArmor: number;
+    targetMr: number;
+    effectiveArmor: number;
+    effectiveMr: number;
+    physicalMitigationPct: number;
+    magicMitigationPct: number;
+    totalRawDamage: number;
+    totalMitigatedDamage: number;
+    realDps: number;
+    abilityKitRaw: number;
+    abilityKitMitigated: number;
+    combatHealingTotal: number;
+    estimatedTtkSec: number;
+    damageDeltaVsMetaRunes: number;
+  };
+  matchupSummary: {
+    physicalShare: number;
+    magicShare: number;
+    tankCount: number;
+    highHealCount: number;
+    burstThreatCount: number;
+    enemies: string[];
+  };
+  aiConfig?: Partial<AiUserSelection> | null;
+}) {
+  const {
+    championName,
+    role,
+    gameMode,
+    level,
+    combatDurationSec,
+    runes,
+    items,
+    totals,
+    runeSources,
+    combatVsTarget,
+    matchupSummary,
+    aiConfig,
+  } = payload;
+
+  const mitigationRetentionPct =
+    combatVsTarget.totalRawDamage > 0
+      ? Number(
+          ((combatVsTarget.totalMitigatedDamage / combatVsTarget.totalRawDamage) * 100).toFixed(1),
+        )
+      : 100;
+
+  const structuredInput = {
+    context: {
+      championName,
+      role,
+      gameMode,
+      level,
+      combatDurationSec,
+    },
+    runes,
+    items,
+    totals,
+    runeSources,
+    combatVsTarget: {
+      ...combatVsTarget,
+      mitigationRetentionPct,
+    },
+    matchupSummary,
+  };
+
+  const raw = await generateJsonWithFallback({
+    aiConfig,
+    contents:
+      `Analyse en profondeur la synergie entre les runes sélectionnées (${runes.keystoneName}, ${runes.primaryTreeName} / ${runes.secondaryTreeName}) et les ${items.length} objets équipés sur ${championName} (${role}, niveau ${level}, mode ${gameMode}).\n` +
+      `En te basant EXCLUSIVEMENT sur les données exactes ci-dessous :\n` +
+      `1. Calcule et explique les bonus statistiques réels combinés (valeur or des runes, % de pénétration magique/armure et pénétration fixe vs dégâts bruts & mitigation réelle sur ${combatVsTarget.targetName}, efficacité CDR/vitesse d'attaque/overcap).\n` +
+      `2. Compare l'intérêt d'investir davantage en pénétration (%) vs dégâts bruts (AP/AD purs) face aux résistances actuelles de la cible (${combatVsTarget.targetArmor} Armure -> ${combatVsTarget.effectiveArmor} effective, ${combatVsTarget.targetMr} RM -> ${combatVsTarget.effectiveMr} effective).\n` +
+      `3. Propose des ajustements concrets de runes/fragments et d'objets s'il existe une antisynergie ou un gain mesurable.\n` +
+      `Ne modifie jamais les noms d'objets/runes ni n'invente de statistiques absentes.\n\n` +
+      JSON.stringify(structuredInput, null, 2),
+    systemInstruction:
+      'Tu es un expert theorycraft League of Legends de niveau Challenger. Tu analyses rigoureusement les synergies Runes × Objets en français clair, chiffré (pénétration %, dégâts bruts vs mitigés, overcap AS, hâte, EHP) et orienté ajustements concrets.',
+    responseSchema: {
+      type: Type.OBJECT,
+      required: [
+        'synergyScore',
+        'synergyVerdict',
+        'headline',
+        'realStatBonuses',
+        'penetrationVsRawAnalysis',
+        'runeAdjustments',
+        'itemAdjustments',
+      ],
+      properties: {
+        synergyScore: {
+          type: Type.INTEGER,
+          description: 'Note globale de synergie Runes × Objets entre 0 et 100.',
+        },
+        synergyVerdict: {
+          type: Type.STRING,
+          description: "Exactement 'OPTIMALE', 'SOLIDE', 'MITIGÉE' ou 'ANTISYNERGIE'.",
+        },
+        headline: {
+          type: Type.STRING,
+          description: 'Verdict synthétique en 1 à 2 phrases sur la cohérence globale Runes × Objets.',
+        },
+        realStatBonuses: {
+          type: Type.ARRAY,
+          description:
+            '4 bonus statistiques réels calculés (ex: Pénétration effective vs RM/Armure cible, Rendement dégâts bruts → mitigés, Valeur statistique des runes en or, Scaling Hâte / AS / Overcap).',
+          items: {
+            type: Type.OBJECT,
+            required: ['label', 'computedValue', 'formulaExplanation'],
+            properties: {
+              label: { type: Type.STRING },
+              computedValue: {
+                type: Type.STRING,
+                description: 'Valeur chiffrée concise calculée à partir des données.',
+              },
+              formulaExplanation: {
+                type: Type.STRING,
+                description: 'Explication concrète de comment la rune et les objets interagissent.',
+              },
+            },
+          },
+        },
+        penetrationVsRawAnalysis: {
+          type: Type.STRING,
+          description:
+            'Analyse détaillée comparant le gain réel de la pénétration (% et fixe) par rapport aux dégâts bruts (AP/AD/DoT) face aux résistances de la cible et des ennemis.',
+        },
+        runeAdjustments: {
+          type: Type.ARRAY,
+          description: '1 à 3 ajustements précis de runes ou fragments (ou confirmation si optimal).',
+          items: {
+            type: Type.OBJECT,
+            required: ['currentElement', 'suggestedChange', 'expectedGain', 'reason'],
+            properties: {
+              currentElement: { type: Type.STRING },
+              suggestedChange: { type: Type.STRING },
+              expectedGain: { type: Type.STRING },
+              reason: { type: Type.STRING },
+            },
+          },
+        },
+        itemAdjustments: {
+          type: Type.ARRAY,
+          description: '1 à 3 ajustements ou confirmations d’objets pour renforcer la synergie avec ces runes.',
+          items: {
+            type: Type.OBJECT,
+            required: ['currentElement', 'suggestedChange', 'expectedGain', 'reason'],
+            properties: {
+              currentElement: { type: Type.STRING },
+              suggestedChange: { type: Type.STRING },
+              expectedGain: { type: Type.STRING },
+              reason: { type: Type.STRING },
+            },
+          },
+        },
+      },
+    },
+  });
+
+  const rawScore = Number(raw?.synergyScore);
+  const synergyScore = Number.isFinite(rawScore)
+    ? Math.max(0, Math.min(100, Math.round(rawScore)))
+    : 75;
+
+  const rawVerdict = String(raw?.synergyVerdict || '').trim().toUpperCase();
+  const synergyVerdict =
+    rawVerdict === 'OPTIMALE' ||
+    rawVerdict === 'SOLIDE' ||
+    rawVerdict === 'MITIGÉE' ||
+    rawVerdict === 'ANTISYNERGIE'
+      ? rawVerdict
+      : synergyScore >= 85
+        ? 'OPTIMALE'
+        : synergyScore >= 70
+          ? 'SOLIDE'
+          : synergyScore >= 50
+            ? 'MITIGÉE'
+            : 'ANTISYNERGIE';
+
+  const mapAdjustments = (arr: unknown) =>
+    Array.isArray(arr)
+      ? arr.slice(0, 3).map((a: any) => ({
+          currentElement: nonEmpty(a?.currentElement) || 'Configuration actuelle',
+          suggestedChange: nonEmpty(a?.suggestedChange) || 'Conserver tel quel',
+          expectedGain: nonEmpty(a?.expectedGain) || 'Synergie maintenue',
+          reason: nonEmpty(a?.reason),
+        }))
+      : [];
+
+  return {
+    synergyScore,
+    synergyVerdict,
+    headline: nonEmpty(raw?.headline),
+    realStatBonuses: Array.isArray(raw?.realStatBonuses)
+      ? raw.realStatBonuses.slice(0, 4).map((b: any) => ({
+          label: nonEmpty(b?.label) || 'Bonus statistique',
+          computedValue: nonEmpty(b?.computedValue),
+          formulaExplanation: nonEmpty(b?.formulaExplanation),
+        }))
+      : [],
+    penetrationVsRawAnalysis: nonEmpty(raw?.penetrationVsRawAnalysis),
+    runeAdjustments: mapAdjustments(raw?.runeAdjustments),
+    itemAdjustments: mapAdjustments(raw?.itemAdjustments),
+    ...(raw?._aiMeta ? { _aiMeta: raw._aiMeta } : {}),
+  };
+}
+
+
 
 
 

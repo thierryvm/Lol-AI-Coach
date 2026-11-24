@@ -20,6 +20,7 @@ import {
   generateItemPassiveFormulaExplanation,
   generateLiveCoachingCall,
   generatePostGameCoaching,
+  generateRuneItemSynergyAnalysis,
   generateTwoBuildsAiComparison,
   searchPopularBuildsWithGoogle,
 } from './server/aiCoachService.ts';
@@ -444,6 +445,26 @@ async function startServer() {
           err instanceof Error
             ? err.message
             : 'Erreur lors de la comparaison IA des deux builds.',
+      });
+    }
+  });
+
+  app.post('/api/coach/rune-item-synergy', async (req, res) => {
+    try {
+      const payload = req.body;
+      if (!payload?.championName || !payload?.runes || !Array.isArray(payload?.items)) {
+        return res.status(400).json({
+          error: 'championName, runes et items sont requis pour analyser la synergie Runes × Objets.',
+        });
+      }
+      const result = await generateRuneItemSynergyAnalysis(payload);
+      return res.json(result);
+    } catch (err) {
+      return res.status(500).json({
+        error:
+          err instanceof Error
+            ? err.message
+            : 'Erreur lors de l’analyse IA de synergie Runes × Objets.',
       });
     }
   });

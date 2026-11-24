@@ -471,6 +471,42 @@ export function BuildOptimizerView({
   const [aiCompareLoading, setAiCompareLoading] = useState<boolean>(false);
   const [aiCompareError, setAiCompareError] = useState<string | null>(null);
 
+  // Analyse IA de synergie Runes × Objets (bonus statistiques réels & ajustements)
+  interface RuneItemSynergyAiResult {
+    synergyScore: number;
+    synergyVerdict: 'OPTIMALE' | 'SOLIDE' | 'MITIGÉE' | 'ANTISYNERGIE' | string;
+    headline: string;
+    realStatBonuses: Array<{
+      label: string;
+      computedValue: string;
+      formulaExplanation: string;
+    }>;
+    penetrationVsRawAnalysis: string;
+    runeAdjustments: Array<{
+      currentElement: string;
+      suggestedChange: string;
+      expectedGain: string;
+      reason: string;
+    }>;
+    itemAdjustments: Array<{
+      currentElement: string;
+      suggestedChange: string;
+      expectedGain: string;
+      reason: string;
+    }>;
+    _aiMeta?: {
+      provider?: string;
+      providerLabel?: string;
+      model?: string;
+      usedFallback?: boolean;
+    };
+  }
+  const [runeSynergyAiResult, setRuneSynergyAiResult] = useState<RuneItemSynergyAiResult | null>(
+    null,
+  );
+  const [runeSynergyAiLoading, setRuneSynergyAiLoading] = useState<boolean>(false);
+  const [runeSynergyAiError, setRuneSynergyAiError] = useState<string | null>(null);
+
   const [selectedSpecByKey, setSelectedSpecByKey] = useState<
     Record<string, GameplaySpecializationId>
   >({});
@@ -1395,6 +1431,23 @@ export function BuildOptimizerView({
     recommendation.threatSummary.tankCount,
   ]);
 
+  useEffect(() => {
+    setRuneSynergyAiResult(null);
+    setRuneSynergyAiError(null);
+  }, [
+    playerChampion.id,
+    role,
+    gameMode,
+    runeSimLevel,
+    combatDurationSec,
+    activeCombatTarget.id,
+    activeCombatTarget.hp,
+    activeCombatTarget.armor,
+    activeCombatTarget.mr,
+    activeSandboxSelection,
+    sandboxActiveItems,
+  ]);
+
   const perItemImpactRows = useMemo(
     () =>
       computePerItemImpactMatrix({
@@ -2082,6 +2135,120 @@ export function BuildOptimizerView({
       );
     } finally {
       setAiCompareLoading(false);
+    }
+  };
+
+  const handleAnalyzeRuneItemSynergy = async () => {
+    const stripHtml = (raw?: string) =>
+      (raw || '')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    setRuneSynergyAiLoading(true);
+    setRuneSynergyAiError(null);
+    try {
+      const minorRunes = [
+        ...activeRuneVisualSummary.primaryMinors,
+        ...activeRuneVisualSummary.secondaryMinors,
+      ].map((r) => ({
+        name: r.name,
+        desc: stripHtml(r.shortDesc),
+      }));
+
+      const itemPayload = sandboxActiveItems.map((it) => {
+        const rawDetails = extractRawDataDragonItemDetails(it);
+        return {
+          name: it.name,
+          cost: it.gold.total,
+          tags: formatItemStatTags(it),
+          passives: rawDetails.passives.slice(0, 2).map((p) => `${p.name} : ${p.text}`),
+        };
+      });
+
+      const res = await postCoachJson<RuneItemSynergyAiResult>('/api/coach/rune-item-synergy', {
+        championName: playerChampion.name,
+        role,
+        gameMode,
+        level: runeSimLevel,
+        combatDurationSec,
+        runes: {
+          primaryTreeName: activeRuneVisualSummary.primaryTreeName,
+          secondaryTreeName: activeRuneVisualSummary.secondaryTreeName,
+          keystoneName: activeRuneVisualSummary.keystone?.name || 'Fondamentale',
+          keystoneDesc: stripHtml(activeRuneVisualSummary.keystone?.shortDesc),
+          minorRunes,
+          shards: activeRuneVisualSummary.shards,
+          runeGoldValue: sandboxStats.combat.runeGoldValue,
+        },
+        items: itemPayload,
+        totals: {
+          hp: sandboxStats.totals.hp,
+          ad: sandboxStats.totals.ad,
+          ap: sandboxStats.totals.ap,
+          armor: sandboxStats.totals.armor,
+          mr: sandboxStats.totals.mr,
+          attackSpeed: Number(sandboxStats.totals.attackSpeed.toFixed(3)),
+          asOvercapPct: sandboxStats.totals.asOvercapPct,
+          abilityHaste: sandboxStats.totals.abilityHaste,
+          cooldownReductionPct: sandboxStats.totals.cooldownReductionPct,
+          critChancePct: sandboxStats.totals.critChancePct,
+          lethality: sandboxStats.totals.lethality,
+          armorPenPct: sandboxStats.totals.armorPenPct,
+          magicPenFlat: sandboxStats.totals.magicPenFlat,
+          magicPenPct: sandboxStats.totals.magicPenPct,
+          lifestealPct: sandboxStats.totals.lifeStealPct,
+          omnivampPct: sandboxStats.totals.omnivampPct,
+          tenacityPct: sandboxStats.totals.tenacityPct,
+          physicalEhp: sandboxStats.combat.physicalEhp,
+          magicEhp: sandboxStats.combat.magicEhp,
+        },
+        runeSources: {
+          hp: sandboxStats.sources.hp.runes,
+          ad: sandboxStats.sources.ad.runes,
+          ap: sandboxStats.sources.ap.runes,
+          armor: sandboxStats.sources.armor.runes,
+          mr: sandboxStats.sources.mr.runes,
+          abilityHaste: sandboxStats.sources.abilityHaste.runes,
+          moveSpeed: sandboxStats.sources.moveSpeed.runes,
+        },
+        combatVsTarget: {
+          targetName: activeCombatTarget.name,
+          targetHp: activeCombatTarget.hp,
+          targetArmor: activeCombatTarget.armor,
+          targetMr: activeCombatTarget.mr,
+          effectiveArmor: combatDamageResult.effectiveArmor,
+          effectiveMr: combatDamageResult.effectiveMr,
+          physicalMitigationPct: combatDamageResult.physicalMitigationPct,
+          magicMitigationPct: combatDamageResult.magicMitigationPct,
+          totalRawDamage: combatDamageResult.totalRawDamage,
+          totalMitigatedDamage: combatDamageResult.totalMitigatedDamage,
+          realDps: combatDamageResult.realDps,
+          abilityKitRaw: combatDamageResult.abilityKitRaw,
+          abilityKitMitigated: combatDamageResult.abilityKitMitigated,
+          combatHealingTotal: combatDamageResult.combatHealingTotal,
+          estimatedTtkSec: combatDamageResult.estimatedTtkSec,
+          damageDeltaVsMetaRunes:
+            combatDamageResult.totalMitigatedDamage - metaRunesCombatDamage.totalMitigatedDamage,
+        },
+        matchupSummary: {
+          physicalShare: recommendation.threatSummary.physicalShare,
+          magicShare: recommendation.threatSummary.magicShare,
+          tankCount: recommendation.threatSummary.tankCount,
+          highHealCount: recommendation.threatSummary.highHealCount,
+          burstThreatCount: recommendation.threatSummary.burstThreatCount,
+          enemies: enemyChampions.map((e) => e.name),
+        },
+      });
+      setRuneSynergyAiResult(res);
+    } catch (err) {
+      setRuneSynergyAiError(
+        err instanceof Error
+          ? err.message
+          : 'Impossible de générer l’analyse IA de synergie Runes × Objets.',
+      );
+    } finally {
+      setRuneSynergyAiLoading(false);
     }
   };
 
@@ -5413,6 +5580,298 @@ export function BuildOptimizerView({
             </div>
           </div>
         </div>
+
+        {/* Analyse IA : Synergie Runes × Objets, Pénétration vs Dégâts Bruts & Ajustements */}
+        {(() => {
+          const mrReduction = Math.max(0, activeCombatTarget.mr - combatDamageResult.effectiveMr);
+          const armorReduction = Math.max(
+            0,
+            activeCombatTarget.armor - combatDamageResult.effectiveArmor,
+          );
+          const retentionPct =
+            combatDamageResult.totalRawDamage > 0
+              ? Math.round(
+                  (combatDamageResult.totalMitigatedDamage / combatDamageResult.totalRawDamage) *
+                    100,
+                )
+              : 100;
+          const damageDeltaMeta =
+            combatDamageResult.totalMitigatedDamage - metaRunesCombatDamage.totalMitigatedDamage;
+
+          return (
+            <div className="rounded-xl border border-sky-500/35 bg-gradient-to-b from-sky-500/[0.06] to-slate-50 dark:to-[#0D121C] p-5 space-y-4">
+              <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 pb-3 border-b border-slate-200 dark:border-slate-800">
+                <div className="space-y-1">
+                  <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 text-sky-500 shrink-0" aria-hidden="true" />
+                    <span>
+                      Analyse IA · Synergie Runes × Objets &amp; Bonus Statistiques Réels
+                    </span>
+                  </h3>
+                  <p className="text-xs text-slate-600 dark:text-slate-300">
+                    Évalue l’interaction exacte entre{' '}
+                    <strong className="text-slate-900 dark:text-white">
+                      {activeRuneVisualSummary.keystone?.name || 'votre fondamentale'}
+                    </strong>{' '}
+                    ({activeRuneVisualSummary.primaryTreeName} + {activeRuneVisualSummary.secondaryTreeName}) et vos{' '}
+                    <strong className="text-slate-900 dark:text-white">
+                      {sandboxActiveItems.length} objets
+                    </strong>{' '}
+                    face à {activeCombatTarget.name} (pénétration % vs dégâts bruts, caps et ajustements).
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => void handleAnalyzeRuneItemSynergy()}
+                  disabled={runeSynergyAiLoading}
+                  className="inline-flex items-center gap-2 h-9 px-4 text-xs font-semibold rounded-lg bg-sky-600 text-white hover:bg-sky-500 disabled:opacity-60 transition-colors whitespace-nowrap shrink-0"
+                >
+                  {runeSynergyAiLoading ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+                      <span>Calcul des synergies par l’IA...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-4 h-4" aria-hidden="true" />
+                      <span>
+                        {runeSynergyAiResult
+                          ? 'Recalculer la synergie (IA)'
+                          : 'Analyser la synergie Runes × Objets (IA)'}
+                      </span>
+                    </>
+                  )}
+                </button>
+              </div>
+
+              {/* Aperçu chiffré déterministe permanent (Pénétration vs Bruts, Valeur runes & Caps) */}
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+                <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#111622] px-3 py-2.5">
+                  <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Pén. Magique effective
+                  </div>
+                  <div className="mt-1 font-mono tabular-nums font-bold text-slate-900 dark:text-white">
+                    {sandboxStats.totals.magicPenPct}% / +{sandboxStats.totals.magicPenFlat} fixe
+                  </div>
+                  <div className="text-[10px] font-mono tabular-nums text-sky-600 dark:text-sky-400 mt-0.5">
+                    RM cible {activeCombatTarget.mr} → {combatDamageResult.effectiveMr} (-{mrReduction})
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#111622] px-3 py-2.5">
+                  <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Pén. Armure / Létalité
+                  </div>
+                  <div className="mt-1 font-mono tabular-nums font-bold text-slate-900 dark:text-white">
+                    {sandboxStats.totals.armorPenPct}% / +{sandboxStats.totals.lethality} Lét.
+                  </div>
+                  <div className="text-[10px] font-mono tabular-nums text-amber-600 dark:text-amber-400 mt-0.5">
+                    Arm. cible {activeCombatTarget.armor} → {combatDamageResult.effectiveArmor} (-{armorReduction})
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#111622] px-3 py-2.5">
+                  <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Bruts → Réels ({combatDurationSec}s)
+                  </div>
+                  <div className="mt-1 font-mono tabular-nums font-bold text-slate-900 dark:text-white">
+                    {combatDamageResult.totalMitigatedDamage} / {combatDamageResult.totalRawDamage}
+                  </div>
+                  <div className="text-[10px] font-mono tabular-nums text-emerald-600 dark:text-emerald-400 mt-0.5">
+                    {retentionPct}% effectifs · {combatDamageResult.realDps}/s
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#111622] px-3 py-2.5">
+                  <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Apport Runes &amp; Caps
+                  </div>
+                  <div className="mt-1 font-mono tabular-nums font-bold text-slate-900 dark:text-white">
+                    ~{sandboxStats.combat.runeGoldValue} po · {sandboxStats.totals.cooldownReductionPct}% CDR
+                  </div>
+                  <div
+                    className={`text-[10px] font-mono tabular-nums mt-0.5 ${
+                      sandboxStats.totals.asOvercapPct > 0
+                        ? 'text-rose-600 dark:text-rose-400'
+                        : damageDeltaMeta >= 0
+                          ? 'text-emerald-600 dark:text-emerald-400'
+                          : 'text-amber-600 dark:text-amber-400'
+                    }`}
+                  >
+                    {sandboxStats.totals.asOvercapPct > 0
+                      ? `Overcap AS +${sandboxStats.totals.asOvercapPct}%`
+                      : `${damageDeltaMeta >= 0 ? '+' : ''}${damageDeltaMeta} dég. vs Méta`}
+                  </div>
+                </div>
+              </div>
+
+              {runeSynergyAiError && (
+                <div className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-3.5 py-2.5 flex items-center justify-between gap-3 text-xs text-rose-700 dark:text-rose-300">
+                  <span>{runeSynergyAiError}</span>
+                  <button
+                    type="button"
+                    onClick={() => void handleAnalyzeRuneItemSynergy()}
+                    className="px-2.5 py-1 rounded border border-rose-500/40 font-semibold hover:bg-rose-500/15 shrink-0"
+                  >
+                    Réessayer
+                  </button>
+                </div>
+              )}
+
+              {runeSynergyAiResult && (
+                <div className="space-y-4 pt-1">
+                  {/* En-tête Score de Synergie + Headline */}
+                  <div className="rounded-xl border border-sky-500/35 bg-white dark:bg-[#111622] p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span
+                          className={`px-2 py-0.5 rounded text-[11px] font-bold uppercase ${
+                            runeSynergyAiResult.synergyVerdict === 'OPTIMALE'
+                              ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/40'
+                              : runeSynergyAiResult.synergyVerdict === 'SOLIDE'
+                                ? 'bg-sky-500/15 text-sky-700 dark:text-sky-300 border border-sky-500/40'
+                                : runeSynergyAiResult.synergyVerdict === 'MITIGÉE'
+                                  ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/40'
+                                  : 'bg-rose-500/15 text-rose-700 dark:text-rose-300 border border-rose-500/40'
+                          }`}
+                        >
+                          Synergie {runeSynergyAiResult.synergyVerdict} · {runeSynergyAiResult.synergyScore}/100
+                        </span>
+                        {runeSynergyAiResult._aiMeta?.providerLabel && (
+                          <span className="text-[11px] font-mono text-slate-500 dark:text-slate-400">
+                            via {runeSynergyAiResult._aiMeta.providerLabel}
+                            {runeSynergyAiResult._aiMeta.model
+                              ? ` (${runeSynergyAiResult._aiMeta.model})`
+                              : ''}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs sm:text-sm font-medium text-slate-900 dark:text-white leading-relaxed">
+                        {runeSynergyAiResult.headline}
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={scrollToRunesEditor}
+                        className="px-3 py-1.5 text-[11px] font-semibold rounded-lg border border-[#C8AA6E]/55 bg-[#091428] text-[#F0E6D2] hover:border-[#C8AA6E] whitespace-nowrap"
+                      >
+                        Modifier les runes ↓
+                      </button>
+                      <button
+                        type="button"
+                        onClick={scrollToAtelier}
+                        className="px-3 py-1.5 text-[11px] font-semibold rounded-lg border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 whitespace-nowrap"
+                      >
+                        Ajuster objets ↑
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Bonus statistiques réels calculés par l'IA */}
+                  {runeSynergyAiResult.realStatBonuses.length > 0 && (
+                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+                      {runeSynergyAiResult.realStatBonuses.map((bonus, idx) => (
+                        <div
+                          key={`syn-bonus-${idx}`}
+                          className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#111622] p-3 space-y-1.5"
+                        >
+                          <div className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+                            {bonus.label}
+                          </div>
+                          <div className="text-xs font-mono tabular-nums font-bold text-sky-700 dark:text-sky-300">
+                            {bonus.computedValue}
+                          </div>
+                          <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                            {bonus.formulaExplanation}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Pénétration (%) vs Dégâts bruts */}
+                  {runeSynergyAiResult.penetrationVsRawAnalysis && (
+                    <div className="rounded-lg border border-sky-500/30 bg-sky-500/[0.05] px-4 py-3 space-y-1">
+                      <div className="text-[11px] font-bold uppercase tracking-wide text-sky-700 dark:text-sky-300 flex items-center gap-1.5">
+                        <Gauge className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                        <span>Arbitrage Pénétration (% / Fixe) vs Dégâts Bruts</span>
+                      </div>
+                      <p className="text-xs text-slate-700 dark:text-slate-200 leading-relaxed">
+                        {runeSynergyAiResult.penetrationVsRawAnalysis}
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Ajustements suggérés : Runes & Objets */}
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                    <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#111622] p-3.5 space-y-2.5">
+                      <div className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
+                        <Sparkles className="w-3.5 h-3.5 text-amber-500 shrink-0" aria-hidden="true" />
+                        <span>Ajustements suggérés : Runes &amp; Fragments</span>
+                      </div>
+                      <div className="space-y-2">
+                        {runeSynergyAiResult.runeAdjustments.map((adj, idx) => (
+                          <div
+                            key={`rune-adj-${idx}`}
+                            className="rounded-md border border-slate-200/80 dark:border-slate-800/80 bg-slate-50 dark:bg-[#0D121C] p-2.5 space-y-1 text-xs"
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-1.5">
+                              <span className="font-semibold text-slate-900 dark:text-white">
+                                {adj.currentElement} →{' '}
+                                <span className="text-amber-600 dark:text-amber-400">
+                                  {adj.suggestedChange}
+                                </span>
+                              </span>
+                              <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 text-[10px] font-mono font-semibold">
+                                {adj.expectedGain}
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                              {adj.reason}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#111622] p-3.5 space-y-2.5">
+                      <div className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
+                        <Swords className="w-3.5 h-3.5 text-sky-500 shrink-0" aria-hidden="true" />
+                        <span>Ajustements suggérés : Objets</span>
+                      </div>
+                      <div className="space-y-2">
+                        {runeSynergyAiResult.itemAdjustments.map((adj, idx) => (
+                          <div
+                            key={`item-adj-${idx}`}
+                            className="rounded-md border border-slate-200/80 dark:border-slate-800/80 bg-slate-50 dark:bg-[#0D121C] p-2.5 space-y-1 text-xs"
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-1.5">
+                              <span className="font-semibold text-slate-900 dark:text-white">
+                                {adj.currentElement} →{' '}
+                                <span className="text-sky-600 dark:text-sky-400">
+                                  {adj.suggestedChange}
+                                </span>
+                              </span>
+                              <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 text-[10px] font-mono font-semibold">
+                                {adj.expectedGain}
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                              {adj.reason}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
         {/* Coach d’Optimisation Guidée par Spécialisation & Simulation Réelle */}
         <div className="rounded-xl border border-amber-500/35 bg-gradient-to-b from-amber-500/[0.06] to-slate-50 dark:to-[#0D121C] p-5 space-y-5">
