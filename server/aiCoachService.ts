@@ -1013,6 +1013,189 @@ export async function analyzeVoiceMomentWithAi(payload: {
   };
 }
 
+export interface BuildComparisonSnapshotPayload {
+  name: string;
+  championName: string;
+  items: string[];
+  keystoneName?: string;
+  secondaryTreeName?: string;
+  totalGold: number;
+  goldEfficiencyPct: number;
+  realDps: number;
+  totalMitigatedDamage: number;
+  estimatedTtkSec: number;
+  autoDps: number;
+  abilityImpactIndex: number;
+  abilityKitMitigated: number;
+  itemPassivesMitigated: number;
+  physicalEhp: number;
+  magicEhp: number;
+  hp: number;
+  armor: number;
+  mr: number;
+  ad: number;
+  ap: number;
+  attackSpeed: number;
+  abilityHaste: number;
+  moveSpeed: number;
+  combatHealingTotal: number;
+}
+
+export async function generateTwoBuildsAiComparison(payload: {
+  championName: string;
+  role: string;
+  gameMode: string;
+  level: number;
+  combatDurationSec: number;
+  buildA: BuildComparisonSnapshotPayload;
+  buildB: BuildComparisonSnapshotPayload;
+  matchup: {
+    targetName: string;
+    targetHp: number;
+    targetArmor: number;
+    targetMr: number;
+    physicalShare: number;
+    magicShare: number;
+    tankCount: number;
+    highHealCount: number;
+    burstThreatCount: number;
+    matchupNote?: string | null;
+    enemies: Array<{
+      name: string;
+      damage: string;
+      tankiness: number;
+      sustain: number;
+      burst: number;
+      cc: number;
+    }>;
+  };
+  aiConfig?: Partial<AiUserSelection> | null;
+}) {
+  const { championName, role, gameMode, level, combatDurationSec, buildA, buildB, matchup, aiConfig } =
+    payload;
+
+  const goldDiff = buildB.totalGold - buildA.totalGold;
+  const dpsDiff = Number((buildB.realDps - buildA.realDps).toFixed(1));
+  const dmgDiff = Math.round(buildB.totalMitigatedDamage - buildA.totalMitigatedDamage);
+  const physEhpDiff = Math.round(buildB.physicalEhp - buildA.physicalEhp);
+  const magEhpDiff = Math.round(buildB.magicEhp - buildA.magicEhp);
+
+  const structuredInput = {
+    context: {
+      championName,
+      role,
+      gameMode,
+      level,
+      combatDurationSec,
+    },
+    buildA,
+    buildB,
+    exactDeltasBMinusA: {
+      goldDiff,
+      realDpsDiff: dpsDiff,
+      totalMitigatedDamageDiff: dmgDiff,
+      physEhpDiff,
+      magEhpDiff,
+      hpDiff: Math.round(buildB.hp - buildA.hp),
+      armorDiff: Number((buildB.armor - buildA.armor).toFixed(1)),
+      mrDiff: Number((buildB.mr - buildA.mr).toFixed(1)),
+      abilityHasteDiff: Math.round(buildB.abilityHaste - buildA.abilityHaste),
+    },
+    matchup,
+  };
+
+  const raw = await generateJsonWithFallback({
+    aiConfig,
+    contents:
+      `Compare ces deux builds enregistrés pour ${championName} (${role}, niveau ${level}, mode ${gameMode}) face à la composition adverse donnée.\n` +
+      `Tu DOIS produire une comparaison point par point basée STRICTEMENT sur les statistiques simulées (DPS réel, dégâts sur ${combatDurationSec}s, TTK, survie/EHP physique & magique, PV, soin en combat, coût en or, rentabilité) et sur le matchup adverse (menaces AD/AP, tanks, soin, burst, cible principale ${matchup.targetName}).\n` +
+      `Ne modifie jamais les noms d'objets ni les chiffres ci-dessous, et n'invente aucune statistique absente.\n\n` +
+      JSON.stringify(structuredInput, null, 2),
+    systemInstruction:
+      'Tu es un analyste League of Legends de niveau Challenger. Tu compares objectivement deux builds enregistrés (Build A vs Build B) point par point en français clair, chiffré et orienté décision pour le matchup exact.',
+    responseSchema: {
+      type: Type.OBJECT,
+      required: [
+        'winner',
+        'verdictHeadline',
+        'recommendedCondition',
+        'pointByPoint',
+        'tacticalTakeaways',
+      ],
+      properties: {
+        winner: {
+          type: Type.STRING,
+          description: "Exactement 'A', 'B' ou 'SITUATIONNEL'.",
+        },
+        verdictHeadline: {
+          type: Type.STRING,
+          description: 'Verdict principal clair en 1 à 2 phrases citant les écarts clés.',
+        },
+        recommendedCondition: {
+          type: Type.STRING,
+          description: 'Règle simple indiquant quand choisir le Build A vs le Build B dans cette partie.',
+        },
+        pointByPoint: {
+          type: Type.ARRAY,
+          description:
+            'Exactement 4 axes ordonnés : 1) DPS & Dégâts réels, 2) Survie & Tenue (EHP), 3) Coût & Rentabilité Or, 4) Adaptation au Matchup Adverse.',
+          items: {
+            type: Type.OBJECT,
+            required: ['axis', 'winner', 'metricSummary', 'analysis'],
+            properties: {
+              axis: { type: Type.STRING },
+              winner: {
+                type: Type.STRING,
+                description: "Exactement 'A', 'B' ou 'ÉGALITÉ'.",
+              },
+              metricSummary: {
+                type: Type.STRING,
+                description: 'Comparaison chiffrée exacte A vs B pour cet axe.',
+              },
+              analysis: {
+                type: Type.STRING,
+                description: 'Explication tactique concrète (2 phrases max) expliquant pourquoi cet écart compte.',
+              },
+            },
+          },
+        },
+        tacticalTakeaways: {
+          type: Type.ARRAY,
+          items: { type: Type.STRING },
+          description: '3 conseils concrets pour jouer le build retenu contre ce matchup.',
+        },
+      },
+    },
+  });
+
+  const normalizeWinner = (val: unknown, allowSituational = false): string => {
+    const up = String(val || '').trim().toUpperCase();
+    if (up === 'A' || up.includes('BUILD A')) return 'A';
+    if (up === 'B' || up.includes('BUILD B')) return 'B';
+    if (allowSituational) return 'SITUATIONNEL';
+    return 'ÉGALITÉ';
+  };
+
+  const axes = Array.isArray(raw?.pointByPoint) ? raw.pointByPoint : [];
+
+  return {
+    winner: normalizeWinner(raw?.winner, true),
+    verdictHeadline: nonEmpty(raw?.verdictHeadline),
+    recommendedCondition: nonEmpty(raw?.recommendedCondition),
+    pointByPoint: axes.map((item: any) => ({
+      axis: nonEmpty(item?.axis) || 'Critère',
+      winner: normalizeWinner(item?.winner, false),
+      metricSummary: nonEmpty(item?.metricSummary),
+      analysis: nonEmpty(item?.analysis),
+    })),
+    tacticalTakeaways: Array.isArray(raw?.tacticalTakeaways)
+      ? raw.tacticalTakeaways.map((t: unknown) => nonEmpty(t)).filter(Boolean).slice(0, 4)
+      : [],
+    ...(raw?._aiMeta ? { _aiMeta: raw._aiMeta } : {}),
+  };
+}
+
+
 
 
 

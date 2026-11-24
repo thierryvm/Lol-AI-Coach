@@ -443,6 +443,34 @@ export function BuildOptimizerView({
   const [showSavedBuildsBar, setShowSavedBuildsBar] = useState<boolean>(
     () => loadSavedItemSets().length > 0,
   );
+
+  // Comparateur IA de 2 builds spécifiques enregistrés (DPS, survie, coût & matchup)
+  interface AiBuildComparisonAxis {
+    axis: string;
+    winner: 'A' | 'B' | 'ÉGALITÉ' | string;
+    metricSummary: string;
+    analysis: string;
+  }
+  interface AiBuildComparisonResult {
+    winner: 'A' | 'B' | 'SITUATIONNEL' | string;
+    verdictHeadline: string;
+    recommendedCondition: string;
+    pointByPoint: AiBuildComparisonAxis[];
+    tacticalTakeaways: string[];
+    _aiMeta?: {
+      provider?: string;
+      providerLabel?: string;
+      model?: string;
+      usedFallback?: boolean;
+    };
+  }
+  const [showAiSavedComparePanel, setShowAiSavedComparePanel] = useState<boolean>(false);
+  const [aiCompareSavedIdA, setAiCompareSavedIdA] = useState<string>('');
+  const [aiCompareSavedIdB, setAiCompareSavedIdB] = useState<string>('');
+  const [aiCompareResult, setAiCompareResult] = useState<AiBuildComparisonResult | null>(null);
+  const [aiCompareLoading, setAiCompareLoading] = useState<boolean>(false);
+  const [aiCompareError, setAiCompareError] = useState<string | null>(null);
+
   const [selectedSpecByKey, setSelectedSpecByKey] = useState<
     Record<string, GameplaySpecializationId>
   >({});
@@ -1237,6 +1265,136 @@ export function BuildOptimizerView({
     ],
   );
 
+  const orderedSavedItemSets = useMemo(() => {
+    return [...savedItemSets].sort((a, b) => {
+      const aMatch = a.championId === playerChampion.id ? 0 : 1;
+      const bMatch = b.championId === playerChampion.id ? 0 : 1;
+      return aMatch - bMatch;
+    });
+  }, [savedItemSets, playerChampion.id]);
+
+  const resolvedAiSavedIdA = useMemo(() => {
+    if (aiCompareSavedIdA && savedItemSets.some((s) => s.id === aiCompareSavedIdA)) {
+      return aiCompareSavedIdA;
+    }
+    return orderedSavedItemSets[0]?.id || '';
+  }, [aiCompareSavedIdA, savedItemSets, orderedSavedItemSets]);
+
+  const resolvedAiSavedIdB = useMemo(() => {
+    if (aiCompareSavedIdB && savedItemSets.some((s) => s.id === aiCompareSavedIdB)) {
+      return aiCompareSavedIdB;
+    }
+    const distinct = orderedSavedItemSets.find((s) => s.id !== resolvedAiSavedIdA);
+    return distinct?.id || orderedSavedItemSets[0]?.id || '';
+  }, [aiCompareSavedIdB, savedItemSets, orderedSavedItemSets, resolvedAiSavedIdA]);
+
+  const aiSavedEntryA = useMemo(
+    () => savedItemSets.find((s) => s.id === resolvedAiSavedIdA) || null,
+    [savedItemSets, resolvedAiSavedIdA],
+  );
+
+  const aiSavedEntryB = useMemo(
+    () => savedItemSets.find((s) => s.id === resolvedAiSavedIdB) || null,
+    [savedItemSets, resolvedAiSavedIdB],
+  );
+
+  const evaluateSavedSetForComparison = (entry: SavedItemSetEntry | null) => {
+    if (!entry) return null;
+    const items = entry.itemIds
+      .map((id) => (id ? itemByIdMap.get(id) || null : null))
+      .filter((it): it is ItemData => Boolean(it));
+    const runeSel = entry.runeSelection || metaRuneSelection;
+    const stacks = entry.heartsteelStacksHp ?? heartsteelStacksHp;
+    const stats = computeFullChampionBuildStats({
+      champion: playerChampion,
+      role,
+      level: runeSimLevel,
+      items,
+      runeSelection: runeSel,
+      threats: recommendation.threatSummary,
+      heartsteelStacksHp: stacks,
+    });
+    const combat = simulateCombatDamageAgainstTarget({
+      champion: playerChampion,
+      role,
+      level: runeSimLevel,
+      items,
+      runeSelection: runeSel,
+      target: activeCombatTarget,
+      durationSec: combatDurationSec,
+      spellCasts: combatSpellCasts,
+      heartsteelStacksHp: stacks,
+      threats: recommendation.threatSummary,
+    });
+    const primaryTree = ddragon.runeTrees.find((t) => t.id === runeSel.primaryTreeId);
+    const secondaryTree = ddragon.runeTrees.find((t) => t.id === runeSel.secondaryTreeId);
+    const keystone = primaryTree?.slots[0]?.runes.find((r) => r.id === runeSel.keystoneId);
+
+    return {
+      entry,
+      items,
+      runeSelection: runeSel,
+      keystoneName: keystone?.name || 'Runes par défaut',
+      secondaryTreeName: secondaryTree?.name || '',
+      stats,
+      combat,
+    };
+  };
+
+  const aiCompareEvalA = useMemo(
+    () => evaluateSavedSetForComparison(aiSavedEntryA),
+    [
+      aiSavedEntryA,
+      itemByIdMap,
+      metaRuneSelection,
+      heartsteelStacksHp,
+      playerChampion,
+      role,
+      runeSimLevel,
+      recommendation.threatSummary,
+      activeCombatTarget,
+      combatDurationSec,
+      combatSpellCasts,
+      ddragon.runeTrees,
+    ],
+  );
+
+  const aiCompareEvalB = useMemo(
+    () => evaluateSavedSetForComparison(aiSavedEntryB),
+    [
+      aiSavedEntryB,
+      itemByIdMap,
+      metaRuneSelection,
+      heartsteelStacksHp,
+      playerChampion,
+      role,
+      runeSimLevel,
+      recommendation.threatSummary,
+      activeCombatTarget,
+      combatDurationSec,
+      combatSpellCasts,
+      ddragon.runeTrees,
+    ],
+  );
+
+  useEffect(() => {
+    setAiCompareResult(null);
+    setAiCompareError(null);
+  }, [
+    playerChampion.id,
+    role,
+    gameMode,
+    runeSimLevel,
+    combatDurationSec,
+    activeCombatTarget.id,
+    activeCombatTarget.hp,
+    activeCombatTarget.armor,
+    activeCombatTarget.mr,
+    recommendation.threatSummary.physicalShare,
+    recommendation.threatSummary.magicShare,
+    recommendation.threatSummary.tankCount,
+  ]);
+
   const perItemImpactRows = useMemo(
     () =>
       computePerItemImpactMatrix({
@@ -1803,6 +1961,128 @@ export function BuildOptimizerView({
     setBuildSetFeedback(`« ${entry.name} » placé en Build A pour comparaison directe.`);
     window.setTimeout(() => setBuildSetFeedback(null), 2600);
     scrollToAtelier();
+  };
+
+  const handleSaveRecommendedBuildQuick = () => {
+    const recIds = Array.from({ length: 6 }, (_, i) => recommendedBuildItems[i]?.id || null);
+    const recName = `${playerChampion.name} · Conseillé IA`;
+    const recStats = recommendedStats;
+    const newEntry: SavedItemSetEntry = {
+      id: `itemset-${Date.now()}`,
+      name: recName,
+      championId: playerChampion.id,
+      championName: playerChampion.name,
+      itemIds: recIds,
+      runeSelection: metaRuneSelection,
+      level: runeSimLevel,
+      heartsteelStacksHp,
+      totalGold: recStats.combat.totalGold,
+      updatedAt: Date.now(),
+    };
+    const next = [newEntry, ...savedItemSets].slice(0, 20);
+    setSavedItemSets(next);
+    saveItemSetsToStorage(next);
+    setShowSavedBuildsBar(true);
+    setAiCompareSavedIdB(newEntry.id);
+    setBuildSetFeedback(`Build « ${recName} » ajouté à vos ensembles sauvegardés.`);
+    window.setTimeout(() => setBuildSetFeedback(null), 2600);
+  };
+
+  const handleRunAiBuildComparison = async (overrideIdA?: string, overrideIdB?: string) => {
+    const targetIdA = overrideIdA || resolvedAiSavedIdA;
+    const targetIdB = overrideIdB || resolvedAiSavedIdB;
+    const entryA = savedItemSets.find((s) => s.id === targetIdA) || null;
+    const entryB = savedItemSets.find((s) => s.id === targetIdB) || null;
+    const evalA =
+      entryA?.id === aiCompareEvalA?.entry.id
+        ? aiCompareEvalA
+        : evaluateSavedSetForComparison(entryA);
+    const evalB =
+      entryB?.id === aiCompareEvalB?.entry.id
+        ? aiCompareEvalB
+        : evaluateSavedSetForComparison(entryB);
+
+    if (!evalA || !evalB) {
+      setAiCompareError('Sélectionnez deux builds enregistrés valides pour lancer la comparaison IA.');
+      return;
+    }
+    if (evalA.entry.id === evalB.entry.id) {
+      setAiCompareError('Choisissez deux builds différents dans les deux menus pour les comparer.');
+      return;
+    }
+
+    const toBuildPayload = (ev: NonNullable<typeof evalA>) => ({
+      name: ev.entry.name,
+      championName: ev.entry.championName,
+      items: ev.items.map((it) => it.name),
+      keystoneName: ev.keystoneName,
+      secondaryTreeName: ev.secondaryTreeName,
+      totalGold: ev.stats.combat.totalGold,
+      goldEfficiencyPct: ev.stats.combat.goldEfficiencyPct,
+      realDps: ev.combat.realDps,
+      totalMitigatedDamage: ev.combat.totalMitigatedDamage,
+      estimatedTtkSec: ev.combat.estimatedTtkSec,
+      autoDps: ev.stats.combat.autoDps,
+      abilityImpactIndex: ev.stats.combat.abilityImpactIndex,
+      abilityKitMitigated: ev.combat.abilityKitMitigated,
+      itemPassivesMitigated: Math.round(
+        ev.combat.itemPassivesBreakdown.reduce((sum, p) => sum + p.mitigatedDamage, 0),
+      ),
+      physicalEhp: ev.stats.combat.physicalEhp,
+      magicEhp: ev.stats.combat.magicEhp,
+      hp: ev.stats.totals.hp,
+      armor: ev.stats.totals.armor,
+      mr: ev.stats.totals.mr,
+      ad: ev.stats.totals.ad,
+      ap: ev.stats.totals.ap,
+      attackSpeed: Number(ev.stats.totals.attackSpeed.toFixed(3)),
+      abilityHaste: ev.stats.totals.abilityHaste,
+      moveSpeed: ev.stats.totals.moveSpeed,
+      combatHealingTotal: ev.combat.combatHealingTotal,
+    });
+
+    setAiCompareLoading(true);
+    setAiCompareError(null);
+    try {
+      const res = await postCoachJson<AiBuildComparisonResult>('/api/coach/compare-builds', {
+        championName: playerChampion.name,
+        role,
+        gameMode,
+        level: runeSimLevel,
+        combatDurationSec,
+        buildA: toBuildPayload(evalA),
+        buildB: toBuildPayload(evalB),
+        matchup: {
+          targetName: activeCombatTarget.name,
+          targetHp: activeCombatTarget.hp,
+          targetArmor: activeCombatTarget.armor,
+          targetMr: activeCombatTarget.mr,
+          physicalShare: recommendation.threatSummary.physicalShare,
+          magicShare: recommendation.threatSummary.magicShare,
+          tankCount: recommendation.threatSummary.tankCount,
+          highHealCount: recommendation.threatSummary.highHealCount,
+          burstThreatCount: recommendation.threatSummary.burstThreatCount,
+          matchupNote: currentMatchupNote.trim() || null,
+          enemies: recommendation.threatSummary.profiles.map((p) => ({
+            name: p.championName,
+            damage: p.primaryDamage,
+            tankiness: p.tankinessScore,
+            sustain: p.sustainScore,
+            burst: p.burstScore,
+            cc: p.ccScore,
+          })),
+        },
+      });
+      setAiCompareResult(res);
+    } catch (err) {
+      setAiCompareError(
+        err instanceof Error
+          ? err.message
+          : 'Impossible de générer la comparaison IA des deux builds.',
+      );
+    } finally {
+      setAiCompareLoading(false);
+    }
   };
 
   const scrollToRunesEditor = () => {
@@ -3739,14 +4019,44 @@ export function BuildOptimizerView({
                 </div>
               </div>
 
-              {areSameBuilds && (
-                <div className="flex items-center gap-2 pt-2 border-t border-sky-500/20 text-[11px] text-amber-700 dark:text-amber-300">
-                  <AlertTriangle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                  <span>
-                    Build A et Build B sont actuellement identiques. Sélectionnez un autre build sauvegardé dans l’un des deux menus ci-dessus (ou modifiez un objet dans les emplacements ci-dessous) pour voir les écarts.
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-sky-500/20">
+                {areSameBuilds ? (
+                  <div className="flex items-center gap-2 text-[11px] text-amber-700 dark:text-amber-300">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                    <span>
+                      Build A et Build B sont actuellement identiques. Sélectionnez un autre build sauvegardé dans l’un des deux menus ci-dessus.
+                    </span>
+                  </div>
+                ) : (
+                  <span className="text-[11px] text-slate-600 dark:text-slate-300">
+                    Écarts chiffrés calculés en temps réel ci-dessous ({combatDurationSec}s vs {activeCombatTarget.name}).
                   </span>
-                </div>
-              )}
+                )}
+
+                {selectValueA !== '__recommended__' &&
+                  selectValueA !== '__custom_a__' &&
+                  matchedSavedB &&
+                  selectValueA !== matchedSavedB.id && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAiCompareSavedIdA(selectValueA);
+                        setAiCompareSavedIdB(matchedSavedB.id);
+                        setShowAiSavedComparePanel(true);
+                        void handleRunAiBuildComparison(selectValueA, matchedSavedB.id);
+                      }}
+                      disabled={aiCompareLoading}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold rounded-lg bg-violet-600 text-white hover:bg-violet-500 disabled:opacity-60 transition-colors whitespace-nowrap shrink-0"
+                    >
+                      {aiCompareLoading ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+                      ) : (
+                        <Sparkles className="w-3.5 h-3.5" aria-hidden="true" />
+                      )}
+                      Analyser ces 2 builds avec l’IA
+                    </button>
+                  )}
+              </div>
             </div>
           );
         })()}
@@ -3788,6 +4098,20 @@ export function BuildOptimizerView({
                   <span>Sauvegarder</span>
                 </button>
               </form>
+
+              <button
+                type="button"
+                onClick={() => setShowAiSavedComparePanel((v) => !v)}
+                className={`inline-flex items-center gap-1.5 h-8 px-3 text-xs font-semibold rounded-lg border transition-colors whitespace-nowrap shrink-0 ${
+                  showAiSavedComparePanel
+                    ? 'border-violet-500 bg-violet-600 text-white'
+                    : 'border-violet-500/45 bg-violet-500/10 text-violet-700 dark:text-violet-300 hover:bg-violet-500/15'
+                }`}
+                title="Sélectionner deux builds enregistrés et générer une analyse IA point par point (DPS, survie, coût et matchup)"
+              >
+                <Sparkles className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>{showAiSavedComparePanel ? 'Masquer Comparateur IA' : 'Comparateur IA (2 builds)'}</span>
+              </button>
 
               {savedItemSets.length > 0 && (
                 <button
@@ -3919,6 +4243,406 @@ export function BuildOptimizerView({
             </div>
             );
           })()}
+
+          {/* Option dédiée : Sélectionner 2 builds enregistrés & Comparaison IA point par point */}
+          {showAiSavedComparePanel && (
+            <div className="mt-2 rounded-xl border border-violet-500/35 bg-white dark:bg-[#0B0E14] p-4 space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 pb-3 border-b border-slate-200 dark:border-slate-800">
+                <div className="space-y-0.5">
+                  <div className="flex items-center gap-2 text-xs font-bold text-slate-900 dark:text-white">
+                    <Sparkles className="w-4 h-4 text-violet-500 shrink-0" aria-hidden="true" />
+                    <span>Comparateur IA · Duel de 2 Builds Enregistrés</span>
+                  </div>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Sélectionnez deux builds sauvegardés pour que l’IA compare point par point le DPS, la survie (EHP), le coût en or et l’adaptation au matchup ({playerChampion.name} Niv.{runeSimLevel} vs {activeCombatTarget.name}).
+                  </p>
+                </div>
+                {savedItemSets.length >= 2 && aiCompareEvalA && aiCompareEvalB && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const entryA = aiCompareEvalA.entry;
+                      const entryB = aiCompareEvalB.entry;
+                      setPinnedBuildA({
+                        savedSetId: entryA.id,
+                        label: entryA.name,
+                        championId: playerChampion.id,
+                        itemIds: entryA.itemIds,
+                        runeSelection: entryA.runeSelection || activeSandboxSelection,
+                        heartsteelStacksHp: entryA.heartsteelStacksHp ?? heartsteelStacksHp,
+                      });
+                      handleLoadSavedBuildSet(entryB);
+                    }}
+                    className="inline-flex items-center gap-1.5 h-8 px-3 text-[11px] font-semibold rounded-lg border border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-300 hover:bg-sky-500/15 whitespace-nowrap shrink-0"
+                    title="Charger ces deux builds dans le tableau comparatif complet de l’Atelier"
+                  >
+                    <ArrowLeftRight className="w-3.5 h-3.5" aria-hidden="true" />
+                    Synchroniser dans l’Atelier (A vs B)
+                  </button>
+                )}
+              </div>
+
+              {savedItemSets.length < 2 ? (
+                <div className="rounded-lg border border-dashed border-slate-300 dark:border-slate-700 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+                  <div className="space-y-1 text-slate-600 dark:text-slate-300">
+                    <p className="font-semibold text-slate-900 dark:text-white">
+                      Il faut au moins 2 builds enregistrés ({savedItemSets.length}/2 actuellement).
+                    </p>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                      Utilisez le champ « Sauvegarder » juste au-dessus pour enregistrer vos variantes (ex. On-Hit vs AP Champignons).
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleSaveRecommendedBuildQuick}
+                    className="inline-flex items-center gap-1.5 h-8 px-3 text-xs font-semibold rounded-lg bg-amber-600 dark:bg-amber-500 text-white dark:text-slate-950 hover:bg-amber-500 whitespace-nowrap shrink-0"
+                  >
+                    <BookmarkPlus className="w-3.5 h-3.5" aria-hidden="true" />
+                    Sauvegarder le Build Conseillé IA
+                  </button>
+                </div>
+              ) : (
+                <>
+                  {/* Sélecteurs des 2 builds sauvegardés + Aperçu chiffré */}
+                  <div className="grid grid-cols-1 lg:grid-cols-11 gap-3 items-stretch">
+                    {/* Build 1 (A) */}
+                    <div className="lg:col-span-5 rounded-lg border border-sky-500/35 bg-sky-500/[0.04] p-3 space-y-2.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <label
+                          htmlFor="ai-compare-select-a"
+                          className="text-[11px] font-bold uppercase tracking-wide text-sky-700 dark:text-sky-300"
+                        >
+                          Build 1 (A)
+                        </label>
+                        {aiCompareEvalA && (
+                          <span className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                            {aiCompareEvalA.stats.combat.totalGold} po · {aiCompareEvalA.stats.combat.goldEfficiencyPct}% or
+                          </span>
+                        )}
+                      </div>
+                      <select
+                        id="ai-compare-select-a"
+                        value={resolvedAiSavedIdA}
+                        onChange={(e) => {
+                          setAiCompareSavedIdA(e.target.value);
+                          setAiCompareResult(null);
+                          setAiCompareError(null);
+                        }}
+                        className="w-full h-8 px-2.5 text-xs rounded-lg border border-sky-500/40 bg-white dark:bg-[#111622] text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                      >
+                        {orderedSavedItemSets.map((s) => (
+                          <option key={`ai-sel-a-${s.id}`} value={s.id}>
+                            [{s.championName}] {s.name} ({s.totalGold} po)
+                          </option>
+                        ))}
+                      </select>
+                      {aiCompareEvalA && (
+                        <>
+                          <div className="flex items-center justify-between gap-2 flex-wrap">
+                            <div className="flex items-center gap-1">
+                              {aiCompareEvalA.items.slice(0, 6).map((it, idx) => (
+                                <SafeGameIcon
+                                  key={`ai-a-it-${it.id}-${idx}`}
+                                  src={it.imageUrl}
+                                  alt={it.name}
+                                  fallbackLabel={it.name}
+                                  sizeClass="w-6 h-6"
+                                />
+                              ))}
+                            </div>
+                            <span className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                              Rune : <strong className="text-slate-700 dark:text-slate-200">{aiCompareEvalA.keystoneName}</strong>
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-3 gap-2 pt-1 text-[11px] font-mono tabular-nums">
+                            <div className="rounded bg-white/80 dark:bg-[#111622] px-2 py-1 border border-slate-200/80 dark:border-slate-800">
+                              <div className="text-[10px] font-sans text-slate-500">DPS réel</div>
+                              <div className="font-bold text-slate-900 dark:text-white">{aiCompareEvalA.combat.realDps}/s</div>
+                            </div>
+                            <div className="rounded bg-white/80 dark:bg-[#111622] px-2 py-1 border border-slate-200/80 dark:border-slate-800">
+                              <div className="text-[10px] font-sans text-slate-500">EHP P / M</div>
+                              <div className="font-bold text-slate-900 dark:text-white">
+                                {aiCompareEvalA.stats.combat.physicalEhp} / {aiCompareEvalA.stats.combat.magicEhp}
+                              </div>
+                            </div>
+                            <div className="rounded bg-white/80 dark:bg-[#111622] px-2 py-1 border border-slate-200/80 dark:border-slate-800">
+                              <div className="text-[10px] font-sans text-slate-500">PV / Dég. {combatDurationSec}s</div>
+                              <div className="font-bold text-slate-900 dark:text-white">
+                                {aiCompareEvalA.stats.totals.hp} · {aiCompareEvalA.combat.totalMitigatedDamage}
+                              </div>
+                            </div>
+                          </div>
+                        </>
+                      )}
+                    </div>
+
+                    {/* Bouton inverser 1 <-> 2 */}
+                    <div className="lg:col-span-1 flex items-center justify-center">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const prevA = resolvedAiSavedIdA;
+                          const prevB = resolvedAiSavedIdB;
+                          setAiCompareSavedIdA(prevB);
+                          setAiCompareSavedIdB(prevA);
+                          setAiCompareResult(null);
+                          setAiCompareError(null);
+                        }}
+                        aria-label="Inverser Build 1 et Build 2"
+                        title="Inverser Build 1 et Build 2"
+                        className="h-9 w-9 inline-flex items-center justify-center rounded-lg border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                      >
+                        <ArrowLeftRight className="w-4 h-4" aria-hidden="true" />
+                      </button>
+                    </div>
+
+                    {/* Build 2 (B) */}
+                    <div className="lg:col-span-5 rounded-lg border border-amber-500/35 bg-amber-500/[0.04] p-3 space-y-2.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <label
+                          htmlFor="ai-compare-select-b"
+                          className="text-[11px] font-bold uppercase tracking-wide text-amber-700 dark:text-amber-300"
+                        >
+                          Build 2 (B)
+                        </label>
+                        {aiCompareEvalB && (
+                          <span className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                            {aiCompareEvalB.stats.combat.totalGold} po · {aiCompareEvalB.stats.combat.goldEfficiencyPct}% or
+                          </span>
+                        )}
+                      </div>
+                      <select
+                        id="ai-compare-select-b"
+                        value={resolvedAiSavedIdB}
+                        onChange={(e) => {
+                          setAiCompareSavedIdB(e.target.value);
+                          setAiCompareResult(null);
+                          setAiCompareError(null);
+                        }}
+                        className="w-full h-8 px-2.5 text-xs rounded-lg border border-amber-500/45 bg-white dark:bg-[#111622] text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      >
+                        {orderedSavedItemSets.map((s) => (
+                          <option key={`ai-sel-b-${s.id}`} value={s.id}>
+                            [{s.championName}] {s.name} ({s.totalGold} po)
+                          </option>
+                        ))}
+                      </select>
+                      {aiCompareEvalB && (
+                        <>
+                          <div className="flex items-center justify-between gap-2 flex-wrap">
+                            <div className="flex items-center gap-1">
+                              {aiCompareEvalB.items.slice(0, 6).map((it, idx) => (
+                                <SafeGameIcon
+                                  key={`ai-b-it-${it.id}-${idx}`}
+                                  src={it.imageUrl}
+                                  alt={it.name}
+                                  fallbackLabel={it.name}
+                                  sizeClass="w-6 h-6"
+                                />
+                              ))}
+                            </div>
+                            <span className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                              Rune : <strong className="text-slate-700 dark:text-slate-200">{aiCompareEvalB.keystoneName}</strong>
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-3 gap-2 pt-1 text-[11px] font-mono tabular-nums">
+                            <div className="rounded bg-white/80 dark:bg-[#111622] px-2 py-1 border border-slate-200/80 dark:border-slate-800">
+                              <div className="text-[10px] font-sans text-slate-500">DPS réel</div>
+                              <div className="font-bold text-slate-900 dark:text-white">{aiCompareEvalB.combat.realDps}/s</div>
+                            </div>
+                            <div className="rounded bg-white/80 dark:bg-[#111622] px-2 py-1 border border-slate-200/80 dark:border-slate-800">
+                              <div className="text-[10px] font-sans text-slate-500">EHP P / M</div>
+                              <div className="font-bold text-slate-900 dark:text-white">
+                                {aiCompareEvalB.stats.combat.physicalEhp} / {aiCompareEvalB.stats.combat.magicEhp}
+                              </div>
+                            </div>
+                            <div className="rounded bg-white/80 dark:bg-[#111622] px-2 py-1 border border-slate-200/80 dark:border-slate-800">
+                              <div className="text-[10px] font-sans text-slate-500">PV / Dég. {combatDurationSec}s</div>
+                              <div className="font-bold text-slate-900 dark:text-white">
+                                {aiCompareEvalB.stats.totals.hp} · {aiCompareEvalB.combat.totalMitigatedDamage}
+                              </div>
+                            </div>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Barre de lancement IA */}
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    {resolvedAiSavedIdA === resolvedAiSavedIdB ? (
+                      <div className="flex items-center gap-1.5 text-xs text-amber-700 dark:text-amber-300">
+                        <AlertTriangle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                        <span>Sélectionnez deux builds différents ci-dessus pour lancer la comparaison IA.</span>
+                      </div>
+                    ) : (
+                      <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                        L’analyse IA utilise vos stats exactes (Data Dragon {ddragon.version}) + les {enemyChampions.length} menaces adverses ({recommendation.threatSummary.physicalShare}% Phys / {recommendation.threatSummary.magicShare}% Mag).
+                      </div>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={() => void handleRunAiBuildComparison()}
+                      disabled={aiCompareLoading || resolvedAiSavedIdA === resolvedAiSavedIdB}
+                      className="inline-flex items-center gap-2 h-9 px-4 text-xs font-semibold rounded-lg bg-violet-600 text-white hover:bg-violet-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap shrink-0"
+                    >
+                      {aiCompareLoading ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+                          <span>Analyse IA point par point en cours...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles className="w-4 h-4" aria-hidden="true" />
+                          <span>Générer la comparaison IA point par point</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+
+                  {aiCompareError && (
+                    <div className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-3.5 py-2.5 flex items-center justify-between gap-3 text-xs text-rose-700 dark:text-rose-300">
+                      <span>{aiCompareError}</span>
+                      <button
+                        type="button"
+                        onClick={() => void handleRunAiBuildComparison()}
+                        className="px-2.5 py-1 rounded border border-rose-500/40 font-semibold hover:bg-rose-500/15 shrink-0"
+                      >
+                        Réessayer
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Résultat structuré point par point généré par l'IA */}
+                  {aiCompareResult && (
+                    <div className="rounded-xl border border-violet-500/35 bg-violet-500/[0.04] p-4 space-y-4">
+                      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+                        <div className="space-y-1.5">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span
+                              className={`px-2 py-0.5 rounded text-[11px] font-bold uppercase ${
+                                aiCompareResult.winner === 'A'
+                                  ? 'bg-sky-500/15 text-sky-700 dark:text-sky-300 border border-sky-500/40'
+                                  : aiCompareResult.winner === 'B'
+                                    ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/40'
+                                    : 'bg-violet-500/15 text-violet-700 dark:text-violet-300 border border-violet-500/40'
+                              }`}
+                            >
+                              {aiCompareResult.winner === 'A'
+                                ? `Avantage Build 1 : ${aiCompareEvalA?.entry.name || 'A'}`
+                                : aiCompareResult.winner === 'B'
+                                  ? `Avantage Build 2 : ${aiCompareEvalB?.entry.name || 'B'}`
+                                  : 'Choix situationnel'}
+                            </span>
+                            {aiCompareResult._aiMeta?.providerLabel && (
+                              <span className="text-[11px] font-mono text-slate-500 dark:text-slate-400">
+                                via {aiCompareResult._aiMeta.providerLabel}
+                                {aiCompareResult._aiMeta.model ? ` (${aiCompareResult._aiMeta.model})` : ''}
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-sm font-semibold text-slate-900 dark:text-white leading-snug">
+                            {aiCompareResult.verdictHeadline}
+                          </p>
+                          <p className="text-xs text-slate-600 dark:text-slate-300">
+                            <strong className="text-slate-800 dark:text-slate-100">Condition de choix :</strong>{' '}
+                            {aiCompareResult.recommendedCondition}
+                          </p>
+                        </div>
+
+                        {(aiCompareResult.winner === 'A' || aiCompareResult.winner === 'B') && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const target =
+                                aiCompareResult.winner === 'A'
+                                  ? aiCompareEvalA?.entry
+                                  : aiCompareEvalB?.entry;
+                              if (target) handleLoadSavedBuildSet(target);
+                            }}
+                            className="inline-flex items-center gap-1.5 h-8 px-3 text-xs font-semibold rounded-lg bg-emerald-600 text-white hover:bg-emerald-500 transition-colors whitespace-nowrap shrink-0"
+                          >
+                            <CheckCircle2 className="w-3.5 h-3.5" aria-hidden="true" />
+                            Charger le build gagnant dans l’Atelier
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Grille point par point : DPS, Survie, Coût, Matchup */}
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        {aiCompareResult.pointByPoint.map((pt, idx) => {
+                          const axisLower = pt.axis.toLowerCase();
+                          const AxisIcon = axisLower.includes('dps') || axisLower.includes('dégât')
+                            ? Swords
+                            : axisLower.includes('survie') || axisLower.includes('ehp')
+                              ? Shield
+                              : axisLower.includes('coût') || axisLower.includes('or')
+                                ? Coins
+                                : Radar;
+                          return (
+                            <div
+                              key={`${pt.axis}-${idx}`}
+                              className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#111622] p-3 space-y-1.5"
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="flex items-center gap-1.5 text-xs font-bold text-slate-900 dark:text-white">
+                                  <AxisIcon className="w-3.5 h-3.5 text-violet-500 shrink-0" aria-hidden="true" />
+                                  <span>{pt.axis}</span>
+                                </div>
+                                <span
+                                  className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                                    pt.winner === 'A'
+                                      ? 'bg-sky-500/15 text-sky-700 dark:text-sky-300'
+                                      : pt.winner === 'B'
+                                        ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300'
+                                        : 'bg-slate-200/70 dark:bg-slate-800 text-slate-600 dark:text-slate-300'
+                                  }`}
+                                >
+                                  {pt.winner === 'A'
+                                    ? 'Build 1 (A)'
+                                    : pt.winner === 'B'
+                                      ? 'Build 2 (B)'
+                                      : 'Égalité'}
+                                </span>
+                              </div>
+                              <div className="text-[11px] font-mono tabular-nums text-violet-700 dark:text-violet-300">
+                                {pt.metricSummary}
+                              </div>
+                              <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                                {pt.analysis}
+                              </p>
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      {aiCompareResult.tacticalTakeaways.length > 0 && (
+                        <div className="pt-2 border-t border-violet-500/20 space-y-1.5">
+                          <div className="text-[11px] font-bold uppercase tracking-wide text-slate-700 dark:text-slate-200">
+                            Points clés en partie contre ce matchup
+                          </div>
+                          <ul className="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs text-slate-600 dark:text-slate-300">
+                            {aiCompareResult.tacticalTakeaways.map((tip, idx) => (
+                              <li
+                                key={`takeaway-${idx}`}
+                                className="rounded-lg bg-white/80 dark:bg-[#111622] border border-slate-200/80 dark:border-slate-800 px-3 py-2"
+                              >
+                                <span className="font-bold text-violet-600 dark:text-violet-400 mr-1.5">
+                                  {idx + 1}.
+                                </span>
+                                {tip}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
         </div>
 
         {/* 6 Emplacements d'équipement cliquables */}

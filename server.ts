@@ -20,6 +20,7 @@ import {
   generateItemPassiveFormulaExplanation,
   generateLiveCoachingCall,
   generatePostGameCoaching,
+  generateTwoBuildsAiComparison,
   searchPopularBuildsWithGoogle,
 } from './server/aiCoachService.ts';
 import { getAiProvidersStatus, testAiProviderConnection } from './server/aiProviders.ts';
@@ -423,6 +424,26 @@ async function startServer() {
     } catch (err) {
       res.status(500).json({
         error: err instanceof Error ? err.message : 'Erreur lors de l’analyse IA du build.',
+      });
+    }
+  });
+
+  app.post('/api/coach/compare-builds', async (req, res) => {
+    try {
+      const payload = req.body;
+      if (!payload?.buildA || !payload?.buildB || !payload?.championName) {
+        return res.status(400).json({
+          error: 'championName, buildA et buildB sont requis pour générer la comparaison IA.',
+        });
+      }
+      const result = await generateTwoBuildsAiComparison(payload);
+      return res.json(result);
+    } catch (err) {
+      return res.status(500).json({
+        error:
+          err instanceof Error
+            ? err.message
+            : 'Erreur lors de la comparaison IA des deux builds.',
       });
     }
   });
