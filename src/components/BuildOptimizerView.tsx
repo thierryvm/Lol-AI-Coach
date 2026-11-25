@@ -20,6 +20,7 @@ import {
   Info,
   Layers,
   Library,
+  Link2,
   Loader2,
   Pencil,
   Pin,
@@ -29,10 +30,12 @@ import {
   RefreshCw,
   RotateCcw,
   Search,
+  Share2,
   Shield,
   Sparkles,
   Swords,
   Trash2,
+  Trophy,
   Users,
   X,
 } from 'lucide-react';
@@ -90,6 +93,11 @@ import {
   UNIVERSAL_STATE_CLIPBOARD_CMD,
 } from '../utils/liveBridge.ts';
 import {
+  decodeSharedBuildFromUrl,
+  encodeSharedBuildUrl,
+  type SharedBuildPayload,
+} from '../utils/buildShare.ts';
+import {
   loadSavedItemSets,
   LoLItemShopPanel,
   saveItemSetsToStorage,
@@ -108,6 +116,7 @@ import {
   saveRunePagesToStorage,
   type SavedRunePageEntry,
 } from './RuneCollectionView.tsx';
+import { BuildRadarChart, type RadarAxisMetric } from './BuildRadarChart.tsx';
 import { SafeGameIcon } from './SafeGameIcon.tsx';
 import { SectionInfoTooltip } from './SectionInfoTooltip.tsx';
 import { VisualRunePage } from './VisualRunePage.tsx';
@@ -373,13 +382,32 @@ export function BuildOptimizerView({
     );
   };
 
-  const [playerChampId, setPlayerChampId] = useState<string>(() => findChamp(initialChampionName).id);
+  const initialSharedBuildRef = useRef<SharedBuildPayload | null | undefined>(undefined);
+  if (initialSharedBuildRef.current === undefined) {
+    initialSharedBuildRef.current =
+      typeof window !== 'undefined'
+        ? decodeSharedBuildFromUrl(window.location.search, ddragon)
+        : null;
+  }
+  const initialSharedBuild = initialSharedBuildRef.current;
+
+  const [playerChampId, setPlayerChampId] = useState<string>(() =>
+    initialSharedBuild ? initialSharedBuild.championId : findChamp(initialChampionName).id,
+  );
   const [buildStep, setBuildStep] = useState<'setup' | 'build' | 'tools' | 'all'>('all');
-  const [role, setRole] = useState<Role>(initialRole);
-  const [gameMode, setGameMode] = useState<GameModeContext>('CLASSIC');
+  const [role, setRole] = useState<Role>(() =>
+    initialSharedBuild ? initialSharedBuild.role : initialRole,
+  );
+  const [gameMode, setGameMode] = useState<GameModeContext>(() =>
+    initialSharedBuild ? initialSharedBuild.gameMode : 'CLASSIC',
+  );
   const [scenario, setScenario] = useState<GameScenario>('balanced');
   const [duoPartnerId, setDuoPartnerId] = useState<string | null>(() =>
-    initialDuoChampionName ? findChamp(initialDuoChampionName).id : 'Jinx',
+    initialSharedBuild
+      ? initialSharedBuild.duoPartnerId
+      : initialDuoChampionName
+        ? findChamp(initialDuoChampionName).id
+        : 'Jinx',
   );
   const [enemyIds, setEnemyIds] = useState<string[]>(['Aatrox', 'Viego', 'Zed', 'Kaisa', 'Leona']);
   const [bannedChampIds, setBannedChampIds] = useState<string[]>([]);
@@ -400,15 +428,21 @@ export function BuildOptimizerView({
   const [copiedCmd, setCopiedCmd] = useState(false);
   const [detectedRunePage, setDetectedRunePage] = useState<DetectedRunePage | null>(null);
   const [runeViewMode, setRuneViewMode] = useState<'recommended' | 'current'>('recommended');
-  const [customRuneSelection, setCustomRuneSelection] = useState<RunePageSelection | null>(null);
-  const [runeSimLevel, setRuneSimLevel] = useState<number>(11);
+  const [customRuneSelection, setCustomRuneSelection] = useState<RunePageSelection | null>(() =>
+    initialSharedBuild ? initialSharedBuild.runeSelection : null,
+  );
+  const [runeSimLevel, setRuneSimLevel] = useState<number>(() =>
+    initialSharedBuild ? initialSharedBuild.level : 11,
+  );
 
   // Collection officielle de pages de runes sauvegardées (jusqu'à 15 pages) + Onglet Client LoL
   const [savedRunePages, setSavedRunePages] = useState<SavedRunePageEntry[]>(() =>
     loadSavedRunePages(),
   );
   const [activeSavedPageId, setActiveSavedPageId] = useState<string | null>(null);
-  const [activeRunePageTitle, setActiveRunePageTitle] = useState<string>('');
+  const [activeRunePageTitle, setActiveRunePageTitle] = useState<string>(() =>
+    initialSharedBuild ? 'Build partagé' : '',
+  );
   const [isRunePageDirty, setIsRunePageDirty] = useState<boolean>(false);
   const [clientHubTab, setClientHubTab] = useState<'editor' | 'collection' | 'shop'>('editor');
   const [lcuBridgeConnected, setLcuBridgeConnected] = useState<boolean>(false);
@@ -416,7 +450,9 @@ export function BuildOptimizerView({
   const hasSeededFallbackRef = useRef(false);
 
   // Atelier d'équipement interactif (6 emplacements + comparateur Build A vs B + Boutique LoL officielle)
-  const [customBuildItemIds, setCustomBuildItemIds] = useState<(string | null)[] | null>(null);
+  const [customBuildItemIds, setCustomBuildItemIds] = useState<(string | null)[] | null>(() =>
+    initialSharedBuild ? initialSharedBuild.itemIds : null,
+  );
   const [loadedSavedSetBId, setLoadedSavedSetBId] = useState<string | null>(null);
   const [pinnedBuildA, setPinnedBuildA] = useState<{
     savedSetId?: string;
@@ -426,7 +462,15 @@ export function BuildOptimizerView({
     runeSelection: RunePageSelection;
     heartsteelStacksHp: number;
   } | null>(null);
-  const [heartsteelStacksHp, setHeartsteelStacksHp] = useState<number>(300);
+  const [heartsteelStacksHp, setHeartsteelStacksHp] = useState<number>(() =>
+    initialSharedBuild ? initialSharedBuild.heartsteelStacksHp : 300,
+  );
+  const [loadedSharedBanner, setLoadedSharedBanner] = useState<SharedBuildPayload | null>(
+    initialSharedBuild,
+  );
+  const [sharedBuildUrl, setSharedBuildUrl] = useState<string | null>(null);
+  const [sharedUrlCopyState, setSharedUrlCopyState] = useState<'idle' | 'copied' | 'manual'>('idle');
+  const shareUrlInputRef = useRef<HTMLInputElement | null>(null);
   const [itemPickerSlotIdx, setItemPickerSlotIdx] = useState<number | null>(null);
   const [recipeModalItemId, setRecipeModalItemId] = useState<string | null>(null);
   const [inspectedShopItemId, setInspectedShopItemId] = useState<string | null>(null);
@@ -510,6 +554,45 @@ export function BuildOptimizerView({
   const [selectedSpecByKey, setSelectedSpecByKey] = useState<
     Record<string, GameplaySpecializationId>
   >({});
+  const [radarReferenceMode, setRadarReferenceMode] = useState<
+    'standard' | 'optimal' | 'pinned'
+  >('standard');
+
+  // Comparaison IA vs Build Pro / Haut Rang (méta actuelle)
+  interface ProBuildCompareResponse {
+    patchVersion: string;
+    proBuild: {
+      sourceSite: string;
+      eloTier: string;
+      buildTitle: string;
+      winRateNote: string;
+      pickRateNote: string;
+      bootsName: string;
+      itemNames: string[];
+      keystoneName: string;
+      secondaryTreeName: string;
+      rationale: string;
+    };
+    bootsItem: ItemData | null;
+    resolvedItems: Array<{ rawName: string; item: ItemData | null }>;
+    proSixItems: ItemData[];
+    proVsCurrentAnalysis: {
+      verdictHeadline: string;
+      keyDifferences: string[];
+      adoptionAdvice: string;
+    };
+    groundingSources: Array<{ title: string; uri: string }>;
+    _aiMeta?: {
+      provider?: string;
+      providerLabel?: string;
+      model?: string;
+      usedFallback?: boolean;
+    };
+  }
+  const [proCompareResult, setProCompareResult] = useState<ProBuildCompareResponse | null>(null);
+  const [proCompareLoading, setProCompareLoading] = useState<boolean>(false);
+  const [proCompareError, setProCompareError] = useState<string | null>(null);
+  const [showProComparePanel, setShowProComparePanel] = useState<boolean>(false);
 
   // Simulateur d'impact par objet (Data Dragon brut) & dégâts infligés en temps réel
   const [combatDurationSec, setCombatDurationSec] = useState<number>(6);
@@ -552,7 +635,7 @@ export function BuildOptimizerView({
     sources: Array<{ title: string; uri: string }>;
   } | null>(null);
 
-  const manualOverrideRef = useRef(false);
+  const manualOverrideRef = useRef(Boolean(initialSharedBuild));
 
   const [pickerTarget, setPickerTarget] = useState<{
     type: 'player' | 'duo' | 'enemy';
@@ -1007,7 +1090,28 @@ export function BuildOptimizerView({
     [ddragon, gameMode, scenario, playerChampion, duoPartner, role, enemyChampions, tendencies],
   );
 
+  const prevBuildContextRef = useRef({
+    champId: playerChampion.id,
+    role,
+    gameMode,
+    scenario,
+  });
+
   useEffect(() => {
+    const prev = prevBuildContextRef.current;
+    if (
+      prev.champId === playerChampion.id &&
+      prev.role === role &&
+      prev.gameMode === gameMode
+    ) {
+      return;
+    }
+    prevBuildContextRef.current = {
+      ...prevBuildContextRef.current,
+      champId: playerChampion.id,
+      role,
+      gameMode,
+    };
     setCustomRuneSelection(null);
     setCustomBuildItemIds(null);
     setActiveSavedPageId(null);
@@ -1016,6 +1120,10 @@ export function BuildOptimizerView({
   }, [playerChampion.id, role, gameMode]);
 
   useEffect(() => {
+    if (prevBuildContextRef.current.scenario === scenario) {
+      return;
+    }
+    prevBuildContextRef.current.scenario = scenario;
     setCustomBuildItemIds(null);
   }, [scenario]);
 
@@ -1448,6 +1556,12 @@ export function BuildOptimizerView({
     sandboxActiveItems,
   ]);
 
+  useEffect(() => {
+    setProCompareResult(null);
+    setProCompareError(null);
+    setShowProComparePanel(false);
+  }, [playerChampion.id, role, gameMode]);
+
   const perItemImpactRows = useMemo(
     () =>
       computePerItemImpactMatrix({
@@ -1510,6 +1624,337 @@ export function BuildOptimizerView({
       runeSimLevel,
     ],
   );
+
+  const radarComparisonData = useMemo(() => {
+    const optimalCandidate = combinatorialResult.candidates[0] || null;
+    const effectiveMode: 'standard' | 'optimal' | 'pinned' =
+      radarReferenceMode === 'pinned' && activePinnedBuildA && pinnedBuildAStats
+        ? 'pinned'
+        : radarReferenceMode === 'optimal' && optimalCandidate
+          ? 'optimal'
+          : 'standard';
+
+    const refStats =
+      effectiveMode === 'pinned' && pinnedBuildAStats
+        ? pinnedBuildAStats
+        : effectiveMode === 'optimal' && optimalCandidate
+          ? optimalCandidate.stats
+          : recommendedStats;
+
+    const refItems =
+      effectiveMode === 'pinned' && activePinnedBuildA
+        ? pinnedBuildAItems
+        : effectiveMode === 'optimal' && optimalCandidate
+          ? optimalCandidate.items
+          : recommendedBuildItems;
+
+    const refRunes =
+      effectiveMode === 'pinned' && activePinnedBuildA
+        ? activePinnedBuildA.runeSelection
+        : effectiveMode === 'optimal' && optimalCandidate
+          ? optimalCandidate.runeSelection
+          : metaRuneSelection;
+
+    const refStacks =
+      effectiveMode === 'pinned' && activePinnedBuildA
+        ? activePinnedBuildA.heartsteelStacksHp
+        : heartsteelStacksHp;
+
+    const refCombat =
+      effectiveMode === 'pinned' && activePinnedBuildA
+        ? baselineCombatDamageResult
+        : simulateCombatDamageAgainstTarget({
+            champion: playerChampion,
+            role,
+            level: runeSimLevel,
+            items: refItems,
+            runeSelection: refRunes,
+            target: activeCombatTarget,
+            durationSec: combatDurationSec,
+            spellCasts: combatSpellCasts,
+            heartsteelStacksHp: refStacks,
+            threats: recommendation.threatSummary,
+          });
+
+    const refLabel =
+      effectiveMode === 'pinned' && activePinnedBuildA
+        ? activePinnedBuildA.label
+        : effectiveMode === 'optimal' && optimalCandidate
+          ? `Build Optimal (${optimalCandidate.scenarioTitle})`
+          : `Build Standard (${playerChampion.name})`;
+
+    const computeRawScores = (
+      st: typeof sandboxStats,
+      cb: typeof combatDamageResult,
+    ) => {
+      const damageRaw =
+        cb.realDps * 1.45 +
+        cb.totalMitigatedDamage * 0.12 +
+        st.combat.abilityImpactIndex * 0.35 +
+        st.combat.autoDps * 0.45;
+      const defenseRaw =
+        (st.combat.physicalEhp + st.combat.magicEhp) * 0.5 +
+        cb.combatHealingTotal * 1.15 +
+        (st.totals.aaDamageReductionPct + st.totals.critDamageReductionPct) * 35;
+      const utilityRaw =
+        120 +
+        st.totals.abilityHaste * 14 +
+        st.totals.antiHealPct * 6 +
+        st.totals.tenacityPct * 12 +
+        st.totals.healShieldPowerPct * 18 +
+        st.totals.healShieldReceivedPct * 10 +
+        st.totals.manaRegenPct * 1.8 +
+        (st.totals.lifeStealPct + st.totals.omnivampPct) * 16 +
+        st.combat.runeGoldValue * 0.12;
+      const bonusMs = Math.max(0, st.totals.moveSpeed - st.sources.moveSpeed.base);
+      const mobilityRaw =
+        st.totals.moveSpeed * 0.9 +
+        bonusMs * 3.5 +
+        Math.min(2.5, st.totals.attackSpeed) * 45 +
+        st.totals.abilityHaste * 1.4;
+
+      return { damageRaw, defenseRaw, utilityRaw, mobilityRaw };
+    };
+
+    const currRaw = computeRawScores(sandboxStats, combatDamageResult);
+    const refRaw = computeRawScores(refStats, refCombat);
+
+    const normalizePair = (curr: number, ref: number, floor: number) => {
+      const ceiling = Math.max(curr, ref, floor) * 1.08;
+      return {
+        currScore: Math.min(100, Math.max(8, Math.round((curr / ceiling) * 100))),
+        refScore: Math.min(100, Math.max(8, Math.round((ref / ceiling) * 100))),
+      };
+    };
+
+    const dmgNorm = normalizePair(currRaw.damageRaw, refRaw.damageRaw, 350 + runeSimLevel * 95);
+    const defNorm = normalizePair(currRaw.defenseRaw, refRaw.defenseRaw, 1800 + runeSimLevel * 210);
+    const utiNorm = normalizePair(currRaw.utilityRaw, refRaw.utilityRaw, 460 + runeSimLevel * 24);
+    const mobNorm = normalizePair(currRaw.mobilityRaw, refRaw.mobilityRaw, 460);
+
+    const avgEhpCurr = Math.round(
+      (sandboxStats.combat.physicalEhp + sandboxStats.combat.magicEhp) / 2,
+    );
+    const avgEhpRef = Math.round(
+      (refStats.combat.physicalEhp + refStats.combat.magicEhp) / 2,
+    );
+
+    const formatUtilityDetail = (st: typeof sandboxStats) => {
+      const parts = [`${st.totals.abilityHaste} Hâte (${st.totals.cooldownReductionPct}% CDR)`];
+      if (st.totals.antiHealPct > 0) parts.push(`${st.totals.antiHealPct}% Anti-soin`);
+      if (st.totals.tenacityPct > 0) parts.push(`${st.totals.tenacityPct}% Tén.`);
+      if (st.totals.healShieldPowerPct > 0) parts.push(`+${st.totals.healShieldPowerPct}% Soins`);
+      if (st.totals.lifeStealPct + st.totals.omnivampPct > 0) {
+        parts.push(`${st.totals.lifeStealPct + st.totals.omnivampPct}% Vamp`);
+      }
+      return parts.join(' · ');
+    };
+
+    const axes: RadarAxisMetric[] = [
+      {
+        key: 'damage',
+        label: 'Dégâts',
+        currentScore: dmgNorm.currScore,
+        referenceScore: dmgNorm.refScore,
+        currentDetail: `${combatDamageResult.realDps}/s DPS · ${combatDamageResult.totalMitigatedDamage} dég. (${combatDurationSec}s)`,
+        referenceDetail: `${refCombat.realDps}/s DPS · ${refCombat.totalMitigatedDamage} dég. (${combatDurationSec}s)`,
+      },
+      {
+        key: 'defense',
+        label: 'Résistance',
+        currentScore: defNorm.currScore,
+        referenceScore: defNorm.refScore,
+        currentDetail: `${avgEhpCurr} EHP moy. · ${sandboxStats.totals.hp} PV`,
+        referenceDetail: `${avgEhpRef} EHP moy. · ${refStats.totals.hp} PV`,
+      },
+      {
+        key: 'utility',
+        label: 'Utilité',
+        currentScore: utiNorm.currScore,
+        referenceScore: utiNorm.refScore,
+        currentDetail: formatUtilityDetail(sandboxStats),
+        referenceDetail: formatUtilityDetail(refStats),
+      },
+      {
+        key: 'mobility',
+        label: 'Mobilité',
+        currentScore: mobNorm.currScore,
+        referenceScore: mobNorm.refScore,
+        currentDetail: `${sandboxStats.totals.moveSpeed} Vit. dépl. · ${sandboxStats.totals.attackSpeed.toFixed(2)} AS`,
+        referenceDetail: `${refStats.totals.moveSpeed} Vit. dépl. · ${refStats.totals.attackSpeed.toFixed(2)} AS`,
+      },
+    ];
+
+    return {
+      effectiveMode,
+      hasOptimal: Boolean(optimalCandidate),
+      hasPinned: Boolean(activePinnedBuildA && pinnedBuildAStats),
+      currentLabel: activePinnedBuildA ? 'Build B (Actuel)' : 'Build actuel',
+      referenceLabel: refLabel,
+      refItems,
+      refGold: refStats.combat.totalGold,
+      axes,
+    };
+  }, [
+    combinatorialResult.candidates,
+    radarReferenceMode,
+    activePinnedBuildA,
+    pinnedBuildAStats,
+    pinnedBuildAItems,
+    recommendedStats,
+    recommendedBuildItems,
+    metaRuneSelection,
+    heartsteelStacksHp,
+    baselineCombatDamageResult,
+    playerChampion,
+    role,
+    runeSimLevel,
+    activeCombatTarget,
+    combatDurationSec,
+    combatSpellCasts,
+    recommendation.threatSummary,
+    sandboxStats,
+    combatDamageResult,
+  ]);
+
+  const proCompareEvaluation = useMemo(() => {
+    if (!proCompareResult) return null;
+
+    const normalizeStr = (s: string) =>
+      s
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z0-9]+/g, ' ')
+        .trim();
+
+    const KEYSTONE_ALIASES: Array<[string, string]> = [
+      ['press the attack', 'attaque soutenue'],
+      ['lethal tempo', 'tempo mortel'],
+      ['fleet footwork', 'jeu de jambes'],
+      ['conqueror', 'conquerant'],
+      ['electrocute', 'electrocution'],
+      ['dark harvest', 'moisson noire'],
+      ['hail of blades', 'deluge de lames'],
+      ['summon aery', 'aery'],
+      ['arcane comet', 'comete arcanique'],
+      ['phase rush', 'rush phasique'],
+      ['grasp of the undying', 'poigne de l immortel'],
+      ['aftershock', 'apres coup'],
+      ['guardian', 'gardien'],
+      ['glacial augment', 'optimisation glaciale'],
+      ['unsealed spellbook', 'grimoire dechaine'],
+      ['first strike', 'premier coup'],
+    ];
+
+    const TREE_ALIASES: Array<[string, string]> = [
+      ['precision', 'precision'],
+      ['domination', 'domination'],
+      ['sorcery', 'sorcellerie'],
+      ['resolve', 'volonte'],
+      ['inspiration', 'inspiration'],
+    ];
+
+    const rawKs = normalizeStr(proCompareResult.proBuild.keystoneName || '');
+    const aliasKs = KEYSTONE_ALIASES.find(([en]) => rawKs.includes(en))?.[1] || rawKs;
+
+    let matchedPrimaryTreeId = metaRuneSelection.primaryTreeId;
+    let matchedKeystoneId = metaRuneSelection.keystoneId;
+    let matchedKeystoneFound = false;
+
+    for (const tree of ddragon.runeTrees) {
+      const keystones = tree.slots?.[0]?.runes || [];
+      for (const ks of keystones) {
+        const ksNorm = normalizeStr(ks.name);
+        if (
+          (rawKs && (ksNorm.includes(rawKs) || rawKs.includes(ksNorm))) ||
+          (aliasKs && (ksNorm.includes(aliasKs) || aliasKs.includes(ksNorm)))
+        ) {
+          matchedPrimaryTreeId = tree.id;
+          matchedKeystoneId = ks.id;
+          matchedKeystoneFound = true;
+          break;
+        }
+      }
+      if (matchedKeystoneFound) break;
+    }
+
+    const rawSec = normalizeStr(proCompareResult.proBuild.secondaryTreeName || '');
+    const aliasSec = TREE_ALIASES.find(([en]) => rawSec.includes(en))?.[1] || rawSec;
+    let matchedSecondaryTreeId =
+      ddragon.runeTrees.find((t) => {
+        if (t.id === matchedPrimaryTreeId) return false;
+        const tNorm = normalizeStr(t.name);
+        return (
+          (rawSec && (tNorm.includes(rawSec) || rawSec.includes(tNorm))) ||
+          (aliasSec && (tNorm.includes(aliasSec) || aliasSec.includes(tNorm)))
+        );
+      })?.id || metaRuneSelection.secondaryTreeId;
+
+    if (matchedSecondaryTreeId === matchedPrimaryTreeId) {
+      matchedSecondaryTreeId =
+        ddragon.runeTrees.find((t) => t.id !== matchedPrimaryTreeId)?.id ||
+        metaRuneSelection.secondaryTreeId;
+    }
+
+    const baseSel = buildDefaultSelectionForTrees(
+      ddragon.runeTrees,
+      matchedPrimaryTreeId,
+      matchedSecondaryTreeId,
+      metaRuneSelection,
+    );
+    const proRuneSelection: RunePageSelection = matchedKeystoneFound
+      ? { ...baseSel, keystoneId: matchedKeystoneId }
+      : baseSel;
+
+    const proItems =
+      proCompareResult.proSixItems.length > 0
+        ? proCompareResult.proSixItems
+        : recommendedBuildItems;
+
+    const stats = computeFullChampionBuildStats({
+      champion: playerChampion,
+      role,
+      level: runeSimLevel,
+      items: proItems,
+      runeSelection: proRuneSelection,
+      threats: recommendation.threatSummary,
+      heartsteelStacksHp,
+    });
+
+    const combat = simulateCombatDamageAgainstTarget({
+      champion: playerChampion,
+      role,
+      level: runeSimLevel,
+      items: proItems,
+      runeSelection: proRuneSelection,
+      target: activeCombatTarget,
+      durationSec: combatDurationSec,
+      spellCasts: combatSpellCasts,
+      heartsteelStacksHp,
+      threats: recommendation.threatSummary,
+    });
+
+    return {
+      items: proItems,
+      runeSelection: proRuneSelection,
+      stats,
+      combat,
+    };
+  }, [
+    proCompareResult,
+    ddragon.runeTrees,
+    metaRuneSelection,
+    recommendedBuildItems,
+    playerChampion,
+    role,
+    runeSimLevel,
+    recommendation.threatSummary,
+    heartsteelStacksHp,
+    activeCombatTarget,
+    combatDurationSec,
+    combatSpellCasts,
+  ]);
 
   const buildInterpretation = useMemo(
     () =>
@@ -2252,6 +2697,158 @@ export function BuildOptimizerView({
     }
   };
 
+  const handleCompareWithProBuild = async (forceRefresh = false) => {
+    setShowProComparePanel(true);
+    if (proCompareResult && !forceRefresh && !proCompareError) {
+      return;
+    }
+    setProCompareLoading(true);
+    setProCompareError(null);
+    try {
+      const res = await postCoachJson<ProBuildCompareResponse>('/api/coach/compare-pro-build', {
+        championName: playerChampion.name,
+        championId: playerChampion.id,
+        role,
+        gameMode,
+        patchVersion: ddragon.version,
+        level: runeSimLevel,
+        targetName: activeCombatTarget.name,
+        currentBuild: {
+          items: sandboxActiveItems.map((it) => it.name),
+          keystoneName: activeRuneVisualSummary.keystone?.name || 'Fondamentale',
+          secondaryTreeName: activeRuneVisualSummary.secondaryTreeName,
+          totalGold: sandboxStats.combat.totalGold,
+          realDps: combatDamageResult.realDps,
+          totalMitigatedDamage: combatDamageResult.totalMitigatedDamage,
+          physicalEhp: sandboxStats.combat.physicalEhp,
+          magicEhp: sandboxStats.combat.magicEhp,
+          hp: sandboxStats.totals.hp,
+          ad: sandboxStats.totals.ad,
+          ap: sandboxStats.totals.ap,
+          armor: sandboxStats.totals.armor,
+          mr: sandboxStats.totals.mr,
+          attackSpeed: Number(sandboxStats.totals.attackSpeed.toFixed(3)),
+          abilityHaste: sandboxStats.totals.abilityHaste,
+          moveSpeed: sandboxStats.totals.moveSpeed,
+        },
+      });
+      setProCompareResult(res);
+    } catch (err) {
+      setProCompareError(
+        err instanceof Error
+          ? err.message
+          : 'Impossible de récupérer le build Pro de la méta actuelle.',
+      );
+    } finally {
+      setProCompareLoading(false);
+    }
+  };
+
+  const handlePinProBuildAsA = () => {
+    if (!proCompareResult || !proCompareEvaluation) return;
+    const itemIds = Array.from(
+      { length: 6 },
+      (_, idx) => proCompareEvaluation.items[idx]?.id || null,
+    );
+    setPinnedBuildA({
+      label: `Build Pro (${proCompareResult.proBuild.eloTier})`,
+      championId: playerChampion.id,
+      itemIds,
+      runeSelection: proCompareEvaluation.runeSelection,
+      heartsteelStacksHp,
+    });
+    setBuildSetFeedback('Build Pro épinglé en Build A pour comparaison côte à côte.');
+    window.setTimeout(() => setBuildSetFeedback(null), 2600);
+  };
+
+  const handleLoadProBuildInAtelier = () => {
+    if (!proCompareResult || !proCompareEvaluation) return;
+    const itemIds = Array.from(
+      { length: 6 },
+      (_, idx) => proCompareEvaluation.items[idx]?.id || null,
+    );
+    setCustomBuildItemIds(itemIds);
+    setLoadedSavedSetBId(null);
+    setRuneViewMode('recommended');
+    setCustomRuneSelection(proCompareEvaluation.runeSelection);
+    setActiveSavedPageId(null);
+    setActiveRunePageTitle(proCompareResult.proBuild.buildTitle || `Build Pro ${playerChampion.name}`);
+    setIsRunePageDirty(false);
+    setBuildSetFeedback('Build Pro et ses runes chargés dans l’Atelier !');
+    window.setTimeout(() => setBuildSetFeedback(null), 2600);
+  };
+
+  const handleCopyShareUrl = async (urlToCopy: string) => {
+    try {
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        await navigator.clipboard.writeText(urlToCopy);
+        setSharedUrlCopyState('copied');
+        window.setTimeout(() => setSharedUrlCopyState('idle'), 2600);
+        return;
+      }
+    } catch {
+      // Clipboard API peut être restreinte en iframe : sélection directe du champ en secours
+    }
+    setSharedUrlCopyState('manual');
+    window.setTimeout(() => {
+      shareUrlInputRef.current?.focus();
+      shareUrlInputRef.current?.select();
+    }, 30);
+  };
+
+  const handleShareCurrentBuild = async () => {
+    const nextUrl = encodeSharedBuildUrl({
+      championId: playerChampion.id,
+      role,
+      gameMode,
+      level: runeSimLevel,
+      duoPartnerId,
+      itemIds: sandboxSlots.map((it) => it?.id || null),
+      runeSelection: activeSandboxSelection,
+      heartsteelStacksHp,
+    });
+    setSharedBuildUrl(nextUrl);
+    try {
+      window.history.replaceState(null, '', nextUrl);
+    } catch {
+      // ignore history errors
+    }
+    await handleCopyShareUrl(nextUrl);
+  };
+
+  useEffect(() => {
+    if (!sharedBuildUrl) return;
+    const refreshedUrl = encodeSharedBuildUrl({
+      championId: playerChampion.id,
+      role,
+      gameMode,
+      level: runeSimLevel,
+      duoPartnerId,
+      itemIds: sandboxSlots.map((it) => it?.id || null),
+      runeSelection: activeSandboxSelection,
+      heartsteelStacksHp,
+    });
+    if (refreshedUrl !== sharedBuildUrl) {
+      setSharedBuildUrl(refreshedUrl);
+      setSharedUrlCopyState('idle');
+      try {
+        window.history.replaceState(null, '', refreshedUrl);
+      } catch {
+        // ignore history errors
+      }
+    }
+  }, [
+    sharedBuildUrl,
+    playerChampion.id,
+    role,
+    gameMode,
+    runeSimLevel,
+    duoPartnerId,
+    sandboxSlots,
+    activeSandboxSelection,
+    heartsteelStacksHp,
+  ]);
+
   const scrollToRunesEditor = () => {
     setBuildStep((prev) => (prev === 'setup' || prev === 'tools' ? 'all' : prev));
     setClientHubTab('editor');
@@ -2764,6 +3361,51 @@ export function BuildOptimizerView({
           </div>
         </div>
       </div>
+
+      {loadedSharedBanner && (
+        <div className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 flex flex-col md:flex-row md:items-center md:justify-between gap-3 text-xs">
+          <div className="flex items-start sm:items-center gap-2.5 min-w-0">
+            <Link2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5 sm:mt-0" aria-hidden="true" />
+            <div className="min-w-0">
+              <div className="font-bold text-emerald-800 dark:text-emerald-200">
+                Build partagé chargé depuis l’URL : {playerChampion.name} ({loadedSharedBanner.role} · Niv.{loadedSharedBanner.level})
+              </div>
+              <div className="text-[11px] text-emerald-700/90 dark:text-emerald-300/90">
+                {loadedSharedBanner.itemIds.filter(Boolean).length} objet(s) et la page de runes associée ont été appliqués dans l’Atelier.
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => {
+                handleSaveCurrentBuildSet(`${playerChampion.name} · Partagé`);
+                setLoadedSharedBanner(null);
+              }}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold rounded-lg bg-emerald-600 text-white hover:bg-emerald-500 transition-colors whitespace-nowrap"
+            >
+              <BookmarkPlus className="w-3.5 h-3.5" aria-hidden="true" />
+              Sauvegarder ce build
+            </button>
+            <button
+              type="button"
+              onClick={scrollToAtelier}
+              className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-semibold rounded-lg border border-emerald-500/40 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-500/15 transition-colors whitespace-nowrap"
+            >
+              Voir dans l’Atelier →
+            </button>
+            <button
+              type="button"
+              onClick={() => setLoadedSharedBanner(null)}
+              aria-label="Fermer la notification de build partagé"
+              className="p-1 text-emerald-700 dark:text-emerald-300 hover:text-emerald-950 dark:hover:text-white transition-colors"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
 
       {(buildStep === 'setup' || buildStep === 'all') && (
       <>
@@ -3897,10 +4539,10 @@ export function BuildOptimizerView({
         ref={atelierSectionRef}
         className="rounded-2xl apple-surface p-5 space-y-5 scroll-mt-24"
       >
-        <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4 pb-4 border-b border-slate-200 dark:border-slate-800">
+        <div className="flex flex-col gap-3.5 pb-4 border-b border-slate-200 dark:border-slate-800">
           <div className="space-y-1 min-w-0">
-            <h2 className="text-base font-bold text-slate-900 dark:text-white flex items-start gap-2">
-              <FlaskConical className="w-4 h-4 text-amber-500 shrink-0 mt-1" aria-hidden="true" />
+            <h2 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+              <FlaskConical className="w-4 h-4 text-amber-500 shrink-0" aria-hidden="true" />
               <span>Atelier Équipement &amp; Comparateur de Stats ({playerChampion.name} Niv.{runeSimLevel})</span>
             </h2>
             <p className="text-xs text-slate-500 dark:text-slate-400">
@@ -3908,7 +4550,7 @@ export function BuildOptimizerView({
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+          <div className="flex flex-wrap items-center gap-2.5">
             {/* Slider Niveau 1 à 18 */}
             <div className="flex items-center gap-2.5 px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-[#0B0E14] border border-slate-200 dark:border-slate-800">
               <span className="text-xs text-slate-600 dark:text-slate-300 whitespace-nowrap">
@@ -3978,6 +4620,39 @@ export function BuildOptimizerView({
               </div>
             )}
 
+            <button
+              type="button"
+              onClick={() => void handleCompareWithProBuild(false)}
+              disabled={proCompareLoading}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors whitespace-nowrap shrink-0 ${
+                showProComparePanel
+                  ? 'border-amber-500 bg-amber-600 dark:bg-amber-500 text-white dark:text-slate-950'
+                  : 'border-amber-500/45 bg-amber-500/10 text-amber-700 dark:text-amber-300 hover:bg-amber-500/20'
+              }`}
+              title="Récupérer par IA le build le plus performant à haut rang (Master+ / Challenger / Pro) et afficher toutes les différences chiffrées"
+            >
+              {proCompareLoading ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+              ) : (
+                <Trophy className="w-3.5 h-3.5" aria-hidden="true" />
+              )}
+              Comparer à un build Pro
+            </button>
+
+            <button
+              type="button"
+              onClick={() => void handleShareCurrentBuild()}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors whitespace-nowrap shrink-0 ${
+                sharedBuildUrl
+                  ? 'border-emerald-500 bg-emerald-600 text-white'
+                  : 'border-emerald-500/45 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/20'
+              }`}
+              title="Générer un lien URL contenant votre champion, vos 6 objets, vos runes et votre niveau actuel"
+            >
+              <Share2 className="w-3.5 h-3.5" aria-hidden="true" />
+              Partager mon Build
+            </button>
+
             {isBuildModified && (
               <button
                 type="button"
@@ -4006,6 +4681,73 @@ export function BuildOptimizerView({
             </button>
           </div>
         </div>
+
+        {sharedBuildUrl && (
+          <div className="rounded-xl border border-emerald-500/35 bg-emerald-500/[0.06] px-4 py-3 space-y-2.5 text-xs">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <Link2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" aria-hidden="true" />
+                <span className="font-bold text-slate-900 dark:text-white">
+                  Lien de partage prêt
+                </span>
+                <span className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                  · {playerChampion.name} ({role}) · Niv.{runeSimLevel} · {sandboxActiveItems.length}/6 objets ·{' '}
+                  {activeRuneVisualSummary.keystone?.name || 'Runes'}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setSharedBuildUrl(null);
+                  setSharedUrlCopyState('idle');
+                }}
+                aria-label="Fermer le panneau de partage"
+                className="p-1 rounded-md text-slate-400 hover:text-slate-900 dark:hover:text-white transition-colors"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+              <input
+                ref={shareUrlInputRef}
+                type="text"
+                readOnly
+                value={sharedBuildUrl}
+                onClick={(e) => e.currentTarget.select()}
+                aria-label="Lien URL du build partagé"
+                className="flex-1 min-w-0 h-9 px-3 text-[11px] font-mono rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-[#0B0E14] text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+              />
+              <button
+                type="button"
+                onClick={() => void handleCopyShareUrl(sharedBuildUrl)}
+                className={`inline-flex items-center justify-center gap-1.5 h-9 px-3.5 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap shrink-0 ${
+                  sharedUrlCopyState === 'copied'
+                    ? 'bg-emerald-600 text-white'
+                    : 'bg-slate-900 dark:bg-emerald-500 text-white dark:text-slate-950 hover:opacity-90'
+                }`}
+              >
+                {sharedUrlCopyState === 'copied' ? (
+                  <>
+                    <Check className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>Lien copié ✓</span>
+                  </>
+                ) : (
+                  <>
+                    <Copy className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>Copier le lien</span>
+                  </>
+                )}
+              </button>
+            </div>
+
+            {sharedUrlCopyState === 'manual' && (
+              <div className="text-[11px] text-amber-700 dark:text-amber-300">
+                Le presse-papiers automatique est bloqué dans cet aperçu : le lien est sélectionné, appuyez sur Ctrl+C (ou Cmd+C) pour le copier.
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Bandeau comparateur Build A (sélectionnable) vs Build B (sélectionnable / Atelier actif) */}
         {activePinnedBuildA && pinnedBuildAStats && (() => {
@@ -4230,10 +4972,10 @@ export function BuildOptimizerView({
 
         {/* Sauvegarde rapide & Ensembles de builds (charger / comparer facilement comme en jeu) */}
         <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-[#0D121C] px-4 py-3 space-y-3">
-          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-2.5">
-            <div className="flex items-center gap-2 text-xs">
+          <div className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs min-w-0">
               <FolderOpen className="w-4 h-4 text-amber-500 shrink-0" aria-hidden="true" />
-              <span className="font-semibold text-slate-900 dark:text-white">
+              <span className="font-semibold text-slate-900 dark:text-white whitespace-nowrap">
                 Ensembles sauvegardés ({savedItemSets.length})
               </span>
               <span className="text-[11px] text-slate-500 dark:text-slate-400 hidden sm:inline">
@@ -4241,7 +4983,7 @@ export function BuildOptimizerView({
               </span>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
               <form
                 onSubmit={(e) => {
                   e.preventDefault();
@@ -4812,6 +5554,298 @@ export function BuildOptimizerView({
           )}
         </div>
 
+        {/* Panneau Comparaison IA vs Build Pro / Haut Rang (Méta Actuelle) */}
+        {showProComparePanel && (
+          <div className="rounded-2xl border border-amber-500/40 bg-amber-500/[0.04] dark:bg-[#0D121C] p-4 sm:p-5 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-amber-500/20">
+              <div className="space-y-0.5 min-w-0">
+                <div className="flex flex-wrap items-center gap-2 text-xs sm:text-sm font-bold text-slate-900 dark:text-white">
+                  <Trophy className="w-4 h-4 text-amber-500 shrink-0" aria-hidden="true" />
+                  <span>Comparaison vs Build Pro / Haut Rang ({playerChampion.name} · {role})</span>
+                  {proCompareResult?.proBuild.eloTier && (
+                    <span className="px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide rounded-md bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30">
+                      {proCompareResult.proBuild.eloTier}
+                    </span>
+                  )}
+                </div>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  Récupération en direct du build le plus performant de la méta actuelle (patch {ddragon.version}) et calcul exact des écarts de stats face à votre configuration Niv.{runeSimLevel}.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => void handleCompareWithProBuild(true)}
+                  disabled={proCompareLoading}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg border border-amber-500/40 text-amber-700 dark:text-amber-300 hover:bg-amber-500/10 disabled:opacity-50 transition-colors"
+                  title="Relancer une recherche méta haut rang"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${proCompareLoading ? 'animate-spin' : ''}`} aria-hidden="true" />
+                  <span>Actualiser</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowProComparePanel(false)}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-lg border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
+                >
+                  <X className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>Fermer</span>
+                </button>
+              </div>
+            </div>
+
+            {proCompareLoading && (
+              <div className="flex items-center gap-3 py-6 justify-center text-xs text-slate-600 dark:text-slate-300">
+                <Loader2 className="w-5 h-5 animate-spin text-amber-500 shrink-0" aria-hidden="true" />
+                <span>
+                  Recherche du build Pro / Master+ le plus performant pour {playerChampion.name} ({role}) et simulation des statistiques...
+                </span>
+              </div>
+            )}
+
+            {!proCompareLoading && proCompareError && (
+              <div className="rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 flex flex-wrap items-center justify-between gap-3 text-xs text-rose-700 dark:text-rose-300">
+                <span>{proCompareError}</span>
+                <button
+                  type="button"
+                  onClick={() => void handleCompareWithProBuild(true)}
+                  className="px-3 py-1.5 rounded-lg border border-rose-500/40 font-semibold hover:bg-rose-500/15"
+                >
+                  Réessayer
+                </button>
+              </div>
+            )}
+
+            {!proCompareLoading && !proCompareError && proCompareResult && proCompareEvaluation && (
+              <div className="space-y-4">
+                {/* Carte du Build Pro trouvé + actions 1-clic */}
+                <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0B0E14] p-3.5 space-y-3">
+                  <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+                    <div className="space-y-1 min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-xs font-bold text-slate-900 dark:text-white">
+                          {proCompareResult.proBuild.buildTitle}
+                        </span>
+                        <span className="text-[11px] font-mono tabular-nums text-emerald-600 dark:text-emerald-400 font-semibold">
+                          {proCompareResult.proBuild.winRateNote}
+                        </span>
+                        <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                          · {proCompareResult.proBuild.sourceSite}
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                        Runes Pro : <strong className="text-slate-800 dark:text-slate-200">{proCompareResult.proBuild.keystoneName || 'Méta'}</strong>
+                        {proCompareResult.proBuild.secondaryTreeName
+                          ? ` + ${proCompareResult.proBuild.secondaryTreeName}`
+                          : ''}
+                        {proCompareResult.proBuild.pickRateNote
+                          ? ` · ${proCompareResult.proBuild.pickRateNote}`
+                          : ''}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={handlePinProBuildAsA}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold rounded-lg border border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-300 hover:bg-sky-500/20 transition-colors"
+                      >
+                        <Pin className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span>Épingler Build Pro en A</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleLoadProBuildInAtelier}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold rounded-lg bg-amber-600 dark:bg-amber-500 text-white dark:text-slate-950 hover:bg-amber-500 transition-colors"
+                      >
+                        <Download className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span>Charger dans l’Atelier</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Les 6 objets du build Pro */}
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+                    {proCompareEvaluation.items.slice(0, 6).map((item, idx) => (
+                      <div
+                        key={`pro-item-${item.id}-${idx}`}
+                        className="flex items-center gap-2 p-2 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-[#111622]"
+                      >
+                        <SafeGameIcon
+                          src={item.imageUrl}
+                          alt={item.name}
+                          fallbackLabel={item.name}
+                          sizeClass="w-8 h-8"
+                        />
+                        <div className="min-w-0">
+                          <div className="text-[11px] font-semibold text-slate-900 dark:text-white truncate" title={item.name}>
+                            {item.name}
+                          </div>
+                          <div className="text-[10px] font-mono tabular-nums text-amber-600 dark:text-amber-400">
+                            {item.gold.total} po
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Tableau comparatif chiffré : Votre build actuel vs Build Pro */}
+                {(() => {
+                  const curT = sandboxStats.totals;
+                  const proT = proCompareEvaluation.stats.totals;
+                  const curC = sandboxStats.combat;
+                  const proC = proCompareEvaluation.stats.combat;
+                  const curDmg = combatDamageResult;
+                  const proDmg = proCompareEvaluation.combat;
+
+                  const statRows: Array<{
+                    label: string;
+                    curVal: number;
+                    proVal: number;
+                    unit?: string;
+                    decimals?: number;
+                    lowerIsBetter?: boolean;
+                  }> = [
+                    { label: 'Coût total', curVal: curC.totalGold, proVal: proC.totalGold, unit: ' po', lowerIsBetter: true },
+                    { label: 'Rentabilité en or', curVal: curC.goldEfficiencyPct, proVal: proC.goldEfficiencyPct, unit: '%' },
+                    { label: 'DPS réel', curVal: curDmg.realDps, proVal: proDmg.realDps, unit: '/s' },
+                    { label: `Dégâts combo (${combatDurationSec}s)`, curVal: curDmg.totalMitigatedDamage, proVal: proDmg.totalMitigatedDamage },
+                    { label: 'PV totaux', curVal: curT.hp, proVal: proT.hp },
+                    { label: 'EHP Physique', curVal: curC.physicalEhp, proVal: proC.physicalEhp },
+                    { label: 'EHP Magique', curVal: curC.magicEhp, proVal: proC.magicEhp },
+                    { label: 'AD / AP', curVal: curT.ap >= curT.ad ? curT.ap : curT.ad, proVal: proT.ap >= proT.ad ? proT.ap : proT.ad, unit: curT.ap >= curT.ad || proT.ap >= proT.ad ? ' AP' : ' AD' },
+                    { label: 'Armure', curVal: curT.armor, proVal: proT.armor },
+                    { label: 'Résistance magique', curVal: curT.mr, proVal: proT.mr },
+                    { label: 'Vitesse d’attaque', curVal: Number(curT.attackSpeed.toFixed(2)), proVal: Number(proT.attackSpeed.toFixed(2)), decimals: 2 },
+                    { label: 'Accélération', curVal: curT.abilityHaste, proVal: proT.abilityHaste, unit: ' AH' },
+                    { label: 'Vitesse de dépl.', curVal: curT.moveSpeed, proVal: proT.moveSpeed },
+                    {
+                      label: curT.magicPenFlat + curT.magicPenPct >= curT.lethality + curT.armorPenPct ? 'Pén. Magique (flat / %)' : 'Létalité / Pén. Arm.',
+                      curVal: curT.magicPenFlat + curT.magicPenPct >= curT.lethality + curT.armorPenPct
+                        ? curT.magicPenFlat + curT.magicPenPct
+                        : curT.lethality + curT.armorPenPct,
+                      proVal: proT.magicPenFlat + proT.magicPenPct >= proT.lethality + proT.armorPenPct
+                        ? proT.magicPenFlat + proT.magicPenPct
+                        : proT.lethality + proT.armorPenPct,
+                    },
+                  ];
+
+                  return (
+                    <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0B0E14] overflow-hidden">
+                      <div className="px-3.5 py-2.5 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2 text-xs">
+                        <span className="font-bold text-slate-900 dark:text-white">
+                          Différences de statistiques exactes (Niv.{runeSimLevel} vs {activeCombatTarget.name})
+                        </span>
+                        <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                          Écart = Votre build actuel − Build Pro
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-slate-200 dark:divide-slate-800">
+                        {[statRows.slice(0, 7), statRows.slice(7)].map((half, colIdx) => (
+                          <div key={`pro-stat-col-${colIdx}`} className="divide-y divide-slate-100 dark:divide-slate-800/70">
+                            <div className="grid grid-cols-4 px-3.5 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400 bg-slate-50/70 dark:bg-[#101520]">
+                              <span>Statistique</span>
+                              <span className="text-right">Actuel</span>
+                              <span className="text-right">Build Pro</span>
+                              <span className="text-right">Écart</span>
+                            </div>
+                            {half.map((row) => {
+                              const diff = Number((row.curVal - row.proVal).toFixed(row.decimals ?? 0));
+                              const fmt = (v: number) =>
+                                `${row.decimals ? v.toFixed(row.decimals) : Math.round(v)}${row.unit || ''}`;
+                              const isEqual = Math.abs(diff) < (row.decimals ? 0.01 : 1);
+                              const isPositiveOutcome = row.lowerIsBetter ? diff < 0 : diff > 0;
+                              const deltaClass = isEqual
+                                ? 'text-slate-400'
+                                : isPositiveOutcome
+                                  ? 'text-emerald-600 dark:text-emerald-400 font-semibold'
+                                  : 'text-amber-600 dark:text-amber-400 font-semibold';
+                              const sign = diff > 0 ? '+' : '';
+                              return (
+                                <div
+                                  key={row.label}
+                                  className="grid grid-cols-4 items-center px-3.5 py-2 text-xs hover:bg-slate-50/60 dark:hover:bg-slate-800/30 transition-colors"
+                                >
+                                  <span className="text-slate-600 dark:text-slate-300 truncate pr-2">
+                                    {row.label}
+                                  </span>
+                                  <span className="text-right font-mono tabular-nums text-slate-900 dark:text-white">
+                                    {fmt(row.curVal)}
+                                  </span>
+                                  <span className="text-right font-mono tabular-nums text-slate-700 dark:text-slate-200">
+                                    {fmt(row.proVal)}
+                                  </span>
+                                  <span className={`text-right font-mono tabular-nums ${deltaClass}`}>
+                                    {isEqual ? '0' : `${sign}${fmt(diff)}`}
+                                  </span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* Verdict & Analyse IA Pro vs Actuel */}
+                <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0B0E14] p-3.5 space-y-2.5 text-xs">
+                  <div className="flex items-start gap-2">
+                    <Sparkles className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" aria-hidden="true" />
+                    <div className="space-y-1">
+                      <div className="font-bold text-slate-900 dark:text-white">
+                        {proCompareResult.proVsCurrentAnalysis.verdictHeadline}
+                      </div>
+                      {proCompareResult.proBuild.rationale && (
+                        <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                          <strong className="text-slate-800 dark:text-slate-100">Logique haut rang :</strong>{' '}
+                          {proCompareResult.proBuild.rationale}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  {proCompareResult.proVsCurrentAnalysis.keyDifferences.length > 0 && (
+                    <ul className="space-y-1 pl-6 list-disc text-[11px] text-slate-600 dark:text-slate-300">
+                      {proCompareResult.proVsCurrentAnalysis.keyDifferences.map((diffText, i) => (
+                        <li key={`pro-diff-${i}`}>{diffText}</li>
+                      ))}
+                    </ul>
+                  )}
+
+                  {proCompareResult.proVsCurrentAnalysis.adoptionAdvice && (
+                    <div className="rounded-lg bg-amber-500/10 border border-amber-500/25 px-3 py-2 text-[11px] text-slate-700 dark:text-slate-200">
+                      <strong className="text-amber-700 dark:text-amber-300">Conseil d’adoption :</strong>{' '}
+                      {proCompareResult.proVsCurrentAnalysis.adoptionAdvice}
+                    </div>
+                  )}
+
+                  {proCompareResult.groundingSources.length > 0 && (
+                    <div className="pt-2 border-t border-slate-100 dark:border-slate-800 flex flex-wrap items-center gap-2 text-[11px]">
+                      <span className="text-slate-500 dark:text-slate-400">Sources méta :</span>
+                      {proCompareResult.groundingSources.map((src, i) => (
+                        <a
+                          key={`pro-src-${i}`}
+                          href={src.uri}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-slate-200 dark:border-slate-700 text-sky-600 dark:text-sky-400 hover:border-sky-500 transition-colors"
+                        >
+                          <span className="truncate max-w-[180px]">{src.title}</span>
+                          <ExternalLink className="w-2.5 h-2.5 shrink-0" aria-hidden="true" />
+                        </a>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* 6 Emplacements d'équipement cliquables */}
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
           {sandboxSlots.map((item, slotIdx) => {
@@ -5004,7 +6038,7 @@ export function BuildOptimizerView({
 
         {/* Tableau complet des statistiques exactes (Base + Runes + Objets vs Référence) */}
         <div className="grid grid-cols-1 xl:grid-cols-12 gap-5 items-start">
-          <div className="xl:col-span-7 overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800">
+          <div className="xl:col-span-7 min-w-0 overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800">
             <table className="w-full text-xs">
               <thead>
                 <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] text-slate-500 dark:text-slate-400">
@@ -5136,7 +6170,7 @@ export function BuildOptimizerView({
             </table>
           </div>
 
-          <div className="xl:col-span-5 space-y-3">
+          <div className="xl:col-span-5 min-w-0 space-y-3">
             <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] p-4 space-y-3">
               <div className="flex items-center justify-between text-xs">
                 <span className="font-semibold text-slate-900 dark:text-white">
@@ -5253,12 +6287,185 @@ export function BuildOptimizerView({
           </div>
         </div>
 
-        {/* Interprétation du Build choisi + Page de Runes active & Synergie Runes × Stuff */}
-        <div className="grid grid-cols-1 xl:grid-cols-12 gap-5 items-start">
-          {/* Colonne Gauche (7/12) : Diagnostic & Interprétation des équilibres du build */}
-          <div className="xl:col-span-7 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] p-4 space-y-3">
-            <div className="flex flex-wrap items-start justify-between gap-2 pb-2.5 border-b border-slate-200 dark:border-slate-800">
-              <div className="space-y-0.5">
+        {/* Grille Responsive (CSS Grid) : Radar D3 & Runes/Diagnostic côte à côte avec les sections d'Optimisation IA sur desktop, empilés sur mobile */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+          {/* Colonne Gauche (5/12 desktop, pleine largeur mobile) : Graphique Radar D3 + Équilibre + Runes actives */}
+          <div className="lg:col-span-5 min-w-0 flex flex-col gap-5">
+            {/* Graphique Radar D3 : Profil global (Dégâts, Résistance, Utilité, Mobilité) vs Standard / Optimal */}
+            <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] p-5 space-y-4">
+              <div className="flex flex-col gap-3 pb-3 border-b border-slate-200 dark:border-slate-800">
+                <div className="space-y-1 min-w-0">
+                  <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                    <Radar className="w-4 h-4 text-amber-500 shrink-0" aria-hidden="true" />
+                    <span>
+                      Radar D3 · Profil Global ({playerChampion.name} Niv.{runeSimLevel})
+                    </span>
+                  </h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                    Comparez l’équilibre Dégâts / Résistance / Utilité / Mobilité de votre build face au build standard ou optimal calculé contre {activeCombatTarget.name}.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-1 p-1 rounded-lg bg-slate-200/70 dark:bg-[#121722] border border-slate-200 dark:border-slate-800 self-start">
+                  <button
+                    type="button"
+                    onClick={() => setRadarReferenceMode('standard')}
+                    className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
+                      radarComparisonData.effectiveMode === 'standard'
+                        ? 'bg-white dark:bg-[#1B2233] text-slate-900 dark:text-white shadow-sm'
+                        : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+                    }`}
+                  >
+                    Build Standard
+                  </button>
+                  {radarComparisonData.hasOptimal && (
+                    <button
+                      type="button"
+                      onClick={() => setRadarReferenceMode('optimal')}
+                      className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
+                        radarComparisonData.effectiveMode === 'optimal'
+                          ? 'bg-white dark:bg-[#1B2233] text-slate-900 dark:text-white shadow-sm'
+                          : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+                      }`}
+                    >
+                      Build Optimal IA
+                    </button>
+                  )}
+                  {radarComparisonData.hasPinned && (
+                    <button
+                      type="button"
+                      onClick={() => setRadarReferenceMode('pinned')}
+                      className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
+                        radarComparisonData.effectiveMode === 'pinned'
+                          ? 'bg-white dark:bg-[#1B2233] text-slate-900 dark:text-white shadow-sm'
+                          : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+                      }`}
+                    >
+                      Build A Épinglé
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                <div className="flex flex-col items-center justify-center space-y-3">
+                  <BuildRadarChart
+                    axes={radarComparisonData.axes}
+                    currentLabel={radarComparisonData.currentLabel}
+                    referenceLabel={radarComparisonData.referenceLabel}
+                  />
+
+                  {/* Légende claire avec coût en or */}
+                  <div className="flex flex-wrap items-center justify-center gap-4 text-[11px] pt-1">
+                    <div className="flex items-center gap-2 text-slate-700 dark:text-slate-200">
+                      <span className="inline-block w-3 h-3 rounded-sm bg-amber-500/40 border-2 border-amber-500" />
+                      <span className="font-semibold">{radarComparisonData.currentLabel}</span>
+                      <span className="font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                        ({sandboxStats.combat.totalGold} po)
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 text-slate-700 dark:text-slate-200">
+                      <span className="inline-block w-3 h-3 rounded-sm bg-sky-500/25 border-2 border-dashed border-sky-500" />
+                      <span className="font-semibold">{radarComparisonData.referenceLabel}</span>
+                      <span className="font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                        ({radarComparisonData.refGold} po)
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                {radarComparisonData.axes.map((axis) => {
+                  const delta = axis.currentScore - axis.referenceScore;
+                  return (
+                    <div
+                      key={`radar-card-${axis.key}`}
+                      className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#111622] p-3.5 space-y-2"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-bold text-slate-900 dark:text-white">
+                          {axis.label}
+                        </span>
+                        <div className="flex items-center gap-1.5 font-mono tabular-nums text-xs">
+                          <span className="font-bold text-amber-600 dark:text-amber-400">
+                            {axis.currentScore}
+                          </span>
+                          <span className="text-slate-400">/</span>
+                          <span className="text-sky-600 dark:text-sky-400">
+                            {axis.referenceScore}
+                          </span>
+                          {delta !== 0 && (
+                            <span
+                              className={`text-[11px] font-semibold ${
+                                delta > 0
+                                  ? 'text-emerald-600 dark:text-emerald-400'
+                                  : 'text-rose-600 dark:text-rose-400'
+                              }`}
+                            >
+                              ({delta > 0 ? `+${delta}` : delta})
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Double jauge Actuel vs Référence */}
+                      <div className="space-y-1">
+                        <div className="h-1.5 w-full rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+                          <div
+                            className="h-full rounded-full bg-amber-500 transition-all duration-300"
+                            style={{ width: `${axis.currentScore}%` }}
+                          />
+                        </div>
+                        <div className="h-1.5 w-full rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+                          <div
+                            className="h-full rounded-full bg-sky-500/80 transition-all duration-300"
+                            style={{ width: `${axis.referenceScore}%` }}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="space-y-0.5 text-[11px] font-mono tabular-nums pt-0.5">
+                        <div className="text-slate-700 dark:text-slate-200 truncate" title={axis.currentDetail}>
+                          Actuel : {axis.currentDetail}
+                        </div>
+                        <div className="text-slate-500 dark:text-slate-400 truncate" title={axis.referenceDetail}>
+                          Réf. : {axis.referenceDetail}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Aperçu visuel des 6 objets du build de référence comparé */}
+              <div className="rounded-lg border border-slate-200/80 dark:border-slate-800 bg-white/80 dark:bg-[#111622] px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs">
+                <div className="flex items-center gap-2 text-slate-600 dark:text-slate-300">
+                  <span className="font-medium">Référence comparée :</span>
+                  <span className="font-semibold text-sky-700 dark:text-sky-300">
+                    {radarComparisonData.referenceLabel}
+                  </span>
+                </div>
+                <div className="flex items-center gap-1">
+                  {radarComparisonData.refItems.slice(0, 6).map((it, idx) => (
+                    <div key={`radar-ref-it-${it.id}-${idx}`} title={it.name}>
+                      <SafeGameIcon
+                        src={it.imageUrl}
+                        alt={it.name}
+                        fallbackLabel={it.name}
+                        sizeClass="w-6 h-6"
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+            </div>
+            </div>
+
+            {/* Diagnostic & Interprétation des équilibres du build */}
+            <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] p-4 space-y-3 min-w-0">
+              <div className="flex flex-col gap-1 pb-2.5 border-b border-slate-200 dark:border-slate-800">
                 <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
                   <Gauge className="w-4 h-4 text-amber-500 shrink-0" aria-hidden="true" />
                   <span>Interprétation &amp; Équilibre du Build ({playerChampion.name} Niv.{runeSimLevel})</span>
@@ -5274,13 +6481,12 @@ export function BuildOptimizerView({
                 >
                   {buildInterpretation.overallHeadline}
                 </p>
+                <div className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                  {buildInterpretation.profileTags.join(' · ')}
+                </div>
               </div>
-              <div className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
-                {buildInterpretation.profileTags.join(' · ')}
-              </div>
-            </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
               {buildInterpretation.diagnostics.map((diag) => {
                 const borderColor =
                   diag.tone === 'rose'
@@ -5337,8 +6543,8 @@ export function BuildOptimizerView({
             </div>
           </div>
 
-          {/* Colonne Droite (5/12) : Runes actives & Impact combiné avec le stuff choisi */}
-          <div className="xl:col-span-5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] p-4 space-y-3">
+            {/* Runes actives & Impact combiné avec le stuff choisi */}
+            <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#0D121C] p-4 space-y-3 min-w-0">
             <div className="flex items-start justify-between gap-2 pb-2.5 border-b border-slate-200 dark:border-slate-800">
               <div>
                 <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
@@ -5579,74 +6785,76 @@ export function BuildOptimizerView({
               })}
             </div>
           </div>
-        </div>
+          </div>
 
-        {/* Analyse IA : Synergie Runes × Objets, Pénétration vs Dégâts Bruts & Ajustements */}
-        {(() => {
-          const mrReduction = Math.max(0, activeCombatTarget.mr - combatDamageResult.effectiveMr);
-          const armorReduction = Math.max(
-            0,
-            activeCombatTarget.armor - combatDamageResult.effectiveArmor,
-          );
-          const retentionPct =
-            combatDamageResult.totalRawDamage > 0
-              ? Math.round(
-                  (combatDamageResult.totalMitigatedDamage / combatDamageResult.totalRawDamage) *
-                    100,
-                )
-              : 100;
-          const damageDeltaMeta =
-            combatDamageResult.totalMitigatedDamage - metaRunesCombatDamage.totalMitigatedDamage;
+          {/* Colonne Droite (7/12 desktop, pleine largeur mobile) : Sections d'Optimisation IA */}
+          <div className="lg:col-span-7 min-w-0 flex flex-col gap-5">
+            {/* Analyse IA : Synergie Runes × Objets, Pénétration vs Dégâts Bruts & Ajustements */}
+            {(() => {
+              const mrReduction = Math.max(0, activeCombatTarget.mr - combatDamageResult.effectiveMr);
+              const armorReduction = Math.max(
+                0,
+                activeCombatTarget.armor - combatDamageResult.effectiveArmor,
+              );
+              const retentionPct =
+                combatDamageResult.totalRawDamage > 0
+                  ? Math.round(
+                      (combatDamageResult.totalMitigatedDamage / combatDamageResult.totalRawDamage) *
+                        100,
+                    )
+                  : 100;
+              const damageDeltaMeta =
+                combatDamageResult.totalMitigatedDamage - metaRunesCombatDamage.totalMitigatedDamage;
 
-          return (
-            <div className="rounded-xl border border-sky-500/35 bg-gradient-to-b from-sky-500/[0.06] to-slate-50 dark:to-[#0D121C] p-5 space-y-4">
-              <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 pb-3 border-b border-slate-200 dark:border-slate-800">
-                <div className="space-y-1">
-                  <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                    <Sparkles className="w-4 h-4 text-sky-500 shrink-0" aria-hidden="true" />
-                    <span>
-                      Analyse IA · Synergie Runes × Objets &amp; Bonus Statistiques Réels
-                    </span>
-                  </h3>
-                  <p className="text-xs text-slate-600 dark:text-slate-300">
-                    Évalue l’interaction exacte entre{' '}
-                    <strong className="text-slate-900 dark:text-white">
-                      {activeRuneVisualSummary.keystone?.name || 'votre fondamentale'}
-                    </strong>{' '}
-                    ({activeRuneVisualSummary.primaryTreeName} + {activeRuneVisualSummary.secondaryTreeName}) et vos{' '}
-                    <strong className="text-slate-900 dark:text-white">
-                      {sandboxActiveItems.length} objets
-                    </strong>{' '}
-                    face à {activeCombatTarget.name} (pénétration % vs dégâts bruts, caps et ajustements).
-                  </p>
-                </div>
+              return (
+                <div className="rounded-xl border border-sky-500/35 bg-gradient-to-b from-sky-500/[0.06] to-slate-50 dark:to-[#0D121C] p-5 space-y-4">
+                  <div className="flex flex-col gap-3 pb-3 border-b border-slate-200 dark:border-slate-800">
+                    <div className="space-y-1 min-w-0">
+                      <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                        <Sparkles className="w-4 h-4 text-sky-500 shrink-0" aria-hidden="true" />
+                        <span>
+                          Analyse IA · Synergie Runes × Objets &amp; Bonus Statistiques Réels
+                        </span>
+                      </h3>
+                      <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                        Évalue l’interaction exacte entre{' '}
+                        <strong className="text-slate-900 dark:text-white">
+                          {activeRuneVisualSummary.keystone?.name || 'votre fondamentale'}
+                        </strong>{' '}
+                        ({activeRuneVisualSummary.primaryTreeName} + {activeRuneVisualSummary.secondaryTreeName}) et vos{' '}
+                        <strong className="text-slate-900 dark:text-white">
+                          {sandboxActiveItems.length} objets
+                        </strong>{' '}
+                        face à {activeCombatTarget.name} (pénétration % vs dégâts bruts, caps et ajustements).
+                      </p>
+                    </div>
 
-                <button
-                  type="button"
-                  onClick={() => void handleAnalyzeRuneItemSynergy()}
-                  disabled={runeSynergyAiLoading}
-                  className="inline-flex items-center gap-2 h-9 px-4 text-xs font-semibold rounded-lg bg-sky-600 text-white hover:bg-sky-500 disabled:opacity-60 transition-colors whitespace-nowrap shrink-0"
-                >
-                  {runeSynergyAiLoading ? (
-                    <>
-                      <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
-                      <span>Calcul des synergies par l’IA...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Sparkles className="w-4 h-4" aria-hidden="true" />
-                      <span>
-                        {runeSynergyAiResult
-                          ? 'Recalculer la synergie (IA)'
-                          : 'Analyser la synergie Runes × Objets (IA)'}
-                      </span>
-                    </>
-                  )}
-                </button>
-              </div>
+                    <button
+                      type="button"
+                      onClick={() => void handleAnalyzeRuneItemSynergy()}
+                      disabled={runeSynergyAiLoading}
+                      className="inline-flex items-center gap-2 h-9 px-4 text-xs font-semibold rounded-lg bg-sky-600 text-white hover:bg-sky-500 disabled:opacity-60 transition-colors whitespace-nowrap self-start"
+                    >
+                      {runeSynergyAiLoading ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+                          <span>Calcul des synergies par l’IA...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles className="w-4 h-4" aria-hidden="true" />
+                          <span>
+                            {runeSynergyAiResult
+                              ? 'Recalculer la synergie (IA)'
+                              : 'Analyser la synergie Runes × Objets (IA)'}
+                          </span>
+                        </>
+                      )}
+                    </button>
+                  </div>
 
-              {/* Aperçu chiffré déterministe permanent (Pénétration vs Bruts, Valeur runes & Caps) */}
-              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+                  {/* Aperçu chiffré déterministe permanent (Pénétration vs Bruts, Valeur runes & Caps) */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
                 <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#111622] px-3 py-2.5">
                   <div className="text-[11px] text-slate-500 dark:text-slate-400">
                     Pén. Magique effective
@@ -5772,7 +6980,7 @@ export function BuildOptimizerView({
 
                   {/* Bonus statistiques réels calculés par l'IA */}
                   {runeSynergyAiResult.realStatBonuses.length > 0 && (
-                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       {runeSynergyAiResult.realStatBonuses.map((bonus, idx) => (
                         <div
                           key={`syn-bonus-${idx}`}
@@ -5876,8 +7084,8 @@ export function BuildOptimizerView({
         {/* Coach d’Optimisation Guidée par Spécialisation & Simulation Réelle */}
         <div className="rounded-xl border border-amber-500/35 bg-gradient-to-b from-amber-500/[0.06] to-slate-50 dark:to-[#0D121C] p-5 space-y-5">
           {/* En-tête + Choix de l'orientation de gameplay */}
-          <div className="flex flex-col xl:flex-row xl:items-start xl:justify-between gap-4 pb-4 border-b border-slate-200 dark:border-slate-800">
-            <div className="space-y-1 max-w-2xl">
+          <div className="flex flex-col gap-3.5 pb-4 border-b border-slate-200 dark:border-slate-800">
+            <div className="space-y-1 min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
                   <Brain className="w-4 h-4 text-amber-500 shrink-0" aria-hidden="true" />
@@ -5895,7 +7103,7 @@ export function BuildOptimizerView({
             </div>
 
             {/* Boutons de spécialisation gameplay */}
-            <div className="flex flex-col gap-1.5 shrink-0">
+            <div className="flex flex-col gap-1.5 min-w-0">
               <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">
                 Votre style / spécialisation voulue :
               </span>
@@ -5921,14 +7129,14 @@ export function BuildOptimizerView({
                   );
                 })}
               </div>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400 max-w-md">
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
                 {guidedOptimizationReport.specialization.description}
               </p>
             </div>
           </div>
 
           {/* 4 sources de données réellement collectées pour le calcul */}
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-2.5 text-[11px]">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-[11px]">
             <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-3 space-y-1">
               <div className="font-semibold text-slate-900 dark:text-white">
                 1. Données Gameplay
@@ -5964,8 +7172,8 @@ export function BuildOptimizerView({
           </div>
 
           {/* Problèmes détectés sur votre setup actuel + Gains vérifiés Avant → Après */}
-          <div className="grid grid-cols-1 xl:grid-cols-12 gap-4 items-start">
-            <div className="xl:col-span-5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-4 space-y-3">
+          <div className="grid grid-cols-1 gap-4 items-start">
+            <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-4 space-y-3 min-w-0">
               <div className="text-xs font-bold text-slate-900 dark:text-white">
                 Audit de votre setup actuel vs Solution optimisée
               </div>
@@ -6095,8 +7303,8 @@ export function BuildOptimizerView({
               )}
             </div>
 
-            {/* Colonne Droite (7/12) : Plan complet 6 objets + Décision Runes + Boutons 1 clic */}
-            <div className="xl:col-span-7 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-4 space-y-4">
+            {/* Plan complet 6 objets + Décision Runes + Boutons 1 clic */}
+            <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-4 space-y-4 min-w-0">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <div className="text-xs font-bold text-slate-900 dark:text-white">
@@ -6282,13 +7490,13 @@ export function BuildOptimizerView({
           </div>
 
           {/* Pourquoi cette solution face à chaque type d'ennemi + Alternatives testées */}
-          <div className="grid grid-cols-1 xl:grid-cols-12 gap-4 items-start">
-            <div className="xl:col-span-7 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-4 space-y-2.5">
+          <div className="grid grid-cols-1 gap-4 items-start">
+            <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-4 space-y-2.5 min-w-0">
               <div className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
-                <Shield className="w-3.5 h-3.5 text-amber-500" aria-hidden="true" />
+                <Shield className="w-3.5 h-3.5 text-amber-500 shrink-0" aria-hidden="true" />
                 <span>Pourquoi cette solution vs chaque type de champion adverse</span>
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                 {guidedOptimizationReport.matchupExplanations.map((m, idx) => (
                   <div
                     key={idx}
@@ -6308,13 +7516,13 @@ export function BuildOptimizerView({
               </div>
             </div>
 
-            <div className="xl:col-span-5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-4 space-y-2.5">
+            <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-4 space-y-2.5 min-w-0">
               <div className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
-                <ArrowLeftRight className="w-3.5 h-3.5 text-amber-500" aria-hidden="true" />
+                <ArrowLeftRight className="w-3.5 h-3.5 text-amber-500 shrink-0" aria-hidden="true" />
                 <span>Alternatives également testées &amp; comparées</span>
               </div>
               {guidedOptimizationReport.alternatives.length > 0 ? (
-                <div className="space-y-2">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
                   {guidedOptimizationReport.alternatives.map((alt) => (
                     <div
                       key={alt.id}
@@ -6371,6 +7579,8 @@ export function BuildOptimizerView({
                 </p>
               )}
             </div>
+          </div>
+        </div>
           </div>
         </div>
 
@@ -6430,8 +7640,8 @@ export function BuildOptimizerView({
 
       {/* Simulateur d'Impact par Objet (Data Dragon Brut) & Dégâts Infligés en Temps Réel */}
       <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5 space-y-5">
-        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 pb-4 border-b border-slate-200 dark:border-slate-800">
-          <div className="space-y-1">
+        <div className="flex flex-col gap-3.5 pb-4 border-b border-slate-200 dark:border-slate-800">
+          <div className="space-y-1 min-w-0">
             <h2 className="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
               <Radar className="w-4 h-4 text-amber-500 shrink-0" aria-hidden="true" />
               <span>Simulateur d’Impact par Objet &amp; Dégâts Infligés en Temps Réel</span>
@@ -6446,7 +7656,7 @@ export function BuildOptimizerView({
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <div className="flex flex-wrap items-center gap-2">
             <div className="flex items-center gap-1 p-1 rounded-lg bg-slate-100 dark:bg-[#0B0E14] border border-slate-200 dark:border-slate-800 text-xs">
               <span className="px-2 text-[11px] text-slate-500 dark:text-slate-400 whitespace-nowrap">
                 Échange :

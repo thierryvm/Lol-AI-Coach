@@ -32,6 +32,7 @@ import { RankedTierCrest } from './components/RankedTierCrest.tsx';
 import { SettingsView } from './components/SettingsView.tsx';
 import { ToastContainer, type ToastItem } from './components/ToastContainer.tsx';
 import { formatChampionDisplayName } from './utils/championDisplay.ts';
+import { hasSharedBuildInSearch } from './utils/buildShare.ts';
 import { buildLiveMenuQuickSummary } from './utils/liveNavSummary.ts';
 import { formatRankedQueue } from './utils/rankedDisplay.ts';
 import { computePlayerTendencies } from './engines/postGameEngine.ts';
@@ -422,7 +423,11 @@ function mergeAccountMatches(existing: MatchRecord[], incoming: MatchRecord[]): 
 export default function App() {
   const initialPrefs = loadSavedPrefs();
 
-  const [activeTab, setActiveTab] = useState<NavTab>('dashboard');
+  const [activeTab, setActiveTab] = useState<NavTab>(() =>
+    typeof window !== 'undefined' && hasSharedBuildInSearch(window.location.search)
+      ? 'builds'
+      : 'dashboard',
+  );
   const [darkMode, setDarkMode] = useState(initialPrefs.darkMode);
   const [autoSyncEnabled, setAutoSyncEnabled] = useState(initialPrefs.autoSyncEnabled);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);

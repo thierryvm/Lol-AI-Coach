@@ -15,6 +15,7 @@ import type {
 } from './src/engines/types.ts';
 import {
   analyzeVoiceMomentWithAi,
+  fetchProBuildMetaComparison,
   generateBuildCoachingRationale,
   generateCareerGlobalSynthesis,
   generateItemPassiveFormulaExplanation,
@@ -621,6 +622,87 @@ async function startServer() {
           err instanceof Error
             ? err.message
             : 'Erreur lors de la recherche Google des builds populaires.',
+      });
+    }
+  });
+
+  app.post('/api/coach/compare-pro-build', async (req, res) => {
+    try {
+      const {
+        championName,
+        championId,
+        role,
+        gameMode,
+        patchVersion,
+        level,
+        targetName,
+        currentBuild,
+        aiConfig,
+      } = req.body || {};
+
+      if (!championName || !currentBuild) {
+        return res.status(400).json({
+          error: 'championName et currentBuild sont requis pour comparer à un build Pro.',
+        });
+      }
+
+      const dd = await getDDragonBootstrap();
+      const result = await fetchProBuildMetaComparison({
+        championName: String(championName),
+        championId: String(championId || championName),
+        role: String(role || 'TOP'),
+        gameMode: String(gameMode || 'CLASSIC'),
+        patchVersion: String(patchVersion || dd.version),
+        level: Number(level || 11),
+        targetName: String(targetName || 'Cible standard'),
+        currentBuild,
+        aiConfig,
+      });
+
+      const queries: string[] = [];
+      if (result.proBuild.bootsName) queries.push(result.proBuild.bootsName);
+      for (const name of result.proBuild.itemNames) {
+        if (name) queries.push(name);
+      }
+
+      const { resolvedByQuery } = await resolveDDragonItemsByNames(queries);
+      const bootsItem = result.proBuild.bootsName
+        ? resolvedByQuery[result.proBuild.bootsName.trim()] || null
+        : null;
+      const resolvedItems = result.proBuild.itemNames.map((rawName: string) => ({
+        rawName,
+        item: resolvedByQuery[rawName.trim()] || null,
+      }));
+
+      const proSixItems: any[] = [];
+      const seenIds = new Set<string>();
+      if (bootsItem) {
+        proSixItems.push(bootsItem);
+        seenIds.add(bootsItem.id);
+      }
+      for (const entry of resolvedItems) {
+        if (entry.item && !seenIds.has(entry.item.id) && proSixItems.length < 6) {
+          proSixItems.push(entry.item);
+          seenIds.add(entry.item.id);
+        }
+      }
+
+      return res.json({
+        patchVersion: dd.version,
+        proBuild: result.proBuild,
+        bootsItem,
+        resolvedItems,
+        proSixItems,
+        proVsCurrentAnalysis: result.proVsCurrentAnalysis,
+        groundingSources: result.groundingSources,
+        ...(result._aiMeta ? { _aiMeta: result._aiMeta } : {}),
+      });
+    } catch (err) {
+      return res.status(500).json({
+        error:
+          err instanceof Error
+            ? err.message
+            : 'Erreur lors de la comparaison avec un build Pro.',
       });
     }
   });

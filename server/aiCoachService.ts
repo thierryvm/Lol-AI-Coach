@@ -1456,6 +1456,300 @@ export async function generateRuneItemSynergyAnalysis(payload: {
   };
 }
 
+export async function fetchProBuildMetaComparison(payload: {
+  championName: string;
+  championId: string;
+  role: string;
+  gameMode: string;
+  patchVersion: string;
+  level: number;
+  targetName: string;
+  currentBuild: {
+    items: string[];
+    keystoneName: string;
+    secondaryTreeName: string;
+    totalGold: number;
+    realDps: number;
+    totalMitigatedDamage: number;
+    physicalEhp: number;
+    magicEhp: number;
+    hp: number;
+    ad: number;
+    ap: number;
+    armor: number;
+    mr: number;
+    attackSpeed: number;
+    abilityHaste: number;
+    moveSpeed: number;
+  };
+  aiConfig?: Partial<AiUserSelection> | null;
+}) {
+  const {
+    championName,
+    championId,
+    role,
+    gameMode,
+    patchVersion,
+    level,
+    targetName,
+    currentBuild,
+    aiConfig,
+  } = payload;
+
+  const modeLabel =
+    gameMode === 'ARAM'
+      ? 'ARAM'
+      : gameMode === 'SWIFTPLAY'
+        ? 'Swiftplay / Summoner Rift'
+        : 'Ranked Solo/Duo Master+ / Challenger / Probuilds';
+
+  const opggPromise = fetchOpggLiveBuilds({
+    championName,
+    championId,
+    role,
+    gameMode,
+    patchVersion,
+  }).catch(() => null);
+
+  const prompt =
+    `Effectue une recherche Google en direct (Lolalytics Master+, U.GG, OP.GG, Probuilds / Gol.gg) pour identifier le build le plus efficace et performant joué à haut rang (Master+, Challenger ou joueurs Pro) dans la méta actuelle (patch ${patchVersion}) pour "${championName}" (${championId}) au poste "${role}" (${modeLabel}).\n\n` +
+    `Compare ensuite ce build Pro / Haut Rang avec le build actuel du joueur (Niv.${level} face à ${targetName}) :\n` +
+    JSON.stringify(currentBuild, null, 2) +
+    `\n\nRéponds STRICTEMENT avec un objet JSON valide (sans texte avant ni après) respectant exactement cette structure :\n` +
+    `{\n` +
+    `  "proBuild": {\n` +
+    `    "sourceSite": "Lolalytics Master+ / OP.GG / Probuilds",\n` +
+    `    "eloTier": "Ex: Master+ / Challenger / Pro",\n` +
+    `    "buildTitle": "Nom court du build Pro (en français)",\n` +
+    `    "winRateNote": "Ex: ~54.1% WR (ou 'Méta haut rang' si non chiffré)",\n` +
+    `    "pickRateNote": "Ex: Build core le plus performant à haut elo",\n` +
+    `    "bootsName": "Nom exact des bottes (1 paire, ex: Plated Steelcaps ou Coques en acier)",\n` +
+    `    "itemNames": ["Objet légendaire 1", "Objet légendaire 2", "Objet légendaire 3", "Objet légendaire 4", "Objet légendaire 5"],\n` +
+    `    "keystoneName": "Nom exact de la rune fondamentale (ex: Press the Attack ou Attaque soutenue)",\n` +
+    `    "secondaryTreeName": "Arbre secondaire (ex: Sorcellerie / Volonté / Inspiration)",\n` +
+    `    "rationale": "Pourquoi les joueurs Pro / Challenger choisissent cet ordre d'objets et ces runes sur ce patch."\n` +
+    `  },\n` +
+    `  "proVsCurrentAnalysis": {\n` +
+    `    "verdictHeadline": "Comparaison directe en 1-2 phrases entre le build actuel du joueur et ce build Pro.",\n` +
+    `    "keyDifferences": [\n` +
+    `      "Différence clé 1 (dégâts / DPS / pénétration)",\n` +
+    `      "Différence clé 2 (survie / PV / résistances)",\n` +
+    `      "Différence clé 3 (coût en or / pic de puissance / runes)"\n` +
+    `    ],\n` +
+    `    "adoptionAdvice": "Quand garder le build actuel vs adopter la variante Pro dans cette partie."\n` +
+    `  }\n` +
+    `}\n` +
+    `IMPORTANT : Indique toujours exactement 1 paire de bottes dans "bootsName" et 5 objets complets (légendaires) dans "itemNames" pour obtenir un build complet de 6 emplacements comparables.`;
+
+  const opggFallback = await opggPromise;
+
+  const useExternalProvider =
+    aiConfig?.provider &&
+    aiConfig.provider !== 'gemini' &&
+    (!process.env.GEMINI_API_KEY?.trim() || aiConfig.fallbackToGemini === false);
+
+  const normalizeResult = (
+    parsed: any,
+    groundingSources: Array<{ title: string; uri: string }>,
+    metaLabel?: string,
+  ) => {
+    const pb = parsed?.proBuild || {};
+    const an = parsed?.proVsCurrentAnalysis || {};
+    return {
+      proBuild: {
+        sourceSite: nonEmpty(pb.sourceSite) || metaLabel || 'Méta Haut Rang',
+        eloTier: nonEmpty(pb.eloTier) || 'Master+ / Pro',
+        buildTitle: nonEmpty(pb.buildTitle) || `Build Pro ${championName}`,
+        winRateNote: nonEmpty(pb.winRateNote) || 'Méta haut rang',
+        pickRateNote: nonEmpty(pb.pickRateNote) || 'Build performant',
+        bootsName: nonEmpty(pb.bootsName),
+        itemNames: Array.isArray(pb.itemNames)
+          ? pb.itemNames.map((n: unknown) => nonEmpty(n)).filter(Boolean).slice(0, 6)
+          : [],
+        keystoneName: nonEmpty(pb.keystoneName),
+        secondaryTreeName: nonEmpty(pb.secondaryTreeName),
+        rationale: nonEmpty(pb.rationale),
+      },
+      proVsCurrentAnalysis: {
+        verdictHeadline: nonEmpty(an.verdictHeadline),
+        keyDifferences: Array.isArray(an.keyDifferences)
+          ? an.keyDifferences.map((d: unknown) => nonEmpty(d)).filter(Boolean).slice(0, 4)
+          : [],
+        adoptionAdvice: nonEmpty(an.adoptionAdvice),
+      },
+      groundingSources: groundingSources.slice(0, 6),
+    };
+  };
+
+  if (useExternalProvider) {
+    const parsed = await generateStructuredWithSelectedProvider({
+      contents: prompt,
+      systemInstruction:
+        'Analyste League of Legends expert niveau Challenger. Tu identifies le build haut rang / Pro le plus efficace de la méta et tu le compares objectivement au build du joueur.',
+      responseSchema: {
+        type: Type.OBJECT,
+        required: ['proBuild', 'proVsCurrentAnalysis'],
+        properties: {
+          proBuild: {
+            type: Type.OBJECT,
+            required: ['sourceSite', 'buildTitle', 'bootsName', 'itemNames', 'rationale'],
+            properties: {
+              sourceSite: { type: Type.STRING },
+              eloTier: { type: Type.STRING },
+              buildTitle: { type: Type.STRING },
+              winRateNote: { type: Type.STRING },
+              pickRateNote: { type: Type.STRING },
+              bootsName: { type: Type.STRING },
+              itemNames: { type: Type.ARRAY, items: { type: Type.STRING } },
+              keystoneName: { type: Type.STRING },
+              secondaryTreeName: { type: Type.STRING },
+              rationale: { type: Type.STRING },
+            },
+          },
+          proVsCurrentAnalysis: {
+            type: Type.OBJECT,
+            required: ['verdictHeadline', 'keyDifferences', 'adoptionAdvice'],
+            properties: {
+              verdictHeadline: { type: Type.STRING },
+              keyDifferences: { type: Type.ARRAY, items: { type: Type.STRING } },
+              adoptionAdvice: { type: Type.STRING },
+            },
+          },
+        },
+      },
+      aiConfig,
+    });
+
+    return {
+      ...normalizeResult(
+        parsed,
+        opggFallback?.groundingSources || [],
+        parsed?._aiMeta?.providerLabel,
+      ),
+      ...(parsed?._aiMeta ? { _aiMeta: parsed._aiMeta } : {}),
+    };
+  }
+
+  const ai = getGeminiClient();
+  const selectedGeminiModel =
+    aiConfig?.provider === 'gemini' && aiConfig.model?.trim()
+      ? aiConfig.model.trim()
+      : 'gemini-4-hydrogen';
+  const attempts = Array.from(
+    new Set([selectedGeminiModel, 'gemini-4-hydrogen', 'gemini-3.1-flash-lite']),
+  );
+
+  let lastError: unknown = null;
+  const errorMessages: string[] = [];
+
+  for (const model of attempts) {
+    try {
+      const response = await ai.models.generateContent({
+        model,
+        contents: prompt,
+        config: {
+          tools: [{ googleSearch: {} }],
+          systemInstruction:
+            'Analyste League of Legends expert utilisant Google Search Grounding. Tu retournes uniquement un objet JSON valide décrivant le build Pro / Master+ le plus performant du patch et sa comparaison au build du joueur.',
+        },
+      });
+
+      const parsed = extractJsonObjectFromText(response.text ?? '{}');
+      const rawChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
+      const seenUris = new Set<string>();
+      const groundingSources: Array<{ title: string; uri: string }> = [];
+      for (const ch of rawChunks) {
+        const uri = ch?.web?.uri;
+        const title = ch?.web?.title;
+        if (uri && !seenUris.has(uri)) {
+          seenUris.add(uri);
+          groundingSources.push({ title: title || uri, uri });
+        }
+      }
+
+      const normalized = normalizeResult(parsed, groundingSources);
+      if (normalized.proBuild.itemNames.length === 0) {
+        throw new Error('Aucun objet Pro exploitable retourné par la recherche Google.');
+      }
+
+      return {
+        ...normalized,
+        _aiMeta: {
+          provider: 'gemini',
+          providerLabel: 'Gemini + Google Search',
+          model,
+          usedFallback: model !== selectedGeminiModel,
+        },
+      };
+    } catch (err) {
+      lastError = err;
+      const msg = err instanceof Error ? err.message : String(err);
+      errorMessages.push(`${model}: ${msg.slice(0, 120)}`);
+      await new Promise((resolve) => setTimeout(resolve, 350));
+    }
+  }
+
+  // Repli structuré sur OP.GG Live + analyse IA si Google Search est saturé (429)
+  if (opggFallback && opggFallback.builds.length > 0) {
+    const topOpgg = opggFallback.builds[0];
+    try {
+      const analysis = await generateStructuredWithSelectedProvider({
+        aiConfig,
+        contents:
+          `Compare ce build live haut rang trouvé sur ${topOpgg.sourceSite} (${topOpgg.winRateNote}) avec le build actuel du joueur pour ${championName} (${role}) :\n` +
+          JSON.stringify({ proBuild: topOpgg, currentBuild }, null, 2),
+        systemInstruction:
+          'Analyste LoL concis. Compare objectivement le build haut rang et le build actuel sans inventer de statistiques.',
+        responseSchema: {
+          type: Type.OBJECT,
+          required: ['verdictHeadline', 'keyDifferences', 'adoptionAdvice'],
+          properties: {
+            verdictHeadline: { type: Type.STRING },
+            keyDifferences: { type: Type.ARRAY, items: { type: Type.STRING } },
+            adoptionAdvice: { type: Type.STRING },
+          },
+        },
+      });
+      return {
+        proBuild: {
+          sourceSite: topOpgg.sourceSite,
+          eloTier: 'Haut Rang (OP.GG Live)',
+          buildTitle: topOpgg.buildTitle,
+          winRateNote: topOpgg.winRateNote,
+          pickRateNote: topOpgg.pickRateNote,
+          bootsName: topOpgg.bootsName,
+          itemNames: topOpgg.itemNames,
+          keystoneName: topOpgg.keystoneName,
+          secondaryTreeName: topOpgg.secondaryTreeName,
+          rationale: topOpgg.rationale,
+        },
+        proVsCurrentAnalysis: {
+          verdictHeadline: nonEmpty(analysis?.verdictHeadline),
+          keyDifferences: Array.isArray(analysis?.keyDifferences)
+            ? analysis.keyDifferences.map((d: unknown) => nonEmpty(d)).filter(Boolean).slice(0, 4)
+            : [],
+          adoptionAdvice: nonEmpty(analysis?.adoptionAdvice),
+        },
+        groundingSources: opggFallback.groundingSources,
+        _aiMeta: analysis?._aiMeta,
+      };
+    } catch {
+      // Laisser remonter l'erreur d'origine si l'analyse IA échoue aussi
+    }
+  }
+
+  const joinedErrors = errorMessages.join(' | ');
+  if (isTransientAiError(lastError) || joinedErrors.includes('429')) {
+    throw new Error(
+      `Le moteur IA connaît un pic de charge momentané (429/503). Réessayez dans quelques secondes (${joinedErrors.slice(0, 140)}).`,
+    );
+  }
+  throw new Error(
+    `Impossible de récupérer le build Pro via l’IA : ${joinedErrors.slice(0, 180)}`,
+  );
+}
+
+
 
 
 
