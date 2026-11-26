@@ -19,6 +19,7 @@ interface LiveMenuSummaryPopoverProps {
   leftPx: number;
   summary: LiveMenuQuickSummary;
   loadingRank?: boolean;
+  refreshingLive?: boolean;
   onMouseEnter: () => void;
   onMouseLeave: () => void;
   onOpenLiveView: () => void;
@@ -30,6 +31,7 @@ export function LiveMenuSummaryPopover({
   leftPx,
   summary,
   loadingRank = false,
+  refreshingLive = false,
   onMouseEnter,
   onMouseLeave,
   onOpenLiveView,
@@ -80,32 +82,67 @@ export function LiveMenuSummaryPopover({
             </span>
           </div>
 
-          {summary.hasLiveData ? (
+          {refreshingLive && !summary.hasLiveData ? (
+            <div className="space-y-2.5" aria-busy="true" aria-label="Actualisation des données Live en cours">
+              <div className="flex items-center justify-between gap-3 rounded-xl border border-black/[0.05] dark:border-white/[0.07] bg-slate-50/90 dark:bg-[#0E1015]/85 px-3 py-2.5">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="w-9 h-9 rounded-lg bg-slate-200 dark:bg-white/10 animate-pulse shrink-0" />
+                  <div className="space-y-1.5">
+                    <div className="h-2.5 w-14 rounded bg-slate-200 dark:bg-white/10 animate-pulse" />
+                    <div className="h-3.5 w-24 rounded bg-slate-300 dark:bg-white/15 animate-pulse" />
+                  </div>
+                </div>
+                <div className="h-3 w-12 rounded bg-slate-200 dark:bg-white/10 animate-pulse shrink-0" />
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="rounded-xl border border-black/[0.05] dark:border-white/[0.07] bg-slate-50/90 dark:bg-[#0E1015]/85 px-3 py-2.5 space-y-2">
+                  <div className="h-2.5 w-16 rounded bg-slate-200 dark:bg-white/10 animate-pulse" />
+                  <div className="h-3.5 w-20 rounded bg-slate-300 dark:bg-white/15 animate-pulse" />
+                </div>
+                <div className="rounded-xl border border-black/[0.05] dark:border-white/[0.07] bg-slate-50/90 dark:bg-[#0E1015]/85 px-3 py-2.5 space-y-2">
+                  <div className="h-2.5 w-16 rounded bg-slate-200 dark:bg-white/10 animate-pulse" />
+                  <div className="h-4 w-14 rounded bg-slate-300 dark:bg-white/15 animate-pulse" />
+                </div>
+              </div>
+            </div>
+          ) : summary.hasLiveData ? (
             <div className="space-y-2.5">
               {/* 1. Champion joué */}
               <div className="flex items-center justify-between gap-3 rounded-xl border border-black/[0.05] dark:border-white/[0.07] bg-slate-50/90 dark:bg-[#0E1015]/85 px-3 py-2.5">
                 <div className="flex items-center gap-2.5 min-w-0">
-                  <SafeGameIcon
-                    src={summary.championImageUrl}
-                    alt={summary.championName}
-                    fallbackLabel={summary.championName}
-                    sizeClass="w-9 h-9"
-                  />
+                  {refreshingLive ? (
+                    <div className="w-9 h-9 rounded-lg bg-slate-200 dark:bg-white/10 animate-pulse shrink-0" />
+                  ) : (
+                    <SafeGameIcon
+                      src={summary.championImageUrl}
+                      alt={summary.championName}
+                      fallbackLabel={summary.championName}
+                      sizeClass="w-9 h-9"
+                    />
+                  )}
                   <div className="min-w-0">
                     <div className="text-[10px] font-medium text-slate-500 dark:text-slate-400">
                       Champion
                     </div>
-                    <div className="text-xs font-bold text-slate-900 dark:text-white truncate">
-                      {summary.championName}
-                      {summary.level ? (
-                        <span className="ml-1.5 font-mono font-medium text-slate-500 dark:text-slate-400">
-                          Niv.{summary.level}
-                        </span>
-                      ) : null}
-                    </div>
+                    {refreshingLive ? (
+                      <div
+                        className="mt-1 h-3.5 w-24 rounded bg-slate-300 dark:bg-white/15 animate-pulse"
+                        aria-busy="true"
+                        aria-label="Actualisation du champion Live"
+                      />
+                    ) : (
+                      <div className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                        {summary.championName}
+                        {summary.level ? (
+                          <span className="ml-1.5 font-mono font-medium text-slate-500 dark:text-slate-400">
+                            Niv.{summary.level}
+                          </span>
+                        ) : null}
+                      </div>
+                    )}
                   </div>
                 </div>
-                {summary.kda && (
+                {summary.kda && !refreshingLive && (
                   <span className="text-[11px] font-mono tabular-nums font-semibold text-slate-700 dark:text-slate-200 shrink-0">
                     {summary.kda}
                   </span>
@@ -137,9 +174,17 @@ export function LiveMenuSummaryPopover({
                     <Clock className="w-3 h-3 text-emerald-500" aria-hidden="true" />
                     <span>Temps de jeu</span>
                   </div>
-                  <div className="text-sm font-bold font-mono tabular-nums text-slate-900 dark:text-white leading-tight">
-                    {summary.clockLabel}
-                  </div>
+                  {refreshingLive ? (
+                    <div
+                      className="h-4 w-14 my-0.5 rounded bg-slate-300 dark:bg-white/15 animate-pulse"
+                      aria-busy="true"
+                      aria-label="Actualisation du temps de jeu Live"
+                    />
+                  ) : (
+                    <div className="text-sm font-bold font-mono tabular-nums text-slate-900 dark:text-white leading-tight">
+                      {summary.clockLabel}
+                    </div>
+                  )}
                   <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
                     {summary.phaseLabel}
                   </div>

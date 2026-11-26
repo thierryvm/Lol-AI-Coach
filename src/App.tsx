@@ -8,6 +8,7 @@ import {
   Clock,
   Compass,
   History,
+  Layers,
   LayoutDashboard,
   Menu,
   Moon,
@@ -24,6 +25,7 @@ import { BuildOptimizerView } from './components/BuildOptimizerView.tsx';
 import { ChampionEncyclopediaView } from './components/ChampionEncyclopediaView.tsx';
 import { CommandPaletteModal } from './components/CommandPaletteModal.tsx';
 import { DashboardView } from './components/DashboardView.tsx';
+import { DesignMockupView } from './components/DesignMockupView.tsx';
 import { GuideView } from './components/GuideView.tsx';
 import { LiveCoachView } from './components/LiveCoachView.tsx';
 import { LiveMenuSummaryPopover } from './components/LiveMenuSummaryPopover.tsx';
@@ -66,6 +68,7 @@ type NavTab =
   | 'live'
   | 'champions'
   | 'guide'
+  | 'design-lab'
   | 'settings';
 
 const STORAGE_KEY = 'lol_ai_coach_prefs_v1';
@@ -163,6 +166,13 @@ const NAV_SECTIONS: NavSectionDef[] = [
         phaseLabel: 'Aide',
         description: 'Parcours pas à pas pour maîtriser chaque outil',
         icon: Compass,
+      },
+      {
+        id: 'design-lab',
+        label: 'Maquette Design',
+        phaseLabel: 'Prototype',
+        description: 'Aperçu interactif du nouveau design (Mobalytics · Blitz · OP.GG)',
+        icon: Layers,
       },
       {
         id: 'settings',
@@ -465,6 +475,12 @@ export default function App() {
   const [activeGameFetchedAtMs, setActiveGameFetchedAtMs] = useState<number>(() => Date.now());
   const [liveLobbyParticipants, setLiveLobbyParticipants] = useState<LobbyScoutParticipant[]>([]);
   const [liveLobbyLoading, setLiveLobbyLoading] = useState(false);
+  const [liveSnapshotRefreshing, setLiveSnapshotRefreshing] = useState(false);
+  const [liveViewRefreshing, setLiveViewRefreshing] = useState(false);
+  const hasLiveSnapshotRef = useRef(false);
+  hasLiveSnapshotRef.current = Boolean(liveMenuSnapshot);
+  const isInActiveGameRef = useRef(false);
+  isInActiveGameRef.current = Boolean(profile?.activeGame?.inGame);
   const scoutedGameIdRef = useRef<number | null>(null);
   const [liveMenuOpen, setLiveMenuOpen] = useState(false);
   const [liveMenuCoords, setLiveMenuCoords] = useState<{ top: number; left: number }>({
@@ -720,8 +736,13 @@ export default function App() {
     let cancelled = false;
     const isInsideIframe = typeof window !== 'undefined' && window.self !== window.top;
 
-    const pullLocalBridge = async () => {
+    const pullLocalBridge = async (showSkeleton = false) => {
       if (isInsideIframe) return false;
+      const shouldShowSkeleton =
+        showSkeleton || hasLiveSnapshotRef.current || isInActiveGameRef.current;
+      if (shouldShowSkeleton && !cancelled) {
+        setLiveSnapshotRefreshing(true);
+      }
       try {
         const res = await fetch('http://127.0.0.1:38421/live');
         if (cancelled) return false;
@@ -750,13 +771,22 @@ export default function App() {
         }
       } catch {
         // Pont local non démarré ou non joignable
+      } finally {
+        if (shouldShowSkeleton && !cancelled) {
+          setLiveSnapshotRefreshing(false);
+        }
       }
       return false;
     };
 
-    const pullLatestLive = async () => {
-      const gotLocal = await pullLocalBridge();
+    const pullLatestLive = async (isInitial = false) => {
+      const gotLocal = await pullLocalBridge(isInitial);
       if (gotLocal || cancelled) return;
+      const shouldShowSkeleton =
+        isInitial || hasLiveSnapshotRef.current || isInActiveGameRef.current;
+      if (shouldShowSkeleton && !cancelled) {
+        setLiveSnapshotRefreshing(true);
+      }
       try {
         const res = await fetch('/api/live/latest');
         if (!res.ok || cancelled) return;
@@ -771,19 +801,23 @@ export default function App() {
         }
       } catch {
         // ignore network error in background summary
+      } finally {
+        if (shouldShowSkeleton && !cancelled) {
+          setLiveSnapshotRefreshing(false);
+        }
       }
     };
 
-    void pullLatestLive();
+    void pullLatestLive(true);
     const bridgeIntervalId = !isInsideIframe
       ? window.setInterval(() => {
           if (typeof document !== 'undefined' && document.hidden) return;
-          void pullLocalBridge();
+          void pullLocalBridge(false);
         }, 5_000)
       : null;
     const serverIntervalId = window.setInterval(() => {
       if (typeof document !== 'undefined' && document.hidden) return;
-      void pullLatestLive();
+      void pullLatestLive(false);
     }, 15_000);
 
     return () => {
@@ -1586,6 +1620,13 @@ export default function App() {
     ],
   );
 
+  const isLiveDataRefreshing =
+    liveSnapshotRefreshing ||
+    liveLobbyLoading ||
+    liveViewRefreshing ||
+    (profileLoading &&
+      (activeTab === 'live' || isInLiveGame || liveMenuSummary.hasLiveData));
+
   const handleOpenLivePopover = () => {
     if (liveMenuCloseTimerRef.current) {
       window.clearTimeout(liveMenuCloseTimerRef.current);
@@ -1634,6 +1675,7 @@ export default function App() {
                 <button
                   ref={isLiveItem && !onAfterSelect ? liveNavButtonRef : undefined}
                   type="button"
+                  aria-current={active ? 'page' : undefined}
                   onFocus={isLiveItem && !onAfterSelect ? handleOpenLivePopover : undefined}
                   onBlur={isLiveItem && !onAfterSelect ? handleScheduleCloseLivePopover : undefined}
                   onClick={() => {
@@ -1656,29 +1698,51 @@ export default function App() {
                     />
                   )}
                   <span className="relative z-10 flex items-center gap-2.5 min-w-0">
-                    <Icon
-                      className={`w-4 h-4 shrink-0 transition-colors ${
+                    <span
+                      className={`w-6 h-6 rounded-lg flex items-center justify-center shrink-0 transition-colors ${
                         active
-                          ? 'text-[#007AFF] dark:text-[#0A84FF]'
+                          ? 'bg-[#007AFF]/12 dark:bg-[#0A84FF]/18 text-[#007AFF] dark:text-[#38BDF8]'
                           : isLiveAndInGame
-                            ? 'text-emerald-500'
-                            : 'text-slate-400 dark:text-slate-500'
+                            ? 'bg-emerald-500/12 text-emerald-500'
+                            : 'bg-black/[0.03] dark:bg-white/[0.04] text-slate-500 dark:text-slate-400'
                       }`}
                       aria-hidden="true"
-                    />
+                    >
+                      <Icon className="w-3.5 h-3.5" />
+                    </span>
                     <span className="min-w-0 text-left">
                       <span className="block truncate">{item.label}</span>
-                      {isLiveItem && liveMenuSummary.hasLiveData && (
+                      {isLiveItem && isLiveDataRefreshing ? (
+                        <span
+                          className="flex items-center gap-1.5 mt-0.5 h-[15px]"
+                          aria-busy="true"
+                          aria-label="Actualisation des données Live en cours"
+                        >
+                          <span className="h-2.5 w-16 rounded bg-slate-300/80 dark:bg-white/15 animate-pulse" />
+                          <span
+                            className="text-[10px] text-slate-400/60 dark:text-slate-600"
+                            aria-hidden="true"
+                          >
+                            ·
+                          </span>
+                          <span className="h-2.5 w-9 rounded bg-slate-200/90 dark:bg-white/10 animate-pulse" />
+                        </span>
+                      ) : isLiveItem && liveMenuSummary.hasLiveData ? (
                         <span className="block text-[10px] font-normal font-mono tabular-nums text-slate-500 dark:text-slate-400 truncate mt-0.5">
                           {liveMenuSummary.championName} · {liveMenuSummary.clockLabel}
                           {liveMenuSummary.nextRecallItem
                             ? ` · ${liveMenuSummary.nextRecallItem.goldCost} po`
                             : ''}
                         </span>
-                      )}
+                      ) : null}
                     </span>
                   </span>
-                  {isLiveAndInGame ? (
+                  {isLiveItem && isLiveDataRefreshing ? (
+                    <span
+                      className="relative z-10 h-3 w-10 rounded bg-slate-300/70 dark:bg-white/12 animate-pulse shrink-0"
+                      aria-hidden="true"
+                    />
+                  ) : isLiveAndInGame ? (
                     <span className="relative z-10 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400 shrink-0">
                       En jeu
                     </span>
@@ -1721,6 +1785,7 @@ export default function App() {
           leftPx={liveMenuCoords.left}
           summary={liveMenuSummary}
           loadingRank={liveLobbyLoading}
+          refreshingLive={isLiveDataRefreshing}
           onMouseEnter={handleOpenLivePopover}
           onMouseLeave={handleScheduleCloseLivePopover}
           onOpenLiveView={() => {
@@ -1866,22 +1931,133 @@ export default function App() {
             >
               <Menu className="w-5 h-5" />
             </button>
-            <div className="min-w-0">
-              <div className="flex items-center gap-2 min-w-0 text-sm">
-                <span className="hidden sm:inline text-slate-400 dark:text-slate-500 font-medium shrink-0">
-                  {activeNavItem.phaseLabel}
-                </span>
-                <span className="hidden sm:inline text-slate-300 dark:text-slate-700" aria-hidden="true">
-                  /
-                </span>
-                <span className="font-semibold text-slate-900 dark:text-white truncate">
-                  {activeNavItem.label}
-                </span>
-              </div>
-              <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate hidden sm:block">
-                {activeNavItem.description}
-              </div>
-            </div>
+
+            {/* Fil d'Ariane compact avec icône explicite (mobile & tablettes < xl) */}
+            {(() => {
+              const ActiveIcon = activeNavItem.icon;
+              const showCompactLiveMeta =
+                activeTab === 'live' && (isLiveDataRefreshing || liveMenuSummary.hasLiveData);
+              return (
+                <div className="flex xl:hidden items-center gap-2.5 min-w-0">
+                  <span
+                    className="w-7 h-7 rounded-lg bg-[#007AFF]/10 dark:bg-[#0A84FF]/15 text-[#007AFF] dark:text-[#38BDF8] flex items-center justify-center shrink-0"
+                    aria-hidden="true"
+                  >
+                    <ActiveIcon className="w-4 h-4" />
+                  </span>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 min-w-0 text-sm">
+                      <span className="hidden sm:inline text-slate-400 dark:text-slate-500 font-medium shrink-0">
+                        {activeNavItem.phaseLabel}
+                      </span>
+                      <span className="hidden sm:inline text-slate-300 dark:text-slate-700" aria-hidden="true">
+                        /
+                      </span>
+                      <span className="font-semibold text-slate-900 dark:text-white truncate">
+                        {activeNavItem.label}
+                      </span>
+                    </div>
+                    {showCompactLiveMeta ? (
+                      isLiveDataRefreshing ? (
+                        <div
+                          className="flex items-center gap-1.5 h-[16px] mt-0.5"
+                          aria-busy="true"
+                          aria-label="Actualisation des données Live en cours"
+                        >
+                          <span className="h-2.5 w-16 rounded bg-slate-300/80 dark:bg-white/15 animate-pulse" />
+                          <span className="text-[10px] text-slate-400/60 dark:text-slate-600" aria-hidden="true">·</span>
+                          <span className="h-2.5 w-9 rounded bg-slate-200/90 dark:bg-white/10 animate-pulse" />
+                        </div>
+                      ) : (
+                        <div className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400 truncate">
+                          {liveMenuSummary.championName} · {liveMenuSummary.clockLabel}
+                        </div>
+                      )
+                    ) : (
+                      <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate hidden sm:block">
+                        {activeNavItem.description}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* Bandeau de navigation desktop à 4 phases avec icônes explicites */}
+            <nav
+              className="hidden xl:flex items-center gap-1 p-1 rounded-xl bg-slate-100/80 dark:bg-[#0D1017] border border-black/[0.05] dark:border-white/[0.07]"
+              aria-label="Phases de session"
+            >
+              {(
+                [
+                  { id: 'dashboard' as NavTab, label: 'Aujourd’hui', icon: LayoutDashboard },
+                  { id: 'builds' as NavTab, label: 'Préparation', icon: Swords },
+                  { id: 'live' as NavTab, label: 'En partie', icon: Activity },
+                  { id: 'postgame' as NavTab, label: 'Débrief', icon: History },
+                ] as const
+              ).map((phase) => {
+                const PhaseIcon = phase.icon;
+                const isPhaseActive =
+                  activeTab === phase.id || (phase.id === 'builds' && activeTab === 'champions');
+                const isLivePhase = phase.id === 'live';
+                const isLiveHighlight = isLivePhase && isInLiveGame;
+                return (
+                  <button
+                    key={phase.id}
+                    type="button"
+                    aria-current={isPhaseActive ? 'page' : undefined}
+                    onClick={() => {
+                      setActiveTab(phase.id);
+                      setLiveMenuOpen(false);
+                    }}
+                    className={`relative inline-flex items-center gap-2 px-2.5 py-1.5 text-xs rounded-lg transition-colors whitespace-nowrap shrink-0 ${
+                      isPhaseActive
+                        ? 'bg-white dark:bg-[#1A1F2B] text-slate-900 dark:text-white font-semibold shadow-xs'
+                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-white/60 dark:hover:bg-white/[0.04] font-medium'
+                    }`}
+                  >
+                    <PhaseIcon
+                      className={`w-3.5 h-3.5 shrink-0 transition-colors ${
+                        isPhaseActive
+                          ? 'text-[#007AFF] dark:text-[#38BDF8]'
+                          : isLiveHighlight
+                            ? 'text-emerald-500'
+                            : 'text-slate-400 dark:text-slate-500'
+                      }`}
+                      aria-hidden="true"
+                    />
+                    <span>{phase.label}</span>
+                    {isLivePhase && isLiveDataRefreshing ? (
+                      <span
+                        className="inline-flex items-center gap-1 pl-1.5 border-l border-slate-200 dark:border-white/[0.1]"
+                        aria-busy="true"
+                        aria-label="Actualisation des données Live en cours"
+                      >
+                        <span className="h-2.5 w-14 rounded bg-slate-300/80 dark:bg-white/15 animate-pulse" />
+                        <span className="text-[10px] text-slate-400/60 dark:text-slate-600" aria-hidden="true">·</span>
+                        <span className="h-2.5 w-8 rounded bg-slate-200/90 dark:bg-white/10 animate-pulse" />
+                      </span>
+                    ) : isLivePhase && liveMenuSummary.hasLiveData ? (
+                      <span className="inline-flex items-center gap-1 pl-1.5 border-l border-slate-200 dark:border-white/[0.1] text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400 max-w-[115px] truncate">
+                        <span className="truncate">{liveMenuSummary.championName}</span>
+                        <span aria-hidden="true">·</span>
+                        <span className="shrink-0">{liveMenuSummary.clockLabel}</span>
+                      </span>
+                    ) : null}
+                  </button>
+                );
+              })}
+
+              {!['dashboard', 'builds', 'champions', 'live', 'postgame'].includes(activeTab) && (() => {
+                const ActiveIcon = activeNavItem.icon;
+                return (
+                  <div className="hidden 2xl:inline-flex items-center gap-1.5 pl-2.5 pr-2 ml-1 border-l border-slate-200 dark:border-white/[0.08] text-xs font-semibold text-slate-800 dark:text-slate-200 whitespace-nowrap">
+                    <ActiveIcon className="w-3.5 h-3.5 text-[#007AFF] dark:text-[#38BDF8] shrink-0" aria-hidden="true" />
+                    <span>{activeNavItem.label}</span>
+                  </div>
+                );
+              })()}
+            </nav>
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
@@ -2301,6 +2477,7 @@ export default function App() {
                   }}
                   onSaveLiveSessionMatch={handleSaveLiveSnapshotAsPostGame}
                   onLiveGameEnded={() => finalizeActivePracticeSession(true)}
+                  onLiveRefreshChange={setLiveViewRefreshing}
                   onNotify={pushToast}
                 />
               )}
@@ -2355,6 +2532,16 @@ export default function App() {
                         ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
                     }, 180);
                   }}
+                />
+              )}
+
+              {activeTab === 'design-lab' && (
+                <DesignMockupView
+                  ddragon={ddragon}
+                  profile={profile}
+                  riotId={riotIdInput}
+                  defaultRole={defaultRole}
+                  onApplyToLiveApp={() => setActiveTab('dashboard')}
                 />
               )}
               </motion.div>

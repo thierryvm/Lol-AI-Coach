@@ -123,6 +123,7 @@ interface LiveCoachViewProps {
   onSnapshotChange?: (snapshot: LiveCoachSnapshot) => void;
   onSaveLiveSessionMatch?: (snapshot: LiveCoachSnapshot, openPostGame?: boolean) => void;
   onLiveGameEnded?: () => void;
+  onLiveRefreshChange?: (refreshing: boolean) => void;
   trainingFocus?: TrainingFocusReport | null;
   onNotify?: (toast: Omit<ToastItem, 'id'>) => void;
 }
@@ -296,6 +297,7 @@ export function LiveCoachView({
   onSnapshotChange,
   onSaveLiveSessionMatch,
   onLiveGameEnded,
+  onLiveRefreshChange,
   trainingFocus,
   onNotify,
 }: LiveCoachViewProps) {
@@ -305,6 +307,8 @@ export function LiveCoachView({
   const [dismissedGameEventIds, setDismissedGameEventIds] = useState<Set<string>>(() => new Set());
   const onSnapshotChangeRef = useRef(onSnapshotChange);
   onSnapshotChangeRef.current = onSnapshotChange;
+  const onLiveRefreshChangeRef = useRef(onLiveRefreshChange);
+  onLiveRefreshChangeRef.current = onLiveRefreshChange;
 
   useEffect(() => {
     if (snapshot) {
@@ -328,6 +332,16 @@ export function LiveCoachView({
   // Scouting de lobby style Porofessor (rangs & maîtrises)
   const [lobbyScoutMap, setLobbyScoutMap] = useState<Record<string, LobbyScoutParticipant>>({});
   const [scoutingLobby, setScoutingLobby] = useState(false);
+
+  useEffect(() => {
+    onLiveRefreshChangeRef.current?.(loading || spectatorLoading || scoutingLobby);
+  }, [loading, spectatorLoading, scoutingLobby]);
+
+  useEffect(() => {
+    return () => {
+      onLiveRefreshChangeRef.current?.(false);
+    };
+  }, []);
   const [scoutError, setScoutError] = useState<string | null>(null);
 
   // Chronomètre Sorts d'Invocateur (10 joueurs : Flash 300s, TP 360s, Ignite 180s, etc. + Bottes de lucidité / Savoir cosmique / ARAM)

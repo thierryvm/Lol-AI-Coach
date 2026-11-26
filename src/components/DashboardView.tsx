@@ -10,21 +10,17 @@ import {
   CheckCircle2,
   Clock,
   Copy,
-  Crosshair,
   Download,
   ExternalLink,
-  Eye,
   FolderSync,
   ListChecks,
   MapPin,
   RefreshCw,
   Settings,
-  ShieldAlert,
   SlidersHorizontal,
   Sparkles,
   Swords,
   Target,
-  TrendingUp,
   X,
 } from 'lucide-react';
 import { ContextualTacticalAdvice } from './ContextualTacticalAdvice.tsx';
@@ -323,6 +319,7 @@ export function DashboardView({
   const [recRoleFilter, setRecRoleFilter] = useState<RecommenderRoleFilter>('AUTO');
   const [includePlayedInRecs, setIncludePlayedInRecs] = useState(false);
   const [sectionMode, setSectionMode] = useState<'essential' | 'progression' | 'history' | 'all'>('essential');
+  const [failedSplashChampId, setFailedSplashChampId] = useState<string | null>(null);
 
   const careerDataset = useMemo(
     () => buildCareerSynthesisDataset(profile?.matches || [], profile?.tendencies),
@@ -592,153 +589,336 @@ export function DashboardView({
         </motion.section>
       )}
 
-      {/* En-tête Profil, Classement Officiel & Provenance */}
-      <motion.section
-        variants={dashboardSectionVariants}
-        className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-6"
-      >
-        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
-          <div className="flex items-center gap-4">
-            <SafeGameIcon
-              src={`https://ddragon.leagueoflegends.com/cdn/${patchVersion}/img/profileicon/${profile.profileIconId}.png`}
-              alt={`Icône d'invocateur ${profile.riotId}`}
-              fallbackLabel={profile.riotId}
-              sizeClass="w-14 h-14"
-            />
-            <div>
-              <div className="flex items-center gap-2">
-                <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white text-balance">
-                  {profile.riotId}
-                </h1>
-                <SectionInfoTooltip
-                  title="Profil & Niveau en Classé"
-                  description="Affiche l’identité du compte Riot actif, ses rangs officiels Solo/Duo et Flex 5v5 (League-V4), la provenance des données et le raccourci vers l’optimisation de build ou le Coach Live."
-                  usageTip="Si une partie en cours est détectée, un bouton vert apparaît ici pour ouvrir En partie · Live en un clic."
-                />
-              </div>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                <span>Serveur {profile.region}</span>
-                <span aria-hidden="true" className="mx-2">·</span>
-                <span className="font-mono tabular-nums">Niveau {profile.level}</span>
-                <span aria-hidden="true" className="mx-2">·</span>
-                <span>Source : {profile.source}</span>
-                {serverStatus && (
-                  <>
-                    <span aria-hidden="true" className="mx-2">·</span>
-                    <span
-                      className={
-                        serverStatus.healthy
-                          ? 'text-emerald-600 dark:text-emerald-400'
-                          : 'text-amber-600 dark:text-amber-400 font-semibold'
-                      }
-                    >
-                      {serverStatus.healthy
-                        ? `État ${serverStatus.platform} : OK`
-                        : `${serverStatus.incidents.length + serverStatus.maintenances.length} incident/maintenance Riot`}
-                    </span>
-                  </>
-                )}
-              </p>
-            </div>
-          </div>
+      {/* Hero Identité + Priorité de session + Champion suivi (intégration maquette Obsidian Esports) */}
+      {(() => {
+        const primaryRankInfo = soloRankInfo.isRanked ? soloRankInfo : flexRankInfo;
+        const dominantRole = trainingReport.dominantRole || defaultRole;
+        const isSupportRole = dominantRole === 'SUPPORT';
+        const topChampStat = tendencies.championStats?.[0] || null;
+        const followedChampRawName =
+          topChampStat?.championName || matches[0]?.player.championName || 'TahmKench';
+        const followedChamp = resolveChampionDisplay(champions, followedChampRawName);
+        const followedChampWr = topChampStat
+          ? Math.round(topChampStat.winRate)
+          : Math.round(tendencies.winRate);
+        const splashUrl =
+          failedSplashChampId === followedChamp.id && followedChamp.imageUrl
+            ? followedChamp.imageUrl
+            : `https://ddragon.leagueoflegends.com/cdn/img/champion/splash/${followedChamp.id}_0.jpg`;
 
-          <div className="flex flex-wrap items-center gap-3">
-            {activeGame.inGame && (
-              <button
-                type="button"
-                onClick={onNavigateToLive}
-                className="px-4 py-2 text-xs font-semibold rounded-full bg-emerald-600 text-white hover:bg-emerald-500 transition-colors whitespace-nowrap shrink-0 shadow-xs"
-              >
-                Partie en cours · Ouvrir Coach Live
-              </button>
-            )}
-            <button
-              type="button"
-              onClick={() => onNavigateToBuilds(matches[0]?.player.championName)}
-              className="px-4 py-2 text-xs font-semibold rounded-full bg-[#007AFF] hover:bg-[#0066D6] dark:bg-[#0A84FF] dark:hover:bg-[#2994FF] text-white transition-colors whitespace-nowrap shrink-0 shadow-xs"
-            >
-              Préparer un build
-            </button>
-          </div>
-        </div>
+        const highAlert =
+          tendencies.proactiveAlerts?.find((a) => a.priority === 'Haute') ||
+          tendencies.proactiveAlerts?.[0] ||
+          null;
+        const weakestGoal =
+          trainingReport.goals.length > 0
+            ? [...trainingReport.goals].sort(
+                (a, b) =>
+                  a.passedCount / Math.max(1, a.totalCount) -
+                  b.passedCount / Math.max(1, b.totalCount),
+              )[0]
+            : null;
 
-        {/* Cartes Niveau en Classé (Solo/Duo & Flex 5v5) */}
-        <div className="mt-5 pt-4 border-t border-slate-200 dark:border-slate-800 grid grid-cols-1 md:grid-cols-2 gap-3.5">
-          {[
-            { key: 'solo', queueLabel: 'Classé Solo / Duo', info: soloRankInfo },
-            { key: 'flex', queueLabel: 'Classé Flex 5v5', info: flexRankInfo },
-          ].map(({ key, queueLabel, info }) => (
-            <div
-              key={key}
-              className={`rounded-xl border px-4 py-3 flex items-center justify-between gap-4 ${info.theme.borderClass} ${info.theme.softBgClass}`}
+        const rawPlanTitle = hydratedSynthesis?.threeGameActionPlan?.[0]
+          ? hydratedSynthesis.threeGameActionPlan[0]
+              .replace(/^Partie\s*1\s*:\s*/i, '')
+              .replace(/\.$/, '')
+          : '';
+
+        const heroHeadline = rawPlanTitle
+          ? rawPlanTitle
+          : highAlert
+            ? highAlert.title
+            : weakestGoal && weakestGoal.passedCount < weakestGoal.totalCount
+              ? weakestGoal.title
+              : 'Sécuriser la vision 45s avant les objectifs';
+
+        const formatConciseHeroSummary = (raw?: string): string => {
+          if (!raw) return '';
+          const clean = raw.replace(/\s+/g, ' ').trim();
+          const sentences = clean.match(/[^.!?]+[.!?]+/g) || [clean];
+          const firstSentence = sentences[0]?.trim() || clean;
+          if (firstSentence.length <= 185) {
+            const withSecond = sentences[1] ? `${firstSentence} ${sentences[1].trim()}` : firstSentence;
+            return withSecond.length <= 195 ? withSecond : firstSentence;
+          }
+          return `${firstSentence.slice(0, 180).replace(/\s+\S*$/, '')}…`;
+        };
+
+        const heroSubtitle = hydratedSynthesis?.executiveSummary
+          ? formatConciseHeroSummary(hydratedSynthesis.executiveSummary)
+          : highAlert
+            ? formatConciseHeroSummary(`${highAlert.detail} ${highAlert.recommendation}`)
+            : `Sur vos dernières parties avec ${followedChamp.displayName}, gardez votre impact en combat tout en sécurisant vos rotations avant Dragon et Baron.`;
+
+        const winRatePct = Math.round(tendencies.winRate);
+        const deathsThreshold = isSupportRole ? 4.5 : 4.0;
+        const visionThreshold = isSupportRole ? 1.2 : 0.75;
+
+        return (
+          <>
+            <motion.section
+              variants={dashboardSectionVariants}
+              className="rounded-xl border border-slate-200 dark:border-white/[0.08] bg-white dark:bg-[#10141E] overflow-hidden"
             >
-              <div className="flex items-center gap-3.5 min-w-0">
-                <RankedTierCrest tier={info.tierKey} sizeClass="w-10 h-10" />
-                <div className="min-w-0">
-                  <div className="text-[11px] font-medium text-slate-500 dark:text-slate-400 flex items-center gap-2">
-                    <span>{queueLabel}</span>
-                    {info.hotStreak && (
-                      <span className="text-amber-600 dark:text-amber-400 font-semibold">
-                        · Série de victoires
+              <div className="grid grid-cols-1 lg:grid-cols-12 items-stretch">
+                <div className="lg:col-span-8 p-6 sm:p-7 lg:p-8 flex flex-col justify-between gap-6">
+                  <div className="space-y-4">
+                    {/* Ligne d'identité et rang épurée */}
+                    <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-xs sm:text-[13px] leading-normal text-slate-600 dark:text-slate-300">
+                      <SafeGameIcon
+                        src={`https://ddragon.leagueoflegends.com/cdn/${patchVersion}/img/profileicon/${profile.profileIconId}.png`}
+                        alt={`Icône d'invocateur ${profile.riotId}`}
+                        fallbackLabel={profile.riotId}
+                        sizeClass="w-5 h-5 rounded-md"
+                      />
+                      <span className="font-semibold text-slate-900 dark:text-white">
+                        {profile.riotId}
                       </span>
-                    )}
+                      <span className="text-slate-400 dark:text-slate-500" aria-hidden="true">·</span>
+                      <span className="inline-flex items-center gap-1.5 font-medium text-slate-800 dark:text-slate-200 tabular-nums">
+                        <RankedTierCrest tier={primaryRankInfo.tierKey} sizeClass="w-5 h-5" />
+                        <span>
+                          {primaryRankInfo.isRanked ? primaryRankInfo.compactLabel : 'Non classé'}
+                        </span>
+                      </span>
+                      <span className="text-slate-400 dark:text-slate-500" aria-hidden="true">·</span>
+                      <span>Rôle principal : {dominantRole}</span>
+                      <span className="text-slate-400 dark:text-slate-500" aria-hidden="true">·</span>
+                      <span className="tabular-nums text-slate-500 dark:text-slate-300">
+                        {matches.length} matchs synchronisés
+                      </span>
+                      <SectionInfoTooltip
+                        title="Profil & Priorité de Session"
+                        description="Synthétise votre rang officiel Solo/Duo ou Flex, votre champion le plus joué récemment et l’objectif prioritaire calculé à partir de vos derniers matchs."
+                        usageTip="Cliquez sur Préparer le champion pour optimiser vos objets et runes avant de lancer une file."
+                      />
+                    </div>
+
+                    {/* Titre focal aéré et contexte court */}
+                    <div className="space-y-2.5">
+                      <div className="text-xs sm:text-[13px] font-semibold text-sky-600 dark:text-sky-400 tracking-normal">
+                        Priorité de session
+                      </div>
+                      <h1 className="text-xl sm:text-[26px] font-semibold tracking-normal leading-[1.32] text-slate-900 dark:text-white max-w-2xl">
+                        {heroHeadline}
+                      </h1>
+                      <p className="text-sm sm:text-[15px] leading-[1.6] tracking-normal text-slate-600 dark:text-slate-200/90 max-w-2xl">
+                        {heroSubtitle}
+                      </p>
+                    </div>
+
+                    {/* Actions principales */}
+                    <div className="flex flex-wrap items-center gap-3 pt-1">
+                      {activeGame.inGame && (
+                        <button
+                          type="button"
+                          onClick={onNavigateToLive}
+                          className="inline-flex items-center gap-1.5 px-4 py-2.5 text-xs sm:text-[13px] font-semibold rounded-lg bg-emerald-600 text-white hover:bg-emerald-500 transition-colors whitespace-nowrap shrink-0"
+                        >
+                          Partie en cours · Ouvrir Coach Live
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => onNavigateToBuilds(followedChampRawName)}
+                        className="inline-flex items-center gap-1.5 px-4 py-2.5 text-xs sm:text-[13px] font-semibold rounded-lg bg-sky-500 text-slate-950 hover:bg-sky-400 transition-colors whitespace-nowrap shrink-0"
+                      >
+                        <Swords className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span>Préparer {followedChamp.displayName}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onNavigateToPostGame
+                            ? onNavigateToPostGame()
+                            : matches[0] && onSelectMatchForReview(matches[0])
+                        }
+                        className="inline-flex items-center gap-1.5 px-4 py-2.5 text-xs sm:text-[13px] font-semibold rounded-lg border border-slate-300 dark:border-white/[0.14] bg-slate-50 dark:bg-[#151B28] text-slate-800 dark:text-slate-100 hover:border-sky-500/50 transition-colors whitespace-nowrap shrink-0"
+                      >
+                        Voir le dernier débrief
+                      </button>
+                    </div>
                   </div>
-                  <div className={`text-base font-bold tracking-tight truncate ${info.theme.textClass}`}>
-                    {info.divisionLabel}
-                    {info.isRanked && (
-                      <span className="ml-2 text-xs font-mono tabular-nums text-slate-700 dark:text-slate-200">
-                        {info.lp} LP
+
+                  {/* Rappel discret Solo/Duo & Flex + État serveur */}
+                  <div className="pt-4 border-t border-slate-200 dark:border-white/[0.08] flex flex-wrap items-center gap-x-6 gap-y-2 text-xs sm:text-[13px] leading-normal text-slate-600 dark:text-slate-300">
+                    {[
+                      { label: 'Solo/Duo', info: soloRankInfo },
+                      { label: 'Flex 5v5', info: flexRankInfo },
+                    ].map(({ label, info }) => (
+                      <div key={label} className="inline-flex items-center gap-1.5">
+                        <span className="font-semibold text-slate-800 dark:text-slate-200">{label} :</span>
+                        {info.isRanked ? (
+                          <span className="tabular-nums">
+                            {info.divisionLabel} · {info.lp} LP ·{' '}
+                            <span
+                              className={
+                                info.winRate >= 50
+                                  ? 'text-emerald-600 dark:text-emerald-400 font-semibold'
+                                  : 'text-rose-600 dark:text-rose-400 font-semibold'
+                              }
+                            >
+                              {info.winRate}% WR
+                            </span>{' '}
+                            <span className="text-slate-500 dark:text-slate-400">
+                              ({info.wins}V-{info.losses}D)
+                            </span>
+                          </span>
+                        ) : (
+                          <span className="text-slate-500 dark:text-slate-400">Non classé</span>
+                        )}
+                      </div>
+                    ))}
+                    <span className="tabular-nums text-slate-500 dark:text-slate-400">
+                      Niv. {profile.level} · {profile.region}
+                    </span>
+                    {serverStatus && (
+                      <span
+                        className={
+                          serverStatus.healthy
+                            ? 'text-emerald-600 dark:text-emerald-400 font-medium'
+                            : 'text-amber-600 dark:text-amber-400 font-semibold'
+                        }
+                      >
+                        {serverStatus.healthy
+                          ? `Serveur ${serverStatus.platform} OK`
+                          : `${serverStatus.incidents.length + serverStatus.maintenances.length} incident Riot`}
                       </span>
                     )}
                   </div>
                 </div>
+
+                {/* Portrait / Splash art du champion suivi */}
+                <div className="lg:col-span-4 relative min-h-[220px] flex flex-col justify-end overflow-hidden bg-[#090B10]">
+                  <img
+                    src={splashUrl}
+                    alt={followedChamp.displayName}
+                    referrerPolicy="no-referrer"
+                    onError={() => {
+                      if (failedSplashChampId !== followedChamp.id) {
+                        setFailedSplashChampId(followedChamp.id);
+                      }
+                    }}
+                    className="absolute inset-0 w-full h-full object-cover object-top"
+                  />
+                  <div
+                    aria-hidden="true"
+                    className="hidden lg:block absolute inset-y-0 left-0 w-24 bg-gradient-to-r from-white/90 dark:from-[#10141E]/95 to-transparent"
+                  />
+                  <div
+                    aria-hidden="true"
+                    className="absolute inset-x-0 bottom-0 h-28 bg-gradient-to-t from-black/85 via-black/45 to-transparent"
+                  />
+                  <div className="relative z-10 mt-auto h-full flex items-end">
+                    <div className="w-full p-4 sm:p-5 flex items-end justify-between gap-2 text-white">
+                      <div>
+                        <div className="text-xs text-white/80 font-medium">Champion suivi</div>
+                        <div className="text-base font-semibold tracking-normal leading-snug">
+                          {followedChamp.displayName}
+                        </div>
+                      </div>
+                      <span className="text-xs sm:text-[13px] tabular-nums font-semibold text-white">
+                        {followedChampWr}% WR
+                      </span>
+                    </div>
+                  </div>
+                </div>
               </div>
 
-              <div className="text-right shrink-0">
-                {info.isRanked ? (
-                  <>
+              {serverStatus && !serverStatus.healthy && (
+                <div className="px-6 py-3 border-t border-amber-500/30 bg-amber-500/5 text-xs text-amber-700 dark:text-amber-300 space-y-1">
+                  <div className="font-semibold flex items-center gap-1.5">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                    Alerte officielle Riot sur {serverStatus.platform} (LoL-Status-V4)
+                  </div>
+                  {serverStatus.incidents.map((inc) => (
+                    <p key={`inc-${inc.id}`} className="text-[11px]">
+                      · Incident ({inc.severity}) : {inc.title}
+                    </p>
+                  ))}
+                  {serverStatus.maintenances.map((m) => (
+                    <p key={`maint-${m.id}`} className="text-[11px]">
+                      · Maintenance ({m.status}) : {m.title}
+                    </p>
+                  ))}
+                </div>
+              )}
+            </motion.section>
+
+            {/* Bandeau 4 KPI tabulaires pleine largeur séparés par filets fins */}
+            <motion.section
+              variants={dashboardSectionVariants}
+              aria-label="Indicateurs clés de performance"
+              className="rounded-xl border border-slate-200 dark:border-white/[0.08] bg-white dark:bg-[#10141E] grid grid-cols-2 lg:grid-cols-4 overflow-hidden"
+            >
+              {[
+                {
+                  label: 'Taux de victoire',
+                  value: `${winRatePct}%`,
+                  sub: tendencies.trend
+                    ? `${tendencies.trend.winRateDelta >= 0 ? '+' : ''}${tendencies.trend.winRateDelta}% sur les ${tendencies.trend.recentGames} récents`
+                    : `Sur ${tendencies.gamesAnalyzed} parties analysées`,
+                  positive: winRatePct >= 50,
+                },
+                {
+                  label: 'Morts moyennes',
+                  value: tendencies.avgDeaths.toFixed(1),
+                  sub: `Objectif palier : ≤ ${deathsThreshold.toFixed(1)} · ${Math.round(tendencies.enemyJungleDeathRate * 100)}% isolées`,
+                  positive: tendencies.avgDeaths <= deathsThreshold,
+                },
+                {
+                  label: 'Farm moyen',
+                  value: `${tendencies.avgCsPerMin.toFixed(1)}/min`,
+                  sub: isSupportRole
+                    ? 'Objet de quête Support · rythme normal'
+                    : 'Cible laner : 7.0+ CS/min',
+                  positive: isSupportRole
+                    ? tendencies.avgCsPerMin >= 1.2
+                    : tendencies.avgCsPerMin >= 6.0,
+                },
+                {
+                  label: 'Vision / min',
+                  value: tendencies.avgVisionPerMin.toFixed(2),
+                  sub: `${Math.round(tendencies.preObjectiveDeathRate * 100)}% de morts pré-objectif`,
+                  positive: tendencies.avgVisionPerMin >= visionThreshold,
+                },
+              ].map((kpi, idx) => {
+                const cellBorders = [
+                  idx % 2 === 0 ? 'border-r' : '',
+                  idx < 2 ? 'border-b lg:border-b-0' : '',
+                  idx < 3 ? 'lg:border-r' : '',
+                ]
+                  .filter(Boolean)
+                  .join(' ');
+
+                return (
+                  <div
+                    key={kpi.label}
+                    className={`p-4 sm:p-5 space-y-1 border-slate-200 dark:border-white/[0.08] ${cellBorders}`}
+                  >
+                    <div className="text-xs font-medium text-slate-500 dark:text-slate-400">
+                      {kpi.label}
+                    </div>
+                    <div className="text-2xl font-bold font-mono tabular-nums text-slate-900 dark:text-white">
+                      {kpi.value}
+                    </div>
                     <div
-                      className={`text-xs font-mono tabular-nums font-bold ${
-                        info.winRate >= 50
+                      className={`text-[11px] ${
+                        kpi.positive
                           ? 'text-emerald-600 dark:text-emerald-400'
                           : 'text-rose-600 dark:text-rose-400'
                       }`}
                     >
-                      {info.winRate}% WR
+                      {kpi.sub}
                     </div>
-                    <div className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
-                      {info.wins}V - {info.losses}D ({info.totalGames}p)
-                    </div>
-                  </>
-                ) : (
-                  <div className="text-[11px] text-slate-500 dark:text-slate-400">
-                    Saison non placée
                   </div>
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
-
-        {serverStatus && !serverStatus.healthy && (
-          <div className="mt-4 pt-3 border-t border-amber-500/30 text-xs text-amber-700 dark:text-amber-300 space-y-1">
-            <div className="font-semibold flex items-center gap-1.5">
-              <AlertTriangle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-              Alerte officielle Riot sur {serverStatus.platform} (LoL-Status-V4)
-            </div>
-            {serverStatus.incidents.map((inc) => (
-              <p key={`inc-${inc.id}`} className="text-[11px]">
-                · Incident ({inc.severity}) : {inc.title}
-              </p>
-            ))}
-            {serverStatus.maintenances.map((m) => (
-              <p key={`maint-${m.id}`} className="text-[11px]">
-                · Maintenance ({m.status}) : {m.title}
-              </p>
-            ))}
-          </div>
-        )}
-      </motion.section>
+                );
+              })}
+            </motion.section>
+          </>
+        );
+      })()}
 
       {/* Parcours guidé en 3 étapes + Sélecteur de vue Apple */}
       <motion.section
@@ -857,90 +1037,6 @@ export function DashboardView({
         </motion.section>
       )}
 
-      {/* Grille des 4 KPIs principaux (espacement isolé pour zéro chevauchement au survol) */}
-      {(sectionMode === 'essential' || sectionMode === 'all') && (
-      <motion.section variants={dashboardSectionVariants} className="space-y-3">
-        <div className="flex items-center gap-2 px-0.5">
-          <h2 className="text-xs font-semibold text-slate-600 dark:text-slate-300">
-            Indicateurs clés de performance
-          </h2>
-          <SectionInfoTooltip
-            title="Indicateurs clés de performance"
-            description="Résume vos 4 métriques fondamentales sur l’ensemble des parties analysées : taux de victoire, rythme de farm, morts en sur-extension et contrôle de vision."
-            usageTip="Identifiez en 3 secondes si votre priorité du jour est la survie, la vision ou le farming."
-          />
-        </div>
-
-        <motion.div
-          variants={subCardGridVariants}
-          className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5 pt-0.5"
-        >
-          <motion.div
-            variants={subCardItemVariants}
-            className="relative rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5 transition-[transform,border-color,box-shadow] duration-200 [@media(hover:hover)]:hover:-translate-y-0.5 [@media(hover:hover)]:hover:z-10 [@media(hover:hover)]:hover:shadow-md hover:border-slate-300 dark:hover:border-slate-700"
-          >
-            <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
-              <span>Taux de victoire récent</span>
-              <TrendingUp className="w-4 h-4 text-amber-500" aria-hidden="true" />
-            </div>
-            <div className="mt-2 text-2xl font-bold font-mono tabular-nums text-slate-900 dark:text-white">
-              {tendencies.winRate}%
-            </div>
-            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-              Calculé sur {tendencies.gamesAnalyzed} parties analysées
-            </p>
-          </motion.div>
-
-          <motion.div
-            variants={subCardItemVariants}
-            className="relative rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5 transition-[transform,border-color,box-shadow] duration-200 [@media(hover:hover)]:hover:-translate-y-0.5 [@media(hover:hover)]:hover:z-10 [@media(hover:hover)]:hover:shadow-md hover:border-slate-300 dark:hover:border-slate-700"
-          >
-            <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
-              <span>Rythme de farming moyen</span>
-              <Crosshair className="w-4 h-4 text-sky-500" aria-hidden="true" />
-            </div>
-            <div className="mt-2 text-2xl font-bold font-mono tabular-nums text-slate-900 dark:text-white">
-              {tendencies.avgCsPerMin} <span className="text-sm font-normal text-slate-400">CS/min</span>
-            </div>
-            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-              Cible recommandée : 7.0+ CS/min
-            </p>
-          </motion.div>
-
-          <motion.div
-            variants={subCardItemVariants}
-            className="relative rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5 transition-[transform,border-color,box-shadow] duration-200 [@media(hover:hover)]:hover:-translate-y-0.5 [@media(hover:hover)]:hover:z-10 [@media(hover:hover)]:hover:shadow-md hover:border-slate-300 dark:hover:border-slate-700"
-          >
-            <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
-              <span>Morts isolées / sur-extension</span>
-              <ShieldAlert className="w-4 h-4 text-rose-500" aria-hidden="true" />
-            </div>
-            <div className="mt-2 text-2xl font-bold font-mono tabular-nums text-slate-900 dark:text-white">
-              {Math.round(tendencies.enemyJungleDeathRate * 100)}%
-            </div>
-            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-              Moyenne de {tendencies.avgDeaths} morts par match
-            </p>
-          </motion.div>
-
-          <motion.div
-            variants={subCardItemVariants}
-            className="relative rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5 transition-[transform,border-color,box-shadow] duration-200 [@media(hover:hover)]:hover:-translate-y-0.5 [@media(hover:hover)]:hover:z-10 [@media(hover:hover)]:hover:shadow-md hover:border-slate-300 dark:hover:border-slate-700"
-          >
-            <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
-              <span>Contrôle de vision</span>
-              <Eye className="w-4 h-4 text-emerald-500" aria-hidden="true" />
-            </div>
-            <div className="mt-2 text-2xl font-bold font-mono tabular-nums text-slate-900 dark:text-white">
-              {tendencies.avgVisionPerMin} <span className="text-sm font-normal text-slate-400">/ min</span>
-            </div>
-            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-              {Math.round(tendencies.preObjectiveDeathRate * 100)}% de morts avant objectif
-            </p>
-          </motion.div>
-        </motion.div>
-      </motion.section>
-      )}
 
       {/* Profil de Performance 5 Axes (style Mobalytics) & Synergie Coéquipiers / Duos Famille */}
       {(sectionMode === 'progression' || sectionMode === 'all') && mobalyticsProfile && (
