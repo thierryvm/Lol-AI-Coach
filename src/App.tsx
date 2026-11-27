@@ -465,6 +465,7 @@ export default function App() {
 
   const [selectedMatchId, setSelectedMatchId] = useState<string | null>(null);
   const [builderInitialChamp, setBuilderInitialChamp] = useState<string | undefined>(undefined);
+  const [activePreparedChampion, setActivePreparedChampion] = useState<string | undefined>(undefined);
   const [builderInitialDuoChamp, setBuilderInitialDuoChamp] = useState<string | undefined>(undefined);
   const [encyclopediaInitialChampId, setEncyclopediaInitialChampId] = useState<string | undefined>(undefined);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
@@ -2366,6 +2367,10 @@ export default function App() {
                   defaultRole={defaultRole}
                   trainingIntensity={trainingIntensity}
                   onChangeTrainingIntensity={handleChangeTrainingIntensity}
+                  liveActiveChampion={
+                    liveMenuSummary.isRealActiveGame ? liveMenuSummary.championName : null
+                  }
+                  activePreparedChampion={activePreparedChampion}
                   onNotify={pushToast}
                 />
               )}
@@ -2424,6 +2429,7 @@ export default function App() {
                       onActiveGameDetected={(game) =>
                         setProfile((prev) => (prev ? { ...prev, activeGame: game } : prev))
                       }
+                      onChampionUsed={(champId) => setActivePreparedChampion(champId)}
                     />
                   ) : (
                     <ChampionEncyclopediaView
@@ -2433,6 +2439,7 @@ export default function App() {
                       initialChampionId={encyclopediaInitialChampId}
                       onUseInBuilder={(champId) => {
                         setBuilderInitialChamp(champId);
+                        setActivePreparedChampion(champId);
                         setActiveTab('builds');
                       }}
                     />

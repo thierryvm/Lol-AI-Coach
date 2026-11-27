@@ -117,6 +117,10 @@ import {
   type SavedRunePageEntry,
 } from './RuneCollectionView.tsx';
 import { BuildRadarChart, type RadarAxisMetric } from './BuildRadarChart.tsx';
+import {
+  BuildSideBySideCompareWidget,
+  type CompareBuildPreset,
+} from './BuildSideBySideCompareWidget.tsx';
 import { SafeGameIcon } from './SafeGameIcon.tsx';
 import { SectionInfoTooltip } from './SectionInfoTooltip.tsx';
 import { VisualRunePage } from './VisualRunePage.tsx';
@@ -132,6 +136,7 @@ interface BuildOptimizerViewProps {
   region: RiotPlatform;
   activeGame?: PlayerProfileResponse['activeGame'] | null;
   onActiveGameDetected?: (game: PlayerProfileResponse['activeGame']) => void;
+  onChampionUsed?: (championId: string) => void;
 }
 
 const ROLES: Role[] = ['TOP', 'JUNGLE', 'MID', 'ADC', 'SUPPORT'];
@@ -370,6 +375,7 @@ export function BuildOptimizerView({
   region,
   activeGame,
   onActiveGameDetected,
+  onChampionUsed,
 }: BuildOptimizerViewProps) {
   const findChamp = (nameOrId?: string) => {
     if (!nameOrId) return ddragon.champions.find((c) => c.id === 'TahmKench') || ddragon.champions[0];
@@ -394,6 +400,15 @@ export function BuildOptimizerView({
   const [playerChampId, setPlayerChampId] = useState<string>(() =>
     initialSharedBuild ? initialSharedBuild.championId : findChamp(initialChampionName).id,
   );
+  const lastReportedChampRef = useRef<string | null>(
+    initialSharedBuild || initialChampionName ? null : findChamp(undefined).id,
+  );
+  useEffect(() => {
+    if (!onChampionUsed || !playerChampId) return;
+    if (lastReportedChampRef.current === playerChampId) return;
+    lastReportedChampRef.current = playerChampId;
+    onChampionUsed(playerChampId);
+  }, [playerChampId, onChampionUsed]);
   const [buildStep, setBuildStep] = useState<'setup' | 'build' | 'tools' | 'all'>('all');
   const [role, setRole] = useState<Role>(() =>
     initialSharedBuild ? initialSharedBuild.role : initialRole,
@@ -2068,6 +2083,92 @@ export function BuildOptimizerView({
     () => new Set(recommendedBuildItems.map((it) => it.id)),
     [recommendedBuildItems],
   );
+
+  const compareWidgetPresets = useMemo<CompareBuildPreset[]>(() => {
+    const list: CompareBuildPreset[] = [
+      {
+        id: 'sandbox',
+        label: isBuildModified ? 'Atelier en cours (Votre test)' : `Atelier actuel (${playerChampion.name})`,
+        badge: 'Actuel',
+        items: sandboxActiveItems,
+        runeSelection: activeSandboxSelection,
+        heartsteelStacksHp,
+      },
+      {
+        id: 'recommended',
+        label: `Build Conseillé IA (${playerChampion.name})`,
+        badge: 'Standard',
+        items: recommendedBuildItems,
+        runeSelection: metaRuneSelection,
+        heartsteelStacksHp,
+      },
+    ];
+
+    combinatorialResult.candidates.forEach((cand) => {
+      list.push({
+        id: `combo-${cand.id}`,
+        label: `${cand.scenarioTitle} (${cand.keystoneName})`,
+        badge: cand.scenarioBadge || 'Optimal IA',
+        items: cand.items,
+        runeSelection: cand.runeSelection,
+        heartsteelStacksHp,
+      });
+    });
+
+    if (activePinnedBuildA) {
+      list.push({
+        id: 'pinned-a',
+        label: activePinnedBuildA.label,
+        badge: 'Épinglé A',
+        items: pinnedBuildAItems,
+        runeSelection: activePinnedBuildA.runeSelection,
+        heartsteelStacksHp: activePinnedBuildA.heartsteelStacksHp,
+      });
+    }
+
+    if (proCompareEvaluation && proCompareResult) {
+      list.push({
+        id: 'pro-meta',
+        label: `Build Pro · ${proCompareResult.proBuild.keystoneName}`,
+        badge: proCompareResult.proBuild.sourceSite || 'Pro',
+        items: proCompareEvaluation.items,
+        runeSelection: proCompareEvaluation.runeSelection,
+        heartsteelStacksHp,
+      });
+    }
+
+    savedItemSets.forEach((s) => {
+      const items = s.itemIds
+        .map((id) => (id ? itemByIdMap.get(id) || null : null))
+        .filter((it): it is ItemData => Boolean(it));
+      if (items.length === 0) return;
+      list.push({
+        id: `saved-${s.id}`,
+        label: `[${s.championName}] ${s.name}`,
+        badge: 'Sauvegardé',
+        items,
+        runeSelection: s.runeSelection || activeSandboxSelection,
+        heartsteelStacksHp: s.heartsteelStacksHp ?? heartsteelStacksHp,
+      });
+    });
+
+    return list;
+  }, [
+    isBuildModified,
+    playerChampion.name,
+    sandboxActiveItems,
+    activeSandboxSelection,
+    heartsteelStacksHp,
+    recommendedBuildItems,
+    metaRuneSelection,
+    combinatorialResult.candidates,
+    activePinnedBuildA,
+    pinnedBuildAItems,
+    proCompareEvaluation,
+    proCompareResult,
+    savedItemSets,
+    itemByIdMap,
+  ]);
 
   // Initialise la collection avec la page réelle Data Dragon du champion une seule fois si vide
   useEffect(() => {
@@ -7637,6 +7738,20 @@ export function BuildOptimizerView({
           </div>
         )}
       </section>
+
+      {/* Widget Comparateur Côte à Côte : 2 Builds Complets (Runes + Objets), Radar D3 Superposé & Spikes Niveau 1 à 18 */}
+      <BuildSideBySideCompareWidget
+        champion={playerChampion}
+        role={role}
+        runeTrees={ddragon.runeTrees}
+        threats={recommendation.threatSummary}
+        target={activeCombatTarget}
+        durationSec={combatDurationSec}
+        spellCasts={combatSpellCasts}
+        currentLevel={runeSimLevel}
+        onSelectLevel={setRuneSimLevel}
+        presets={compareWidgetPresets}
+      />
 
       {/* Simulateur d'Impact par Objet (Data Dragon Brut) & Dégâts Infligés en Temps Réel */}
       <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#121722] p-5 space-y-5">

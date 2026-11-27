@@ -10,6 +10,7 @@ import {
   CheckCircle2,
   Clock,
   Copy,
+  Crown,
   Download,
   ExternalLink,
   FolderSync,
@@ -62,6 +63,7 @@ import {
   formatChampionDisplayName,
   getChampionIconUrl,
   resolveChampionDisplay,
+  resolveHeroChampionFocus,
 } from '../utils/championDisplay.ts';
 import { formatRankedQueue } from '../utils/rankedDisplay.ts';
 
@@ -234,6 +236,8 @@ interface DashboardViewProps {
   defaultRole?: Role;
   trainingIntensity?: TrainingIntensity;
   onChangeTrainingIntensity?: (intensity: TrainingIntensity) => void;
+  liveActiveChampion?: string | null;
+  activePreparedChampion?: string | null;
   onNotify?: (toast: Omit<ToastItem, 'id'>) => void;
 }
 
@@ -306,6 +310,8 @@ export function DashboardView({
   defaultRole = 'SUPPORT',
   trainingIntensity = 'standard',
   onChangeTrainingIntensity,
+  liveActiveChampion = null,
+  activePreparedChampion = null,
   onNotify,
 }: DashboardViewProps) {
   const [showLocalImport, setShowLocalImport] = useState(false);
@@ -594,13 +600,17 @@ export function DashboardView({
         const primaryRankInfo = soloRankInfo.isRanked ? soloRankInfo : flexRankInfo;
         const dominantRole = trainingReport.dominantRole || defaultRole;
         const isSupportRole = dominantRole === 'SUPPORT';
-        const topChampStat = tendencies.championStats?.[0] || null;
-        const followedChampRawName =
-          topChampStat?.championName || matches[0]?.player.championName || 'TahmKench';
-        const followedChamp = resolveChampionDisplay(champions, followedChampRawName);
-        const followedChampWr = topChampStat
-          ? Math.round(topChampStat.winRate)
-          : Math.round(tendencies.winRate);
+        const heroChamp = resolveHeroChampionFocus({
+          champions,
+          matches,
+          championStats: tendencies.championStats,
+          championMasteries: profile.championMasteries,
+          liveChampionName: liveActiveChampion,
+          preparedChampionName: activePreparedChampion,
+          fallbackWinRate: tendencies.winRate,
+        });
+        const followedChamp = heroChamp.display;
+        const followedChampRawName = heroChamp.rawName;
         const splashUrl =
           failedSplashChampId === followedChamp.id && followedChamp.imageUrl
             ? followedChamp.imageUrl
@@ -690,7 +700,7 @@ export function DashboardView({
                       </span>
                       <SectionInfoTooltip
                         title="Profil & Priorité de Session"
-                        description="Synthétise votre rang officiel Solo/Duo ou Flex, votre champion le plus joué récemment et l’objectif prioritaire calculé à partir de vos derniers matchs."
+                        description="Synthétise votre rang officiel Solo/Duo ou Flex, détecte automatiquement votre champion OTP (ou à défaut le champion utilisé actuellement) et l’objectif prioritaire calculé à partir de vos derniers matchs."
                         usageTip="Cliquez sur Préparer le champion pour optimiser vos objets et runes avant de lancer une file."
                       />
                     </div>
@@ -808,19 +818,45 @@ export function DashboardView({
                   />
                   <div
                     aria-hidden="true"
-                    className="absolute inset-x-0 bottom-0 h-28 bg-gradient-to-t from-black/85 via-black/45 to-transparent"
+                    className="absolute inset-x-0 bottom-0 h-32 bg-gradient-to-t from-black/90 via-black/55 to-transparent"
                   />
                   <div className="relative z-10 mt-auto h-full flex items-end">
-                    <div className="w-full p-4 sm:p-5 flex items-end justify-between gap-2 text-white">
-                      <div>
-                        <div className="text-xs text-white/80 font-medium">Champion suivi</div>
-                        <div className="text-base font-semibold tracking-normal leading-snug">
+                    <div className="w-full p-4 sm:p-5 flex items-end justify-between gap-3 text-white">
+                      <div className="min-w-0">
+                        <div
+                          className={`inline-flex items-center gap-1.5 text-xs font-semibold ${
+                            heroChamp.isOtp
+                              ? 'text-amber-300'
+                              : heroChamp.isInLiveGame
+                                ? 'text-emerald-300'
+                                : 'text-sky-300'
+                          }`}
+                        >
+                          {heroChamp.isOtp && (
+                            <Crown className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                          )}
+                          <span>{heroChamp.badgeLabel}</span>
+                        </div>
+                        <div className="text-base sm:text-lg font-semibold tracking-normal leading-snug truncate">
                           {followedChamp.displayName}
                         </div>
+                        <div className="text-[11px] text-white/75 tabular-nums truncate mt-0.5">
+                          {heroChamp.subLabel}
+                        </div>
                       </div>
-                      <span className="text-xs sm:text-[13px] tabular-nums font-semibold text-white">
-                        {followedChampWr}% WR
-                      </span>
+                      {heroChamp.winRatePct !== null ? (
+                        <span className="text-xs sm:text-[13px] tabular-nums font-semibold text-white shrink-0">
+                          {heroChamp.winRatePct}% WR
+                        </span>
+                      ) : heroChamp.masteryPoints ? (
+                        <span className="text-xs sm:text-[13px] tabular-nums font-semibold text-white/90 shrink-0">
+                          {Math.round(heroChamp.masteryPoints / 1000)}k pts
+                        </span>
+                      ) : (
+                        <span className="text-xs tabular-nums font-medium text-white/75 shrink-0">
+                          {heroChamp.isInLiveGame ? 'En jeu' : 'Prêt'}
+                        </span>
+                      )}
                     </div>
                   </div>
                 </div>
